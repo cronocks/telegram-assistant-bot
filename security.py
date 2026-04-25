@@ -3,7 +3,7 @@ security.py — Lớp bảo mật tập trung, chống leo thang quyền.
 
 Cung cấp 6 lớp validation cho mọi thao tác Drive:
 1. Validate OAuth scope (chỉ cho phép drive.file)
-2. Whitelist Folder ID
+2. Whitelist Folder ID (động — folder bot tự tạo hoặc folder cấu hình)
 3. Whitelist file extension và MIME type
 4. Validate target email khi transfer ownership
 5. Rate limiting (file/giờ)
@@ -22,8 +22,23 @@ ALLOWED_SCOPES = {"https://www.googleapis.com/auth/drive.file"}
 ALLOWED_EXTENSIONS = {".md"}
 ALLOWED_MIME_TYPES = {"text/markdown"}
 
-# ── Rate limiting state (in-memory, reset khi restart) ───────────────────────
+# ── State (in-memory, reset khi restart) ─────────────────────────────────────
 _create_timestamps: deque = deque()
+_trusted_folders: set = set()
+
+
+def register_trusted_folder(folder_id: str):
+    """
+    Đăng ký folder đã được drive_client xác minh là an toàn.
+    Gọi từ drive_client._get_or_create_notes_folder() sau khi xác định folder.
+
+    Mục đích: cho phép validate_folder() dùng cả với folder động (bot tự tạo)
+    lẫn folder tĩnh (GDRIVE_FOLDER_ID).
+    """
+    if not folder_id:
+        raise ValueError("[SECURITY] Khong duoc register folder rong")
+    _trusted_folders.add(folder_id)
+    audit_log("folder_registered", file_id=folder_id)
 
 
 def validate_scope(token_scopes):
@@ -42,19 +57,30 @@ def validate_scope(token_scopes):
 
 def validate_folder(folder_id: str):
     """
-    Lớp 2: Đảm bảo mọi thao tác chỉ trong folder đã whitelist.
-    Ngăn việc tấn công đổi folder ID để truy cập folder khác.
+    Lớp 2: Đảm bảo mọi thao tác chỉ trong folder đã được trust.
+    Folder được trust khi:
+    - Bằng GDRIVE_FOLDER_ID đã cấu hình, HOẶC
+    - Đã được register qua register_trusted_folder()
     """
-    if not folder_id or folder_id != GDRIVE_FOLDER_ID:
-        raise PermissionError(
-            f"[SECURITY] Folder khong trong whitelist: '{folder_id}'"
-        )
+    if not folder_id:
+        raise PermissionError("[SECURITY] Folder ID rong")
+
+    # Cho phép GDRIVE_FOLDER_ID nếu được cấu hình
+    if GDRIVE_FOLDER_ID and folder_id == GDRIVE_FOLDER_ID:
+        return
+
+    # Cho phép folder đã register (bot tự tạo)
+    if folder_id in _trusted_folders:
+        return
+
+    raise PermissionError(
+        f"[SECURITY] Folder khong trong whitelist: '{folder_id}'"
+    )
 
 
 def validate_file_creation(filename: str, mimetype: str):
     """
     Lớp 3: Chỉ cho phép tạo file .md với MIME text/markdown.
-    Ngăn tạo file thực thi, file độc hại, file kích thước lớn khác loại.
     """
     if not filename:
         raise PermissionError("[SECURITY] Filename rong")
@@ -75,7 +101,6 @@ def validate_file_creation(filename: str, mimetype: str):
 def validate_transfer_target(email: str):
     """
     Lớp 4: Đảm bảo transfer ownership chỉ tới OWNER_EMAIL đã cấu hình.
-    Ngăn code bị sửa đổi → transfer file sang email khác.
     """
     if not ENABLE_OWNERSHIP_TRANSFER:
         raise PermissionError("[SECURITY] Ownership transfer is disabled")
@@ -90,12 +115,10 @@ def validate_transfer_target(email: str):
 def check_rate_limit():
     """
     Lớp 5: Giới hạn số file tạo mỗi giờ.
-    Ngăn lạm dụng (vd: spam tạo file để chiếm storage).
     """
     now = time.time()
-    cutoff = now - 3600  # 1 giờ trước
+    cutoff = now - 3600
 
-    # Xóa timestamps đã hết hạn
     while _create_timestamps and _create_timestamps[0] < cutoff:
         _create_timestamps.popleft()
 
@@ -109,7 +132,7 @@ def check_rate_limit():
 
 
 def get_rate_limit_status() -> dict:
-    """Trả về trạng thái rate limit hiện tại (để dùng cho /security command)."""
+    """Trả về trạng thái rate limit hiện tại."""
     now = time.time()
     cutoff = now - 3600
     recent = [t for t in _create_timestamps if t >= cutoff]
@@ -122,10 +145,7 @@ def get_rate_limit_status() -> dict:
 
 def audit_log(action: str, file_id: str = "", filename: str = "",
               user: str = "", details: str = ""):
-    """
-    Lớp 6: Log mọi thao tác nhạy cảm.
-    Logs sẽ hiển thị trong Render Logs để audit khi cần.
-    """
+    """Lớp 6: Log mọi thao tác nhạy cảm."""
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(
         f"[audit] {timestamp} | action={action} | "
@@ -136,11 +156,12 @@ def audit_log(action: str, file_id: str = "", filename: str = "",
 
 
 def get_security_status() -> dict:
-    """Trả về trạng thái cấu hình bảo mật (cho /security command)."""
+    """Trả về trạng thái cấu hình bảo mật."""
     rate = get_rate_limit_status()
     return {
         "scope": list(ALLOWED_SCOPES)[0],
-        "allowed_folder_id": GDRIVE_FOLDER_ID[:20] + "...",
+        "configured_folder_id": (GDRIVE_FOLDER_ID[:20] + "...") if GDRIVE_FOLDER_ID else "(empty - bot will auto-create)",
+        "trusted_folders_count": len(_trusted_folders),
         "owner_email": OWNER_EMAIL,
         "ownership_transfer_enabled": ENABLE_OWNERSHIP_TRANSFER,
         "rate_limit_used": f"{rate['current_hour']}/{rate['max_per_hour']}",
