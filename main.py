@@ -171,7 +171,7 @@ async def webhook(request: Request):
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 async def root():
     return {"status": "running", "bot": "telegram-claude-obsidian"}
 
