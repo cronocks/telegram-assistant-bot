@@ -6,13 +6,20 @@ Logic folder:
 2. Ngược lại → search folder do bot tạo trước đây (theo tên)
 3. Ngược lại → bot tạo folder mới + initiate ownership transfer
 
-Mọi file tạo ra → tự động initiate ownership transfer tới OWNER_EMAIL.
+Mọi file tạo ra → tự động initiate ownership transfer tới OWNER_EMAIL (nếu bật).
+
+Tính năng mở rộng (v5):
+- Fuzzy match tên file (chỉ cần nhớ 1 phần)
+- Append nội dung vào file có sẵn
+- Daily journal — file nhật ký theo ngày, append entries với timestamp GMT+7
+- Liệt kê N file gần nhất
+- Smart search có timeframe (cho câu hỏi mơ hồ)
 """
 import io
 import json
 import os
 import base64
-from datetime import datetime, timedelta
+from datetime import timedelta
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaInMemoryUpload
 from google.oauth2.credentials import Credentials
@@ -21,25 +28,34 @@ from google.auth.transport.requests import Request
 from config import (
     GDRIVE_FOLDER_ID, CLAUDE_NOTES_FOLDER,
     OWNER_EMAIL, ENABLE_OWNERSHIP_TRANSFER,
+    FUZZY_SCAN_LIMIT, LIST_RECENT_LIMIT,
 )
 from security import (
     validate_scope, validate_folder, validate_file_creation,
     validate_transfer_target, check_rate_limit, audit_log,
     register_trusted_folder, ALLOWED_SCOPES,
 )
+from timeutils import (
+    now_local, today_str, time_str, filename_timestamp,
+    datetime_str, daily_journal_filename,
+)
 
 TOKEN_FILE = "token.json"
+MIME_MARKDOWN = "text/markdown"
 
 # Cache folder ID đã được xác định (1 lần/process)
 _cached_folder_id: str = ""
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREDENTIALS & SERVICE
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _get_credentials() -> Credentials:
     """Load OAuth credentials từ env (Render) hoặc file local."""
     raw_b64 = os.environ.get("GOOGLE_OAUTH_TOKEN_B64", "").strip()
 
     if raw_b64:
-        print(f"[drive] Found GOOGLE_OAUTH_TOKEN_B64, length={len(raw_b64)}")
         try:
             decoded = base64.b64decode(raw_b64).decode("utf-8")
             info = json.loads(decoded)
@@ -47,7 +63,6 @@ def _get_credentials() -> Credentials:
         except Exception as e:
             raise RuntimeError(f"Khong decode duoc OAuth token: {e}")
     elif os.path.exists(TOKEN_FILE):
-        print(f"[drive] Reading from local {TOKEN_FILE}")
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, list(ALLOWED_SCOPES))
     else:
         raise RuntimeError(
@@ -55,10 +70,8 @@ def _get_credentials() -> Credentials:
             "Chay 'python oauth_setup.py' truoc, hoac set GOOGLE_OAUTH_TOKEN_B64."
         )
 
-    # Lớp 1: Validate scope ngay khi load
     validate_scope(creds.scopes)
 
-    # Refresh access token nếu hết hạn
     if creds.expired and creds.refresh_token:
         print("[drive] Token expired, refreshing...")
         creds.refresh(Request())
@@ -73,10 +86,13 @@ def _get_service():
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FOLDER MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _get_or_create_notes_folder() -> str:
     """
-    Trả về folder ID để bot lưu/tìm ghi chú.
-    Cache kết quả ở cấp module — không gọi lại API mỗi request.
+    Trả về folder ID để bot lưu/tìm ghi chú. Cache kết quả ở module level.
 
     Thứ tự ưu tiên:
     1. GDRIVE_FOLDER_ID đã cấu hình và bot truy cập được
@@ -90,7 +106,7 @@ def _get_or_create_notes_folder() -> str:
 
     service = _get_service()
 
-    # Ưu tiên 1: Dùng GDRIVE_FOLDER_ID nếu set và truy cập được
+    # Ưu tiên 1: GDRIVE_FOLDER_ID
     if GDRIVE_FOLDER_ID:
         try:
             folder = service.files().get(
@@ -102,9 +118,8 @@ def _get_or_create_notes_folder() -> str:
             return _cached_folder_id
         except Exception as e:
             print(f"[drive] Khong truy cap duoc GDRIVE_FOLDER_ID: {e}")
-            print(f"[drive] Se search hoac tao folder moi...")
 
-    # Ưu tiên 2: Search folder bot đã tạo trước đây (chỉ thấy được file/folder do bot tạo với drive.file scope)
+    # Ưu tiên 2: Search folder bot đã tạo
     query = (
         f"name='{CLAUDE_NOTES_FOLDER}' "
         f"and mimeType='application/vnd.google-apps.folder' "
@@ -128,21 +143,15 @@ def _get_or_create_notes_folder() -> str:
     _cached_folder_id = folder["id"]
     register_trusted_folder(_cached_folder_id)
     print(f"[drive] Da tao folder moi: {_cached_folder_id}")
-    audit_log("folder_created",
-              file_id=_cached_folder_id,
-              filename=CLAUDE_NOTES_FOLDER)
+    audit_log("folder_created", file_id=_cached_folder_id, filename=CLAUDE_NOTES_FOLDER)
 
-    # Initiate ownership transfer cho folder (1 lần duy nhất)
     if ENABLE_OWNERSHIP_TRANSFER:
         try:
             _initiate_ownership_transfer(service, _cached_folder_id, OWNER_EMAIL)
             print(f"[drive] Da gui email transfer ownership folder toi {OWNER_EMAIL}")
-            print(f"[drive] Hay vao Gmail accept de folder thuoc tai khoan chinh")
         except Exception as e:
             print(f"[drive] Folder transfer warning: {e}")
-            audit_log("folder_transfer_failed",
-                      file_id=_cached_folder_id,
-                      details=str(e)[:200])
+            audit_log("folder_transfer_failed", file_id=_cached_folder_id, details=str(e)[:200])
 
     return _cached_folder_id
 
@@ -154,78 +163,18 @@ def test_drive_connection() -> dict:
 
     service = _get_service()
     folder = service.files().get(
-        fileId=folder_id,
-        fields="id, name, mimeType",
+        fileId=folder_id, fields="id, name, mimeType",
     ).execute()
-    audit_log("test_connection",
-              file_id=folder.get("id"),
-              filename=folder.get("name"))
+    audit_log("test_connection", file_id=folder.get("id"), filename=folder.get("name"))
     return folder
 
 
-def save_note(title: str, content: str) -> str:
-    """Lưu ghi chú dưới dạng file .md, áp dụng đầy đủ security layers."""
-    # Lớp 5: Rate limit
-    check_rate_limit()
-
-    # Lớp 2: Lấy folder hợp lệ và validate
-    folder_id = _get_or_create_notes_folder()
-    validate_folder(folder_id)
-
-    # Build filename và nội dung
-    now = datetime.now()
-    safe_title = title.replace("/", "-").replace("\\", "-").strip()[:40]
-    if not safe_title:
-        safe_title = "untitled"
-    filename = f"{now.strftime('%Y-%m-%d_%H%M')}_{safe_title}.md"
-    mimetype = "text/markdown"
-
-    # Lớp 3: Validate file type
-    validate_file_creation(filename, mimetype)
-
-    markdown = f"""---
-title: {title}
-date: {now.strftime('%Y-%m-%d %H:%M')}
-source: telegram-bot
----
-
-{content}
-"""
-
-    service = _get_service()
-    media = MediaInMemoryUpload(
-        markdown.encode("utf-8"), mimetype=mimetype, resumable=False
-    )
-    file_meta = {"name": filename, "parents": [folder_id]}
-    file = service.files().create(
-        body=file_meta,
-        media_body=media,
-        fields="id, name",
-    ).execute()
-
-    file_id = file.get("id")
-    audit_log("create_file", file_id=file_id, filename=filename)
-
-    # Lớp 4: Optional ownership transfer
-    if ENABLE_OWNERSHIP_TRANSFER:
-        try:
-            _initiate_ownership_transfer(service, file_id, OWNER_EMAIL)
-        except Exception as e:
-            # Không fail nếu transfer lỗi — file vẫn lưu được
-            print(f"[drive] Transfer warning (non-fatal): {e}")
-            audit_log("transfer_failed", file_id=file_id, details=str(e)[:200])
-
-    return file.get("name")
-
+# ═══════════════════════════════════════════════════════════════════════════════
+# OWNERSHIP TRANSFER
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _initiate_ownership_transfer(service, file_id: str, target_email: str):
-    """
-    Khởi tạo transfer ownership tới OWNER_EMAIL.
-
-    Với consumer Gmail, dùng pattern pendingOwner — gửi email mời,
-    OWNER phải accept thủ công lần đầu trong Google Drive.
-    """
-    # Lớp 4: Validate target email
+    """Khởi tạo transfer ownership tới OWNER_EMAIL (pendingOwner pattern)."""
     validate_transfer_target(target_email)
 
     service.permissions().create(
@@ -239,15 +188,275 @@ def _initiate_ownership_transfer(service, file_id: str, target_email: str):
         sendNotificationEmail=True,
         fields="id",
     ).execute()
-
     audit_log("transfer_initiated", file_id=file_id, user=target_email)
 
 
+def _try_transfer_ownership(service, file_id: str):
+    """Wrapper — chỉ transfer nếu bật, log warning nếu lỗi (không fail)."""
+    if not ENABLE_OWNERSHIP_TRANSFER:
+        return
+    try:
+        _initiate_ownership_transfer(service, file_id, OWNER_EMAIL)
+    except Exception as e:
+        print(f"[drive] Transfer warning (non-fatal): {e}")
+        audit_log("transfer_failed", file_id=file_id, details=str(e)[:200])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CREATE / SAVE NOTE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def save_note(title: str, content: str, custom_filename: str = None) -> str:
+    """
+    Lưu ghi chú dưới dạng file .md mới.
+
+    Args:
+        title: tiêu đề (Claude tạo hoặc user truyền)
+        content: nội dung
+        custom_filename: nếu set → dùng tên này (đã sanitize), ko prefix timestamp
+    """
+    check_rate_limit()
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    if custom_filename:
+        filename = custom_filename if custom_filename.endswith(".md") else f"{custom_filename}.md"
+    else:
+        safe_title = title.replace("/", "-").replace("\\", "-").strip()[:40]
+        if not safe_title:
+            safe_title = "untitled"
+        filename = f"{filename_timestamp()}_{safe_title}.md"
+
+    validate_file_creation(filename, MIME_MARKDOWN)
+
+    markdown = f"""---
+title: {title}
+date: {datetime_str()}
+source: telegram-bot
+---
+
+{content}
+"""
+    service = _get_service()
+    media = MediaInMemoryUpload(markdown.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
+    file_meta = {"name": filename, "parents": [folder_id]}
+    file = service.files().create(
+        body=file_meta, media_body=media, fields="id, name",
+    ).execute()
+
+    file_id = file.get("id")
+    audit_log("create_file", file_id=file_id, filename=filename)
+    _try_transfer_ownership(service, file_id)
+
+    return file.get("name")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUZZY MATCH FILE TÌM KIẾM (mới)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def find_files_fuzzy(query: str) -> list:
+    """
+    Tìm các file có tên CHỨA query (case-insensitive, không cần khớp full).
+
+    Trả về list dict: [{id, name, modifiedTime}, ...] — sắp theo modifiedTime desc.
+    """
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    service = _get_service()
+    # Lấy tất cả file .md trong folder, sau đó filter ở client
+    results = service.files().list(
+        q=f"'{folder_id}' in parents and trashed=false and mimeType='{MIME_MARKDOWN}'",
+        fields="files(id, name, modifiedTime)",
+        orderBy="modifiedTime desc",
+        pageSize=FUZZY_SCAN_LIMIT,
+    ).execute()
+
+    files = results.get("files", [])
+    query_lower = query.lower().strip()
+
+    matches = [f for f in files if query_lower in f["name"].lower()]
+    audit_log("fuzzy_match", details=f"query='{query}', matched={len(matches)}/{len(files)}")
+    return matches
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# READ / LIST FILE (mới)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def read_file_by_id(file_id: str) -> dict:
+    """Đọc 1 file theo ID. Trả về {id, name, content, modifiedTime}."""
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    service = _get_service()
+    # Verify file thuộc folder hợp lệ (defense in depth)
+    meta = service.files().get(
+        fileId=file_id, fields="id, name, parents, modifiedTime",
+    ).execute()
+
+    if folder_id not in (meta.get("parents") or []):
+        raise PermissionError(f"[SECURITY] File khong thuoc folder duoc trust: {file_id}")
+
+    content = _read_file(service, file_id)
+    audit_log("read_file", file_id=file_id, filename=meta.get("name"))
+    return {
+        "id": file_id,
+        "name": meta.get("name"),
+        "content": content,
+        "modifiedTime": meta.get("modifiedTime"),
+    }
+
+
+def list_recent_files(limit: int = None) -> list:
+    """Liệt kê N file gần nhất theo modifiedTime desc."""
+    if limit is None:
+        limit = LIST_RECENT_LIMIT
+
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    service = _get_service()
+    results = service.files().list(
+        q=f"'{folder_id}' in parents and trashed=false and mimeType='{MIME_MARKDOWN}'",
+        fields="files(id, name, modifiedTime)",
+        orderBy="modifiedTime desc",
+        pageSize=limit,
+    ).execute()
+
+    files = results.get("files", [])
+    audit_log("list_recent", details=f"limit={limit}, found={len(files)}")
+    return files
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# APPEND TO FILE (mới)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def append_to_file(file_id: str, append_content: str) -> str:
+    """
+    Append nội dung vào cuối file. Trả về tên file đã update.
+    """
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    service = _get_service()
+    # Verify file thuộc folder hợp lệ
+    meta = service.files().get(
+        fileId=file_id, fields="id, name, parents, mimeType",
+    ).execute()
+
+    if folder_id not in (meta.get("parents") or []):
+        raise PermissionError(f"[SECURITY] File khong thuoc folder duoc trust: {file_id}")
+    if meta.get("mimeType") != MIME_MARKDOWN:
+        raise PermissionError(f"[SECURITY] File khong phai markdown: {meta.get('mimeType')}")
+
+    # Đọc nội dung hiện tại + nối
+    current = _read_file(service, file_id)
+    if not current.endswith("\n"):
+        current += "\n"
+    new_content = current + append_content
+
+    media = MediaInMemoryUpload(new_content.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
+    service.files().update(fileId=file_id, media_body=media).execute()
+
+    audit_log("append_file", file_id=file_id, filename=meta.get("name"))
+    return meta.get("name")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DAILY JOURNAL (mới)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def add_to_daily_journal(content: str) -> tuple[str, str]:
+    """
+    Thêm 1 entry vào file nhật ký hôm nay (GMT+7).
+    Tạo mới nếu chưa có. Trả về (filename, action) — action: "created" | "appended".
+    """
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    filename = daily_journal_filename()  # 2026-04-25_NhatKy.md
+    timestamp = time_str()                # 14:30
+    new_entry = f"\n## {timestamp}\n{content}\n"
+
+    service = _get_service()
+
+    # Tìm file ngày hôm nay (escape ' để chống injection)
+    safe_filename = filename.replace("'", "\\'")
+    query = (
+        f"name='{safe_filename}' "
+        f"and '{folder_id}' in parents "
+        f"and trashed=false "
+        f"and mimeType='{MIME_MARKDOWN}'"
+    )
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+
+    if files:
+        # Đã có → append
+        file_id = files[0]["id"]
+        current = _read_file(service, file_id)
+        if not current.endswith("\n"):
+            current += "\n"
+        updated = current + new_entry
+        media = MediaInMemoryUpload(updated.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
+        service.files().update(fileId=file_id, media_body=media).execute()
+        audit_log("daily_journal_append", file_id=file_id, filename=filename)
+        return filename, "appended"
+
+    # Chưa có → tạo mới (rate limit + validate)
+    check_rate_limit()
+    validate_file_creation(filename, MIME_MARKDOWN)
+
+    markdown = f"""---
+title: Nhật ký {today_str()}
+date: {today_str()}
+source: telegram-bot
+---
+{new_entry}"""
+
+    media = MediaInMemoryUpload(markdown.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
+    file_meta = {"name": filename, "parents": [folder_id]}
+    file = service.files().create(body=file_meta, media_body=media, fields="id, name").execute()
+
+    file_id = file.get("id")
+    audit_log("daily_journal_create", file_id=file_id, filename=filename)
+    _try_transfer_ownership(service, file_id)
+    return filename, "created"
+
+
+def get_today_journal() -> dict:
+    """Đọc file nhật ký hôm nay. Trả về None nếu chưa có."""
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    filename = daily_journal_filename()
+    safe_filename = filename.replace("'", "\\'")
+
+    service = _get_service()
+    query = (
+        f"name='{safe_filename}' "
+        f"and '{folder_id}' in parents "
+        f"and trashed=false "
+        f"and mimeType='{MIME_MARKDOWN}'"
+    )
+    results = service.files().list(q=query, fields="files(id, name, modifiedTime)").execute()
+    files = results.get("files", [])
+
+    if not files:
+        return None
+
+    return read_file_by_id(files[0]["id"])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEARCH NOTES (legacy + smart)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def search_notes(keyword: str, max_results: int = 5) -> list:
-    """
-    Tìm kiếm ghi chú theo keyword.
-    Lưu ý: với scope drive.file, chỉ thấy file do chính bot tạo.
-    """
+    """Tìm theo keyword (full text). Chỉ thấy file bot tạo (drive.file scope)."""
     folder_id = _get_or_create_notes_folder()
     validate_folder(folder_id)
 
@@ -281,16 +490,79 @@ def search_notes(keyword: str, max_results: int = 5) -> list:
     return notes
 
 
-def get_recent_notes(days: int = 7, max_results: int = 5) -> list:
+def smart_search(keywords: list, days_back: int = 0, max_per_keyword: int = 3) -> list:
     """
-    Lấy các ghi chú gần đây trong N ngày.
-    Lưu ý: với scope drive.file, chỉ thấy file do chính bot tạo.
+    Search nâng cao theo nhiều keyword + filter timeframe.
+    Dùng cho câu hỏi mơ hồ — kết hợp với extract_search_intent().
+
+    Args:
+        keywords: list từ khóa
+        days_back: chỉ lấy file modified trong N ngày qua (0 = không filter)
+        max_per_keyword: số file tối đa lấy cho mỗi keyword
     """
+    if not keywords:
+        return []
+
     folder_id = _get_or_create_notes_folder()
     validate_folder(folder_id)
 
     service = _get_service()
-    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
+
+    # Build timeframe filter
+    timeframe = ""
+    if days_back > 0:
+        since = (now_local() - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
+        timeframe = f"and modifiedTime > '{since}' "
+
+    # Search từng keyword, dedupe theo file id
+    seen_ids = set()
+    notes = []
+
+    for kw in keywords[:5]:  # giới hạn 5 keyword để tránh quá nhiều API call
+        safe_kw = kw.replace("'", "\\'")
+        query = (
+            f"fullText contains '{safe_kw}' "
+            f"and '{folder_id}' in parents "
+            f"and trashed=false "
+            f"{timeframe}"
+        )
+        try:
+            results = service.files().list(
+                q=query,
+                fields="files(id, name, modifiedTime)",
+                orderBy="modifiedTime desc",
+                pageSize=max_per_keyword,
+            ).execute()
+        except Exception as e:
+            print(f"[drive] smart_search error for '{kw}': {e}")
+            continue
+
+        for f in results.get("files", []):
+            if f["id"] in seen_ids:
+                continue
+            seen_ids.add(f["id"])
+            try:
+                content = _read_file(service, f["id"])
+                notes.append({
+                    "name": f["name"],
+                    "modified": f["modifiedTime"][:10],
+                    "content": content[:800],
+                })
+            except Exception as e:
+                print(f"[drive] Skip file {f['id']}: {e}")
+
+    audit_log("smart_search",
+              details=f"keywords={keywords}, days_back={days_back}, found={len(notes)}")
+    return notes
+
+
+def get_recent_notes(days: int = 7, max_results: int = 5) -> list:
+    """Lấy ghi chú gần đây trong N ngày (legacy — giữ cho 'tom tat tuan nay')."""
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    service = _get_service()
+    since = (now_local() - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S")
     query = (
         f"modifiedTime > '{since}' "
         f"and '{folder_id}' in parents "
@@ -319,8 +591,12 @@ def get_recent_notes(days: int = 7, max_results: int = 5) -> list:
     return notes
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTERNAL HELPERS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def _read_file(service, file_id: str) -> str:
-    """Đọc nội dung file từ Drive."""
+    """Đọc nội dung file từ Drive (raw bytes → utf-8)."""
     request = service.files().get_media(fileId=file_id)
     buf = io.BytesIO()
     downloader = MediaIoBaseDownload(buf, request)

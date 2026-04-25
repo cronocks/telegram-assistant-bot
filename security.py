@@ -31,9 +31,6 @@ def register_trusted_folder(folder_id: str):
     """
     Đăng ký folder đã được drive_client xác minh là an toàn.
     Gọi từ drive_client._get_or_create_notes_folder() sau khi xác định folder.
-
-    Mục đích: cho phép validate_folder() dùng cả với folder động (bot tự tạo)
-    lẫn folder tĩnh (GDRIVE_FOLDER_ID).
     """
     if not folder_id:
         raise ValueError("[SECURITY] Khong duoc register folder rong")
@@ -42,10 +39,7 @@ def register_trusted_folder(folder_id: str):
 
 
 def validate_scope(token_scopes):
-    """
-    Lớp 1: Đảm bảo OAuth token chỉ có scope tối thiểu.
-    Nếu scope rộng hơn (vd: drive full access) → từ chối.
-    """
+    """Lớp 1: Đảm bảo OAuth token chỉ có scope tối thiểu."""
     token_set = set(token_scopes) if token_scopes else set()
     if token_set != ALLOWED_SCOPES:
         raise PermissionError(
@@ -56,20 +50,13 @@ def validate_scope(token_scopes):
 
 
 def validate_folder(folder_id: str):
-    """
-    Lớp 2: Đảm bảo mọi thao tác chỉ trong folder đã được trust.
-    Folder được trust khi:
-    - Bằng GDRIVE_FOLDER_ID đã cấu hình, HOẶC
-    - Đã được register qua register_trusted_folder()
-    """
+    """Lớp 2: Đảm bảo mọi thao tác chỉ trong folder đã được trust."""
     if not folder_id:
         raise PermissionError("[SECURITY] Folder ID rong")
 
-    # Cho phép GDRIVE_FOLDER_ID nếu được cấu hình
     if GDRIVE_FOLDER_ID and folder_id == GDRIVE_FOLDER_ID:
         return
 
-    # Cho phép folder đã register (bot tự tạo)
     if folder_id in _trusted_folders:
         return
 
@@ -79,9 +66,7 @@ def validate_folder(folder_id: str):
 
 
 def validate_file_creation(filename: str, mimetype: str):
-    """
-    Lớp 3: Chỉ cho phép tạo file .md với MIME text/markdown.
-    """
+    """Lớp 3: Chỉ cho phép tạo file .md với MIME text/markdown."""
     if not filename:
         raise PermissionError("[SECURITY] Filename rong")
 
@@ -99,9 +84,7 @@ def validate_file_creation(filename: str, mimetype: str):
 
 
 def validate_transfer_target(email: str):
-    """
-    Lớp 4: Đảm bảo transfer ownership chỉ tới OWNER_EMAIL đã cấu hình.
-    """
+    """Lớp 4: Đảm bảo transfer ownership chỉ tới OWNER_EMAIL đã cấu hình."""
     if not ENABLE_OWNERSHIP_TRANSFER:
         raise PermissionError("[SECURITY] Ownership transfer is disabled")
 
@@ -113,9 +96,7 @@ def validate_transfer_target(email: str):
 
 
 def check_rate_limit():
-    """
-    Lớp 5: Giới hạn số file tạo mỗi giờ.
-    """
+    """Lớp 5: Giới hạn số file tạo mỗi giờ."""
     now = time.time()
     cutoff = now - 3600
 
@@ -160,7 +141,9 @@ def get_security_status() -> dict:
     rate = get_rate_limit_status()
     return {
         "scope": list(ALLOWED_SCOPES)[0],
+        # Cả 2 key cho backward-compatible với main.py các phiên bản cũ
         "configured_folder_id": (GDRIVE_FOLDER_ID[:20] + "...") if GDRIVE_FOLDER_ID else "(empty - bot will auto-create)",
+        "allowed_folder_id": (GDRIVE_FOLDER_ID[:20] + "...") if GDRIVE_FOLDER_ID else "(empty - bot will auto-create)",
         "trusted_folders_count": len(_trusted_folders),
         "owner_email": OWNER_EMAIL,
         "ownership_transfer_enabled": ENABLE_OWNERSHIP_TRANSFER,

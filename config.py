@@ -16,17 +16,10 @@ GDRIVE_FOLDER_ID    = os.getenv("GDRIVE_FOLDER_ID", "")
 CLAUDE_NOTES_FOLDER = os.getenv("CLAUDE_NOTES_FOLDER", "Claude-Notes")
 
 # ── OAuth & Ownership Transfer ────────────────────────────────────────────────
-# OAuth token (base64) — được tạo bởi oauth_setup.py
-# (Không cần khai báo ở đây, drive_client.py đọc trực tiếp từ env)
-
-# Email tài khoản chính — để transfer ownership tới
 OWNER_EMAIL = os.getenv("OWNER_EMAIL", "thangnm.it@gmail.com")
-
-# Bật/tắt ownership transfer (default: bật)
 ENABLE_OWNERSHIP_TRANSFER = os.getenv("ENABLE_OWNERSHIP_TRANSFER", "true").lower() == "true"
 
 # ── Security ──────────────────────────────────────────────────────────────────
-# Giới hạn số file tạo mỗi giờ (chống lạm dụng)
 MAX_FILES_PER_HOUR = int(os.getenv("MAX_FILES_PER_HOUR", "20"))
 
 # ── Budget ────────────────────────────────────────────────────────────────────
@@ -36,3 +29,15 @@ ALERT_90     = BUDGET_LIMIT * 0.90
 
 # File lưu tracking chi phí local
 COST_FILE = "cost_tracker.json"
+
+# ── Timezone (mới) ────────────────────────────────────────────────────────────
+# UTC+7 — Hà Nội. Dùng offset cố định để không phụ thuộc tzdata trên container.
+TIMEZONE_OFFSET_HOURS = 7
+
+# ── State management cho pending choice (mới) ────────────────────────────────
+PENDING_CHOICE_TIMEOUT_SEC = 60   # state pending hết hạn sau N giây
+
+# ── List notes (mới) ─────────────────────────────────────────────────────────
+LIST_RECENT_LIMIT  = 10           # liệt kê 10 file gần nhất
+FUZZY_SCAN_LIMIT   = 200          # scan tối đa N file để fuzzy match
+FUZZY_SHOW_LIMIT   = 10           # hiện tối đa N kết quả khi nhiều match
