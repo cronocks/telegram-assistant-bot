@@ -39,3 +39,26 @@ def daily_journal_filename(date: str = None) -> str:
     if not date:
         date = today_str()
     return f"{date}_NhatKy.md"
+
+
+def current_week_start() -> datetime:
+    """
+    Trả về datetime của thứ 2 đầu tuần này (00:00:00 GMT+7).
+    weekday(): Monday=0, ..., Sunday=6.
+    """
+    n = now_local()
+    monday = n - timedelta(days=n.weekday())
+    return monday.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
+def current_week_end() -> datetime:
+    """Trả về datetime của chủ nhật cuối tuần này (23:59:59 GMT+7)."""
+    sunday = current_week_start() + timedelta(days=6)
+    return sunday.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+
+def current_week_range_str() -> str:
+    """Chuỗi hiển thị range tuần này, dạng '20/04 - 26/04'."""
+    start = current_week_start()
+    end = current_week_start() + timedelta(days=6)
+    return f"{start.strftime('%d/%m')} - {end.strftime('%d/%m')}"

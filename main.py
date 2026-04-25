@@ -30,9 +30,11 @@ from drive_client import (
     save_note, search_notes, get_recent_notes, test_drive_connection,
     find_files_fuzzy, append_to_file, read_file_by_id, list_recent_files,
     add_to_daily_journal, get_today_journal, smart_search,
+    get_current_week_notes,
 )
 from cost_monitor import record_usage, get_current_cost, check_and_alert
 from security import get_security_status
+from timeutils import current_week_range_str
 
 scheduler = AsyncIOScheduler()
 
@@ -584,16 +586,21 @@ async def _cmd_tim(chat_id: str, keyword: str):
 
 
 async def _cmd_tom_tat_tuan(chat_id: str):
-    await send_message(chat_id, "Dang doc ghi chu tuan nay...")
+    week_range = current_week_range_str()
+    await send_message(chat_id, f"Dang doc ghi chu tuan nay ({week_range})...", use_markdown=False)
     try:
-        notes = get_recent_notes(days=7)
+        notes = get_current_week_notes(max_results=20)
         if not notes:
-            await send_message(chat_id, "Khong co ghi chu nao trong 7 ngay qua.")
+            await send_message(chat_id,
+                f"Khong co ghi chu nao trong tuan nay ({week_range}).",
+                use_markdown=False)
             return
         summary, tokens = summarize_notes(notes)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
-        await send_message(chat_id, f"Tom tat tuan nay:\n\n{summary}", use_markdown=False)
+        await send_message(chat_id,
+            f"Tom tat tuan nay ({week_range}) — {len(notes)} ghi chu:\n\n{summary}",
+            use_markdown=False)
     except Exception as e:
         traceback.print_exc()
         await send_message(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)

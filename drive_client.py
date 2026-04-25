@@ -19,7 +19,7 @@ import io
 import json
 import os
 import base64
-from datetime import timedelta
+from datetime import timedelta, timezone
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaInMemoryUpload
 from google.oauth2.credentials import Credentials
@@ -38,6 +38,7 @@ from security import (
 from timeutils import (
     now_local, today_str, time_str, filename_timestamp,
     datetime_str, daily_journal_filename,
+    current_week_start, current_week_end,
 )
 
 TOKEN_FILE = "token.json"
@@ -556,8 +557,55 @@ def smart_search(keywords: list, days_back: int = 0, max_per_keyword: int = 3) -
     return notes
 
 
+def get_current_week_notes(max_results: int = 20) -> list:
+    """
+    Lấy ghi chú trong tuần hiện tại (thứ 2 → chủ nhật, GMT+7).
+    Dùng cho lệnh 'tom tat tuan nay'.
+    """
+    folder_id = _get_or_create_notes_folder()
+    validate_folder(folder_id)
+
+    service = _get_service()
+    week_start = current_week_start()
+    week_end = current_week_end()
+
+    # Drive API expect RFC3339 — convert sang UTC để query chính xác
+    start_utc = week_start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    end_utc = week_end.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    query = (
+        f"modifiedTime >= '{start_utc}' "
+        f"and modifiedTime <= '{end_utc}' "
+        f"and '{folder_id}' in parents "
+        f"and trashed=false "
+        f"and mimeType='{MIME_MARKDOWN}'"
+    )
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, modifiedTime)",
+        orderBy="modifiedTime desc",
+        pageSize=max_results,
+    ).execute()
+
+    notes = []
+    for f in results.get("files", []):
+        try:
+            content = _read_file(service, f["id"])
+            notes.append({
+                "name": f["name"],
+                "modified": f["modifiedTime"][:10],
+                "content": content,
+            })
+        except Exception as e:
+            print(f"[drive] Skip file {f['id']}: {e}")
+
+    audit_log("get_current_week_notes",
+              details=f"week={week_start.date()}..{week_end.date()}, found={len(notes)}")
+    return notes
+
+
 def get_recent_notes(days: int = 7, max_results: int = 5) -> list:
-    """Lấy ghi chú gần đây trong N ngày (legacy — giữ cho 'tom tat tuan nay')."""
+    """Lấy ghi chú gần đây trong N ngày (legacy — giữ cho compatibility)."""
     folder_id = _get_or_create_notes_folder()
     validate_folder(folder_id)
 
