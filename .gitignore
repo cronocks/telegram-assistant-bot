@@ -1,0 +1,8 @@
+.env*
+credentials.json
+cost_tracker.json
+files.zip
+__pycache__/
+*.pyc
+.venv/
+venv/
