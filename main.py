@@ -179,6 +179,18 @@ async def root():
     return {"status": "running", "bot": "telegram-claude-obsidian"}
 
 
+# ── Debug environment ───────────────────────────────────────────────────────
+@app.get("/debug-env")
+async def debug_env():
+    import os
+    raw = os.environ.get("GOOGLE_CREDENTIALS_B64", "")
+    return {
+        "exists": bool(raw),
+        "length": len(raw),
+        "first_20": raw[:20] if raw else "EMPTY",
+        "last_20": raw[-20:] if raw else "EMPTY",
+    }
+
 # ── Chạy local ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
