@@ -51,29 +51,13 @@ def test_drive_connection() -> dict:
 
 
 def _get_or_create_notes_folder() -> str:
-    service = _get_service()
-    query = (
-        f"name='{CLAUDE_NOTES_FOLDER}' "
-        f"and '{GDRIVE_FOLDER_ID}' in parents "
-        f"and mimeType='application/vnd.google-apps.folder' "
-        f"and trashed=false"
-    )
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    files = results.get("files", [])
-    if files:
-        return files[0]["id"]
-    folder_meta = {
-        "name": CLAUDE_NOTES_FOLDER,
-        "mimeType": "application/vnd.google-apps.folder",
-        "parents": [GDRIVE_FOLDER_ID],
-    }
-    folder = service.files().create(body=folder_meta, fields="id").execute()
-    return folder["id"]
+    """Trả về thẳng folder ID đã share, không tạo subfolder nữa."""
+    return GDRIVE_FOLDER_ID
 
 
 def save_note(title: str, content: str) -> str:
     service = _get_service()
-    folder_id = _get_or_create_notes_folder()
+    folder_id = GDRIVE_FOLDER_ID  # Lưu thẳng vào folder đã share
     now = datetime.now()
     safe_title = title.replace("/", "-").replace("\\", "-")[:40]
     filename = f"{now.strftime('%Y-%m-%d_%H%M')}_{safe_title}.md"
@@ -90,7 +74,10 @@ source: telegram-bot
     )
     file_meta = {"name": filename, "parents": [folder_id]}
     file = service.files().create(
-        body=file_meta, media_body=media, fields="id, name"
+        body=file_meta,
+        media_body=media,
+        fields="id, name",
+        supportsAllDrives=True,
     ).execute()
     return file.get("name")
 
@@ -105,11 +92,13 @@ def search_notes(keyword: str, max_results: int = 5) -> list:
         f"and trashed=false"
     )
     results = service.files().list(
-        q=query,
-        fields="files(id, name, modifiedTime)",
-        orderBy="modifiedTime desc",
-        pageSize=max_results,
-    ).execute()
+    q=query,
+    fields="files(id, name, modifiedTime)",
+    orderBy="modifiedTime desc",
+    pageSize=max_results,
+    supportsAllDrives=True,
+    includeItemsFromAllDrives=True,
+).execute()
     notes = []
     for f in results.get("files", []):
         content = _read_file(service, f["id"])
@@ -135,6 +124,8 @@ def get_recent_notes(days: int = 7, max_results: int = 5) -> list:
         fields="files(id, name, modifiedTime)",
         orderBy="modifiedTime desc",
         pageSize=max_results,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
     ).execute()
     notes = []
     for f in results.get("files", []):
