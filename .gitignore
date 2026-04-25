@@ -1,7 +1,21 @@
+# Environment variables
 .env*
+
+# Google credentials
 credentials.json
+token.json
+oauth_credentials.json
+
+# Cost tracking
 cost_tracker.json
+
+# Zips
 files.zip
+
+# Txt
+token_b64.txt
+
+# Python cache
 __pycache__/
 *.pyc
 .venv/

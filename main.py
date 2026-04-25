@@ -9,6 +9,7 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 from claude_client import ask_claude, summarize_notes
 from drive_client import save_note, search_notes, get_recent_notes, test_drive_connection
 from cost_monitor import record_usage, get_current_cost, check_and_alert
+from security import get_security_status
 
 scheduler = AsyncIOScheduler()
 
@@ -48,6 +49,7 @@ async def send_message(chat_id: str, text: str, use_markdown: bool = True):
 async def handle_message(chat_id: str, text: str):
     text = text.strip()
 
+    # ── /start ────────────────────────────────────────────────────────────────
     if text == "/start":
         await send_message(chat_id, (
             "Xin chao! Toi la Claude Bot cua ban.\n\n"
@@ -56,10 +58,12 @@ async def handle_message(chat_id: str, text: str):
             "`tim [tu khoa]` - Tim kiem trong vault\n"
             "`tom tat tuan nay` - Xem ghi chu 7 ngay gan day\n"
             "`/cost` - Xem chi phi thang\n"
-            "`/test` - Kiem tra ket noi Drive"
+            "`/test` - Kiem tra ket noi Drive\n"
+            "`/security` - Xem cau hinh bao mat"
         ))
         return
 
+    # ── /cost ─────────────────────────────────────────────────────────────────
     if text == "/cost":
         info = get_current_cost()
         bar_filled = int(info["percent"] / 10)
@@ -73,6 +77,7 @@ async def handle_message(chat_id: str, text: str):
         ))
         return
 
+    # ── /test ─────────────────────────────────────────────────────────────────
     if text == "/test":
         await send_message(chat_id, "Dang kiem tra Drive...")
         try:
@@ -87,6 +92,27 @@ async def handle_message(chat_id: str, text: str):
             await send_message(chat_id, f"Drive Error: {str(e)[:500]}", use_markdown=False)
         return
 
+    # ── /security ─────────────────────────────────────────────────────────────
+    if text == "/security":
+        try:
+            s = get_security_status()
+            msg = (
+                f"Cau hinh bao mat:\n\n"
+                f"Scope: {s['scope']}\n"
+                f"Folder ID: {s['allowed_folder_id']}\n"
+                f"Owner email: {s['owner_email']}\n"
+                f"Transfer ownership: {s['ownership_transfer_enabled']}\n"
+                f"Rate limit: {s['rate_limit_used']} files/hour\n"
+                f"Allowed extensions: {s['allowed_extensions']}\n"
+                f"Allowed mimetypes: {s['allowed_mimetypes']}"
+            )
+            await send_message(chat_id, msg, use_markdown=False)
+        except Exception as e:
+            traceback.print_exc()
+            await send_message(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+        return
+
+    # ── ghi nho ───────────────────────────────────────────────────────────────
     if text.lower().startswith("ghi nhớ ") or text.lower().startswith("ghi nho "):
         content = text[8:].strip()
         if not content:
@@ -100,11 +126,15 @@ async def handle_message(chat_id: str, text: str):
             record_usage(tokens // 2, tokens // 2)
             filename = save_note(title.strip(), content)
             await send_message(chat_id, f"Da luu: {filename}", use_markdown=False)
+        except PermissionError as e:
+            traceback.print_exc()
+            await send_message(chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False)
         except Exception as e:
             traceback.print_exc()
             await send_message(chat_id, f"Loi khi luu: {str(e)[:500]}", use_markdown=False)
         return
 
+    # ── tim ───────────────────────────────────────────────────────────────────
     if text.lower().startswith("tìm ") or text.lower().startswith("tim "):
         keyword = text[4:].strip()
         if not keyword:
@@ -120,11 +150,15 @@ async def handle_message(chat_id: str, text: str):
             record_usage(tokens // 2, tokens // 2)
             check_and_alert()
             await send_message(chat_id, f"Ket qua:\n\n{summary}", use_markdown=False)
+        except PermissionError as e:
+            traceback.print_exc()
+            await send_message(chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False)
         except Exception as e:
             traceback.print_exc()
             await send_message(chat_id, f"Loi khi tim: {str(e)[:500]}", use_markdown=False)
         return
 
+    # ── tom tat tuan nay ──────────────────────────────────────────────────────
     if ("tóm tắt" in text.lower() or "tom tat" in text.lower()) and ("tuần" in text.lower() or "tuan" in text.lower()):
         await send_message(chat_id, "Dang doc ghi chu tuan nay...")
         try:
@@ -136,11 +170,15 @@ async def handle_message(chat_id: str, text: str):
             record_usage(tokens // 2, tokens // 2)
             check_and_alert()
             await send_message(chat_id, f"Tom tat tuan nay:\n\n{summary}", use_markdown=False)
+        except PermissionError as e:
+            traceback.print_exc()
+            await send_message(chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False)
         except Exception as e:
             traceback.print_exc()
             await send_message(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
         return
 
+    # ── Câu hỏi thường → Claude ──────────────────────────────────────────────
     try:
         await send_message(chat_id, "Dang xu ly...")
         keywords = text.split()[:3]
@@ -166,6 +204,7 @@ async def handle_message(chat_id: str, text: str):
         await send_message(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
+# ── Webhook endpoint ──────────────────────────────────────────────────────────
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
@@ -175,8 +214,12 @@ async def webhook(request: Request):
             return {"ok": True}
         chat_id = str(message["chat"]["id"])
         text = message.get("text", "")
+
+        # Lớp 7: Telegram Chat ID lock — chỉ chấp nhận tin nhắn từ chủ
         if chat_id != str(TELEGRAM_CHAT_ID):
+            print(f"[security] Rejected message from unauthorized chat_id={chat_id}")
             return {"ok": True}
+
         if text:
             await handle_message(chat_id, text)
     except Exception as e:
@@ -184,9 +227,10 @@ async def webhook(request: Request):
     return {"ok": True}
 
 
+# ── Health check ──────────────────────────────────────────────────────────────
 @app.api_route("/", methods=["GET", "HEAD"])
 async def root():
-    return {"status": "running", "version": "v3"}
+    return {"status": "running", "version": "v4-oauth"}
 
 
 if __name__ == "__main__":
