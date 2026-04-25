@@ -12,16 +12,21 @@ SCOPES = ["https://www.googleapis.com/auth/drive"]
 def _get_service():
     import json as _json
     import os
-    json_str = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    if json_str:
-        info = _json.loads(json_str)
-        creds = service_account.Credentials.from_service_account_info(
-            info, scopes=SCOPES
-        )
-    else:
-        creds = service_account.Credentials.from_service_account_file(
-            CREDENTIALS_FILE, scopes=SCOPES
-        )
+    raw = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+    if not raw:
+        raise RuntimeError("GOOGLE_CREDENTIALS_JSON env variable is empty!")
+
+    # Xử lý cả 2 trường hợp: JSON thuần hoặc JSON với \n bị escape
+    try:
+        info = _json.loads(raw)
+    except _json.JSONDecodeError:
+        # Nếu private_key chứa \n thật thay vì \\n, fix lại
+        raw_fixed = raw.replace("\n", "\\n")
+        info = _json.loads(raw_fixed)
+
+    creds = service_account.Credentials.from_service_account_info(
+        info, scopes=SCOPES
+    )
     return build("drive", "v3", credentials=creds)
 
 

@@ -103,6 +103,9 @@ async def handle_message(chat_id: str, text: str):
             check_and_alert()
             await send_message(chat_id, f"📝 Kết quả tìm kiếm *{keyword}*:\n\n{summary}")
         except Exception as e:
+            import traceback
+            print(f"❌ ERROR: {e}")
+            traceback.print_exc()
             await send_message(chat_id, f"❌ Lỗi khi tìm kiếm: {e}")
         return
 
