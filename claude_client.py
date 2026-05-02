@@ -89,6 +89,118 @@ Quy tắc:
 CHỈ trả về JSON thuần, KHÔNG markdown, KHÔNG giải thích, KHÔNG text thừa."""
 
 
+# ── Wiki: Ingest ──────────────────────────────────────────────────────────────
+
+_WIKI_INGEST_PROMPT = """Bạn là Wiki Manager cho knowledge base cá nhân.
+
+Tài liệu mới cần ingest:
+{raw_content}
+
+Các trang wiki hiện có:
+{existing_topics}
+
+Phân tích và xác định những thông tin quan trọng cần lưu vào wiki.
+
+Trả về JSON (CHỈ JSON thuần, KHÔNG markdown):
+{{
+  "updates": [
+    {{
+      "topic": "Tên chủ đề cụ thể",
+      "type": "person|project|concept|event|place|other",
+      "action": "create|update",
+      "existing_topic": "tên topic hiện có nếu action=update, để trống nếu create",
+      "content_to_add": "Nội dung markdown ngắn gọn (bullet points, chỉ thông tin mới)"
+    }}
+  ],
+  "summary": "Tóm tắt 1 câu những gì đã cập nhật"
+}}
+
+Quy tắc:
+- Chỉ tạo/cập nhật khi thông tin đủ quan trọng và cụ thể để lưu lâu dài
+- action=update nếu existing_topics có topic tương tự (không cần khớp tên chính xác)
+- content_to_add: ngắn gọn, bullet points, chỉ thông tin mới
+- Tối đa 3 updates mỗi lần ingest
+- Nếu không có gì đáng lưu: "updates": []"""
+
+
+def extract_wiki_updates(raw_content: str, existing_topics: list[str]) -> tuple[list[dict], int]:
+    """
+    Phân tích raw content, trả về danh sách wiki updates cần thực hiện.
+    Returns (updates, total_tokens).
+    updates = [{topic, type, action, existing_topic, content_to_add}, ...]
+    """
+    topics_str = (
+        "\n".join(f"- {t}" for t in existing_topics)
+        if existing_topics else "(chưa có trang wiki nào)"
+    )
+    prompt = _WIKI_INGEST_PROMPT.format(
+        raw_content=raw_content[:2000],
+        existing_topics=topics_str,
+    )
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=800,
+        system="Bạn là module phân tích wiki, chỉ trả về JSON thuần.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+    text = response.content[0].text.strip()
+    total_tokens = response.usage.input_tokens + response.usage.output_tokens
+
+    json_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not json_match:
+        print(f"[claude] Wiki ingest: khong tim thay JSON, raw={text[:200]}")
+        return [], total_tokens
+
+    try:
+        result = json.loads(json_match.group(0))
+        updates = result.get("updates", [])
+        if not isinstance(updates, list):
+            updates = []
+        return updates, total_tokens
+    except (json.JSONDecodeError, ValueError) as e:
+        print(f"[claude] Wiki ingest parse error: {e}, raw={text[:200]}")
+        return [], total_tokens
+
+
+# ── Wiki: Query ───────────────────────────────────────────────────────────────
+
+def answer_from_wiki(question: str, wiki_pages: list[dict], max_chars_per_page: int = 400) -> tuple[str, int]:
+    """
+    Trả lời câu hỏi dựa trên các trang wiki.
+    wiki_pages: [{name, content}, ...]
+    Returns (answer, total_tokens).
+    """
+    if not wiki_pages:
+        return "Không tìm thấy thông tin liên quan trong wiki.", 0
+
+    wiki_context = "\n\n---\n\n".join(
+        f"## {p['name'].replace('.md', '')}\n{p['content'][:max_chars_per_page]}"
+        for p in wiki_pages
+    )
+
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=1024,
+        system=SYSTEM_PROMPT,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"Đây là các trang wiki liên quan từ knowledge base của tôi:\n\n"
+                f"{wiki_context}\n\n"
+                f"Câu hỏi: {question}"
+            ),
+        }],
+    )
+
+    text = response.content[0].text
+    total_tokens = response.usage.input_tokens + response.usage.output_tokens
+    return text, total_tokens
+
+
+# ── Smart Search Intent ───────────────────────────────────────────────────────
+
 def extract_search_intent(question: str) -> tuple[dict, int]:
     """
     Phân tích câu hỏi → trả về (intent_dict, total_tokens).

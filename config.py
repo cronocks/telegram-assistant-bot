@@ -41,3 +41,9 @@ PENDING_CHOICE_TIMEOUT_SEC = 60   # state pending hết hạn sau N giây
 LIST_RECENT_LIMIT  = 10           # liệt kê 10 file gần nhất
 FUZZY_SCAN_LIMIT   = 200          # scan tối đa N file để fuzzy match
 FUZZY_SHOW_LIMIT   = 10           # hiện tối đa N kết quả khi nhiều match
+
+# ── Wiki ──────────────────────────────────────────────────────────────────────
+WIKI_SUBFOLDER          = os.getenv("WIKI_SUBFOLDER", "Wiki")
+MAX_WIKI_UPDATES        = 3       # tối đa N topics mỗi lần ingest
+MAX_WIKI_PAGES_CONTEXT  = 2       # tối đa N wiki pages đưa vào context QA
+MAX_WIKI_CONTEXT_CHARS  = 400     # cắt mỗi wiki page ở N chars khi làm context
