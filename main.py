@@ -25,13 +25,19 @@ from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     PENDING_CHOICE_TIMEOUT_SEC, FUZZY_SHOW_LIMIT,
 )
-from claude_client import ask_claude, summarize_notes, extract_search_intent
+from claude_client import ask_claude, summarize_notes, extract_search_intent, extract_wiki_updates, answer_from_wiki
 from drive_client import (
     save_note, search_notes, get_recent_notes, test_drive_connection,
     find_files_fuzzy, append_to_file, read_file_by_id, list_recent_files,
     add_to_daily_journal, get_today_journal, smart_search,
     get_current_week_notes,
 )
+from wiki_client import (
+    list_wiki_pages, get_wiki_topic_names, find_wiki_page,
+    find_wiki_pages_by_keywords, save_wiki_page, append_to_wiki_page,
+    build_new_wiki_page, build_wiki_section,
+)
+from config import MAX_WIKI_UPDATES, MAX_WIKI_PAGES_CONTEXT, MAX_WIKI_CONTEXT_CHARS
 from cost_monitor import record_usage, get_current_cost, check_and_alert
 from security import get_security_status
 from timeutils import current_week_range_str
@@ -307,6 +313,11 @@ async def _cmd_start(chat_id: str):
         "`ghi nho [noi dung]` — Tao file moi (Claude tu dat ten)\n"
         "`ghi nho vao [ten]: [noi dung]` — Them vao file co san (fuzzy match)\n"
         "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)\n\n"
+        "*LENH WIKI (LLM Wiki):*\n"
+        "`wiki [noi dung]` — Ingest vao wiki (Claude tu to chuc theo topic)\n"
+        "`hoi wiki [cau hoi]` — Hoi truc tiep tu wiki\n"
+        "`xem wiki` — Liet ke tat ca wiki pages\n"
+        "`xem wiki [topic]` — Doc 1 wiki page\n\n"
         "*LENH XEM:*\n"
         "`xem nhat ky` — Doc nhat ky hom nay\n"
         "`xem [ten]` — Doc 1 file (fuzzy match)\n"
@@ -318,7 +329,7 @@ async def _cmd_start(chat_id: str):
         "`/test` — Kiem tra Drive\n"
         "`/security` — Cau hinh bao mat\n\n"
         "*HOI DAP:*\n"
-        "Cau hoi tu nhien — bot tu tim trong vault va tra loi"
+        "Cau hoi tu nhien — bot tim wiki + vault roi tra loi"
     ))
 
 
@@ -585,6 +596,169 @@ async def _cmd_tim(chat_id: str, keyword: str):
         await send_message(chat_id, f"Loi khi tim: {str(e)[:500]}", use_markdown=False)
 
 
+async def _cmd_wiki_ingest(chat_id: str, content: str):
+    """
+    wiki <nội dung> — Ingest raw content vào wiki layer.
+    Flow: Claude phân tích → identify topics → create/append wiki pages.
+    """
+    if not content:
+        await send_message(chat_id, "Cu phap: wiki <noi dung can luu vao wiki>", use_markdown=False)
+        return
+
+    await send_message(chat_id, "Dang phan tich va cap nhat wiki...", use_markdown=False)
+    try:
+        # 1. Lấy danh sách topics hiện có (lightweight, chỉ tên)
+        existing_topics = get_wiki_topic_names()
+
+        # 2. Claude phân tích → updates list
+        updates, tokens = extract_wiki_updates(content, existing_topics)
+        record_usage(tokens // 2, tokens // 2)
+
+        if not updates:
+            await send_message(
+                chat_id,
+                "Khong tim thay thong tin dang ke de luu vao wiki.\n"
+                "Thu nhap chi tiet hon: ten nguoi, du an, khai niem cu the.",
+                use_markdown=False,
+            )
+            return
+
+        # 3. Thực hiện từng update (tối đa MAX_WIKI_UPDATES)
+        results = []
+        for upd in updates[:MAX_WIKI_UPDATES]:
+            topic = upd.get("topic", "").strip()
+            topic_type = upd.get("type", "other")
+            action = upd.get("action", "create")
+            existing_topic_name = upd.get("existing_topic", "").strip()
+            content_to_add = upd.get("content_to_add", "").strip()
+
+            if not topic or not content_to_add:
+                continue
+
+            try:
+                if action == "update" and existing_topic_name:
+                    # Tìm page cũ theo tên topic existing
+                    page = find_wiki_page(existing_topic_name)
+                    if page:
+                        section = build_wiki_section(content_to_add)
+                        filename = append_to_wiki_page(page["id"], section)
+                        results.append(f"Cap nhat: {filename}")
+                    else:
+                        # Không tìm thấy → tạo mới
+                        page_content = build_new_wiki_page(topic, topic_type, content_to_add)
+                        filename = save_wiki_page(topic, page_content)
+                        results.append(f"Tao moi: {filename}")
+                else:
+                    # create
+                    page_content = build_new_wiki_page(topic, topic_type, content_to_add)
+                    filename = save_wiki_page(topic, page_content)
+                    results.append(f"Tao moi: {filename}")
+            except PermissionError as e:
+                results.append(f"Tu choi ({topic}): {str(e)[:100]}")
+            except Exception as e:
+                traceback.print_exc()
+                results.append(f"Loi ({topic}): {str(e)[:100]}")
+
+        if results:
+            await send_message(
+                chat_id,
+                "Wiki da cap nhat:\n" + "\n".join(f"- {r}" for r in results),
+                use_markdown=False,
+            )
+        else:
+            await send_message(chat_id, "Khong co thay doi nao duoc thuc hien.", use_markdown=False)
+
+    except Exception as e:
+        traceback.print_exc()
+        await send_message(chat_id, f"Loi khi ingest wiki: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_wiki_query(chat_id: str, question: str):
+    """
+    hỏi wiki <câu hỏi> — Query trực tiếp từ wiki layer.
+    Tìm wiki pages liên quan → Claude trả lời.
+    """
+    if not question:
+        await send_message(chat_id, "Cu phap: hoi wiki <cau hoi>", use_markdown=False)
+        return
+
+    await send_message(chat_id, "Dang tim trong wiki...", use_markdown=False)
+    try:
+        # Tách keywords từ câu hỏi (đơn giản: split words > 2 chars)
+        keywords = [w for w in question.lower().split() if len(w) > 2]
+        wiki_pages = find_wiki_pages_by_keywords(keywords, max_pages=MAX_WIKI_PAGES_CONTEXT)
+
+        if not wiki_pages:
+            await send_message(
+                chat_id,
+                "Khong tim thay trang wiki lien quan.\n"
+                "Hay ingest truoc bang lenh: wiki <noi dung>",
+                use_markdown=False,
+            )
+            return
+
+        reply, tokens = answer_from_wiki(question, wiki_pages, MAX_WIKI_CONTEXT_CHARS)
+        record_usage(tokens // 2, tokens // 2)
+        check_and_alert()
+
+        page_names = ", ".join(p["name"].replace(".md", "") for p in wiki_pages)
+        await send_message(
+            chat_id,
+            f"[Wiki: {page_names}]\n\n{reply}",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await send_message(chat_id, f"Loi khi query wiki: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_xem_wiki_list(chat_id: str):
+    """xem wiki — Liệt kê tất cả wiki pages."""
+    try:
+        pages = list_wiki_pages()
+        if not pages:
+            await send_message(
+                chat_id,
+                "Wiki chua co trang nao. Hay ingest bang lenh: wiki <noi dung>",
+                use_markdown=False,
+            )
+            return
+        lines = [f"Wiki ({len(pages)} trang):"]
+        for i, p in enumerate(pages, 1):
+            modified = p.get("modifiedTime", "")[:10]
+            topic = p["name"].replace(".md", "").replace("_", " ")
+            lines.append(f"{i}. {topic}  ({modified})")
+        await send_message(chat_id, "\n".join(lines), use_markdown=False)
+    except Exception as e:
+        traceback.print_exc()
+        await send_message(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_xem_wiki_page(chat_id: str, topic_query: str):
+    """xem wiki <topic> — Đọc nội dung 1 wiki page."""
+    if not topic_query:
+        await _cmd_xem_wiki_list(chat_id)
+        return
+    try:
+        page = find_wiki_page(topic_query)
+        if not page:
+            await send_message(
+                chat_id,
+                f"Khong tim thay wiki page cho '{topic_query}'.\n"
+                f"Xem danh sach: xem wiki",
+                use_markdown=False,
+            )
+            return
+        content = page["content"]
+        if len(content) > 3500:
+            content = content[:3500] + "\n\n[...] (da cat)"
+        topic_name = page["name"].replace(".md", "").replace("_", " ")
+        await send_message(chat_id, f"=== Wiki: {topic_name} ===\n\n{content}", use_markdown=False)
+    except Exception as e:
+        traceback.print_exc()
+        await send_message(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
+
+
 async def _cmd_tom_tat_tuan(chat_id: str):
     week_range = current_week_range_str()
     await send_message(chat_id, f"Dang doc ghi chu tuan nay ({week_range})...", use_markdown=False)
@@ -621,8 +795,24 @@ async def _handle_general_question(chat_id: str, text: str):
         intent, intent_tokens = extract_search_intent(text)
         record_usage(intent_tokens // 2, intent_tokens // 2)
 
-        notes_context = ""
-        # Step 2: Smart search nếu cần
+        context_parts = []
+
+        # Step 2: Tìm wiki pages liên quan (nếu needs_search)
+        if intent.get("needs_search") and intent.get("keywords"):
+            try:
+                wiki_pages = find_wiki_pages_by_keywords(
+                    intent["keywords"], max_pages=MAX_WIKI_PAGES_CONTEXT
+                )
+                if wiki_pages:
+                    wiki_block = "\n\n".join(
+                        f"[Wiki: {p['name'].replace('.md','')}]\n{p['content'][:MAX_WIKI_CONTEXT_CHARS]}"
+                        for p in wiki_pages
+                    )
+                    context_parts.append(wiki_block)
+            except Exception as e:
+                print(f"[bot] Wiki search error (non-fatal): {e}")
+
+        # Step 3: Smart search raw notes (nếu needs_search)
         if intent.get("needs_search") and intent.get("keywords"):
             try:
                 notes = smart_search(
@@ -630,22 +820,24 @@ async def _handle_general_question(chat_id: str, text: str):
                     days_back=intent.get("days_back", 0) or 0,
                 )
                 if notes:
-                    notes_context = "\n\n".join(
+                    notes_block = "\n\n".join(
                         [f"[{n['name']}]\n{n['content']}" for n in notes[:5]]
                     )
+                    context_parts.append(notes_block)
             except Exception as e:
                 print(f"[bot] Smart search error: {e}")
-                # Fallback: search keyword đầu tiên kiểu cũ
                 try:
                     fallback_notes = search_notes(intent["keywords"][0], max_results=2)
                     if fallback_notes:
-                        notes_context = "\n\n".join(
+                        context_parts.append("\n\n".join(
                             [f"[{n['name']}]\n{n['content']}" for n in fallback_notes]
-                        )
+                        ))
                 except Exception:
                     pass
 
-        # Step 3: Hỏi Claude
+        notes_context = "\n\n".join(context_parts)
+
+        # Step 4: Hỏi Claude
         reply, tokens = ask_claude(text, notes_context)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
@@ -664,9 +856,15 @@ PREFIX_GHI_NHO_VAO = ["ghi nhớ vào ", "ghi nho vao "]
 PREFIX_GHI_NHO     = ["ghi nhớ ", "ghi nho "]
 PREFIX_NHAT_KY     = ["nhật ký ", "nhat ky "]
 PREFIX_TIM         = ["tìm ", "tim "]
-PREFIX_XEM         = ["xem ", "xem "]   # cần check riêng "xem nhật ký" trước
+PREFIX_XEM         = ["xem ", "xem "]   # cần check riêng "xem nhật ký" và "xem wiki" trước
 EXACT_XEM_NHAT_KY  = {"xem nhật ký", "xem nhat ky"}
 EXACT_LIET_KE      = {"liệt kê", "liet ke"}
+
+# Wiki commands
+PREFIX_WIKI        = ["wiki "]
+PREFIX_HOI_WIKI    = ["hỏi wiki ", "hoi wiki "]
+EXACT_XEM_WIKI     = {"xem wiki"}
+PREFIX_XEM_WIKI    = ["xem wiki "]
 
 
 async def handle_message(chat_id: str, text: str):
@@ -697,7 +895,30 @@ async def handle_message(chat_id: str, text: str):
     if low in EXACT_LIET_KE:
         await _cmd_liet_ke(chat_id); return
 
-    # ── BƯỚC 4: Lệnh prefix (theo thứ tự ưu tiên) ────────────────────────────
+    # ── BƯỚC 4: Lệnh wiki (PHẢI check trước "xem" để tránh conflict) ─────────
+    # hỏi wiki (check trước "wiki " để tránh overlap)
+    matched = _starts_with_any(text, PREFIX_HOI_WIKI)
+    if matched:
+        question = _strip_prefix(text, matched)
+        await _cmd_wiki_query(chat_id, question); return
+
+    # xem wiki <topic> (prefix — check trước exact "xem wiki")
+    matched = _starts_with_any(text, PREFIX_XEM_WIKI)
+    if matched:
+        topic_query = _strip_prefix(text, matched)
+        await _cmd_xem_wiki_page(chat_id, topic_query); return
+
+    # xem wiki (exact — list all pages)
+    if low in EXACT_XEM_WIKI:
+        await _cmd_xem_wiki_list(chat_id); return
+
+    # wiki <nội dung> (ingest)
+    matched = _starts_with_any(text, PREFIX_WIKI)
+    if matched:
+        content = _strip_prefix(text, matched)
+        await _cmd_wiki_ingest(chat_id, content); return
+
+    # ── BƯỚC 5: Lệnh prefix thông thường (theo thứ tự ưu tiên) ──────────────
     # ghi nhớ vào (PHẢI check trước "ghi nhớ")
     matched = _starts_with_any(text, PREFIX_GHI_NHO_VAO)
     if matched:
@@ -732,7 +953,7 @@ async def handle_message(chat_id: str, text: str):
     if ("tóm tắt" in low or "tom tat" in low) and ("tuần" in low or "tuan" in low):
         await _cmd_tom_tat_tuan(chat_id); return
 
-    # ── BƯỚC 5: Câu hỏi tự nhiên → smart search + Claude ─────────────────────
+    # ── BƯỚC 6: Câu hỏi tự nhiên → wiki + smart search + Claude ─────────────
     await _handle_general_question(chat_id, text)
 
 
