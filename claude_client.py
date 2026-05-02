@@ -89,6 +89,81 @@ Quy tắc:
 CHỈ trả về JSON thuần, KHÔNG markdown, KHÔNG giải thích, KHÔNG text thừa."""
 
 
+# ── Wiki: TLDR generation ─────────────────────────────────────────────────────
+
+_WIKI_TLDR_PROMPT = """Viết 1 câu mô tả ngắn gọn (tối đa 15 từ tiếng Việt) về topic sau để dùng làm wiki index entry.
+Chỉ trả về 1 câu duy nhất, không giải thích, không dấu chấm câu cuối.
+
+Topic: {topic}
+Nội dung: {content}"""
+
+
+def generate_wiki_tldr(topic: str, content: str) -> tuple[str, int]:
+    """
+    Generate 1-sentence TLDR cho wiki page mới.
+    Gọi khi CREATE page (không gọi khi append).
+    Returns (tldr, total_tokens).
+    """
+    prompt = _WIKI_TLDR_PROMPT.format(topic=topic, content=content[:500])
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=60,
+        system="Bạn là module tóm tắt, chỉ trả về 1 câu ngắn.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    tldr = response.content[0].text.strip()
+    total_tokens = response.usage.input_tokens + response.usage.output_tokens
+    return tldr, total_tokens
+
+
+# ── Wiki: Index-based page selection ──────────────────────────────────────────
+
+_WIKI_SELECT_PROMPT = """Đây là index của wiki knowledge base:
+
+{index_content}
+
+Câu hỏi: {question}
+
+Chọn tối đa 2 trang wiki liên quan nhất để trả lời câu hỏi trên.
+Trả về JSON (CHỈ JSON thuần, KHÔNG markdown):
+{{"pages": ["filename1.md", "filename2.md"]}}
+
+Nếu không có trang nào liên quan: {{"pages": []}}"""
+
+
+def select_wiki_pages_from_index(question: str, index_content: str) -> tuple[list[str], int]:
+    """
+    LLM đọc index và chọn filenames liên quan đến câu hỏi.
+    Implementation detail của retrieve_wiki_pages() — không gọi trực tiếp từ main.py.
+    Returns (list of filenames, total_tokens).
+    """
+    prompt = _WIKI_SELECT_PROMPT.format(
+        index_content=index_content[:1500],
+        question=question[:300],
+    )
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=100,
+        system="Bạn là module chọn trang wiki, chỉ trả về JSON thuần.",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    text = response.content[0].text.strip()
+    total_tokens = response.usage.input_tokens + response.usage.output_tokens
+
+    json_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if not json_match:
+        return [], total_tokens
+
+    try:
+        result = json.loads(json_match.group(0))
+        pages = result.get("pages", [])
+        if not isinstance(pages, list):
+            pages = []
+        return pages, total_tokens
+    except (json.JSONDecodeError, ValueError):
+        return [], total_tokens
+
+
 # ── Wiki: Ingest ──────────────────────────────────────────────────────────────
 
 _WIKI_INGEST_PROMPT = """Bạn là Wiki Manager cho knowledge base cá nhân.

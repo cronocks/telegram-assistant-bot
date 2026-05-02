@@ -3,8 +3,9 @@ wiki_client.py — LLM Wiki layer: Drive operations cho wiki pages.
 
 Cấu trúc thư mục:
   Claude-Notes/
-  └── Wiki/           ← WIKI_SUBFOLDER (auto-created)
-      └── <slug>.md   ← mỗi file = 1 topic
+  └── Wiki/              ← WIKI_SUBFOLDER (auto-created)
+      ├── _index.md      ← index tất cả topics (TLDR 1 câu mỗi trang)
+      └── <slug>.md      ← mỗi file = 1 topic
 
 Mỗi wiki page có frontmatter:
   ---
@@ -13,6 +14,10 @@ Mỗi wiki page có frontmatter:
   type: person|project|concept|event|place|other
   updated: YYYY-MM-DD
   ---
+
+Retrieval interface:
+  retrieve_wiki_pages(question, keywords) — điểm duy nhất main.py gọi.
+  Để migrate sang vector DB: chỉ cần thay phần bên trong hàm này.
 """
 import re
 from googleapiclient.http import MediaInMemoryUpload
@@ -22,10 +27,13 @@ from security import (
     validate_folder, check_rate_limit, validate_file_creation,
     audit_log, register_trusted_folder,
 )
-from config import WIKI_SUBFOLDER
+from config import WIKI_SUBFOLDER, MAX_WIKI_PAGES_CONTEXT, MAX_WIKI_CONTEXT_CHARS
 from timeutils import today_str, time_str
 
 _cached_wiki_folder_id: str = ""
+
+INDEX_FILENAME = "_index.md"
+INDEX_HEADER   = "# Wiki Index\n\n| Topic | File | Type | TLDR |\n|-------|------|------|------|\n"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -70,11 +78,139 @@ def get_wiki_folder_id() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# INDEX — _index.md
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _get_or_create_index() -> dict:
+    """Get hoặc create _index.md trong Wiki folder. Trả về {id, content}."""
+    wiki_folder_id = get_wiki_folder_id()
+    validate_folder(wiki_folder_id)
+
+    service = _get_service()
+    safe_name = INDEX_FILENAME.replace("'", "\\'")
+    query = (
+        f"name='{safe_name}' "
+        f"and '{wiki_folder_id}' in parents "
+        f"and trashed=false"
+    )
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+
+    if files:
+        content = _read_file(service, files[0]["id"])
+        return {"id": files[0]["id"], "content": content}
+
+    # Tạo mới
+    media = MediaInMemoryUpload(INDEX_HEADER.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
+    file_meta = {"name": INDEX_FILENAME, "parents": [wiki_folder_id]}
+    file = service.files().create(body=file_meta, media_body=media, fields="id").execute()
+    audit_log("wiki_index_created", file_id=file.get("id"), filename=INDEX_FILENAME)
+    return {"id": file.get("id"), "content": INDEX_HEADER}
+
+
+def read_wiki_index() -> dict:
+    """Đọc _index.md. Trả về {id, content}."""
+    return _get_or_create_index()
+
+
+def add_to_wiki_index(topic: str, slug: str, topic_type: str, tldr: str):
+    """
+    Append 1 row vào bảng index cho topic mới.
+    Bỏ qua nếu slug đã tồn tại trong index (tránh duplicate).
+    """
+    index = _get_or_create_index()
+
+    if f"{slug}.md" in index["content"]:
+        return  # Đã có, không thêm duplicate
+
+    tldr_clean = tldr.replace("|", "—").replace("\n", " ").strip()[:120]
+    new_row = f"| {topic} | {slug}.md | {topic_type} | {tldr_clean} |\n"
+
+    updated = index["content"]
+    if not updated.endswith("\n"):
+        updated += "\n"
+    updated += new_row
+
+    service = _get_service()
+    media = MediaInMemoryUpload(updated.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
+    service.files().update(fileId=index["id"], media_body=media).execute()
+    audit_log("wiki_index_updated", file_id=index["id"], details=f"added={slug}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RETRIEVAL INTERFACE — điểm duy nhất main.py gọi để tìm wiki pages
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def retrieve_wiki_pages(question: str, keywords: list[str]) -> list[dict]:
+    """
+    Single retrieval interface — swap implementation tại đây khi migrate sang vector DB.
+
+    Hiện tại (text index):
+      1. Đọc _index.md (1 Drive call)
+      2. LLM chọn pages liên quan từ index (1 LLM call, ~350 tokens)
+      3. Đọc pages được chọn từ Drive (1-2 Drive calls)
+
+    Tương lai (vector DB):
+      1. embed(question) → vector_search() → top-k pages
+      (main.py không thay đổi dòng nào)
+
+    Returns: [{id, name, content}]
+    """
+    from claude_client import select_wiki_pages_from_index
+    from cost_monitor import record_usage
+
+    # Stage 1: đọc index
+    try:
+        index = read_wiki_index()
+        index_content = index["content"]
+    except Exception as e:
+        print(f"[wiki] retrieve: khong doc duoc index: {e}")
+        return []
+
+    if "| Topic |" not in index_content:
+        return []  # Index chưa có data
+
+    # Stage 2: LLM chọn page filenames từ index
+    try:
+        selected_files, sel_tokens = select_wiki_pages_from_index(question, index_content)
+        record_usage(sel_tokens // 2, sel_tokens // 2)
+    except Exception as e:
+        print(f"[wiki] retrieve: selection error: {e}")
+        return []
+
+    if not selected_files:
+        return []
+
+    # Stage 3: đọc pages được chọn từ Drive
+    pages = list_wiki_pages()
+    pages_by_name = {p["name"]: p for p in pages}
+    service = _get_service()
+
+    results = []
+    for filename in selected_files[:MAX_WIKI_PAGES_CONTEXT]:
+        page_meta = pages_by_name.get(filename)
+        if not page_meta:
+            continue
+        try:
+            content = _read_file(service, page_meta["id"])
+            results.append({
+                "id": page_meta["id"],
+                "name": page_meta["name"],
+                "content": content[:MAX_WIKI_CONTEXT_CHARS],
+            })
+        except Exception as e:
+            print(f"[wiki] retrieve: khong doc duoc {filename}: {e}")
+
+    audit_log("wiki_retrieve", details=f"selected={selected_files}, returned={len(results)}")
+    return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # LIST / FIND
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def list_wiki_pages() -> list[dict]:
-    """Liệt kê tất cả wiki pages. Trả về [{id, name, modifiedTime}]."""
+    """Liệt kê tất cả wiki pages (bỏ qua _index.md). Trả về [{id, name, modifiedTime}]."""
     wiki_folder_id = get_wiki_folder_id()
     validate_folder(wiki_folder_id)
 
@@ -85,7 +221,7 @@ def list_wiki_pages() -> list[dict]:
         orderBy="modifiedTime desc",
         pageSize=100,
     ).execute()
-    pages = results.get("files", [])
+    pages = [p for p in results.get("files", []) if p["name"] != INDEX_FILENAME]
     audit_log("wiki_list", details=f"count={len(pages)}")
     return pages
 
@@ -105,17 +241,15 @@ def find_wiki_page(topic: str) -> dict | None:
     if not pages:
         return None
 
-    slug = _topic_to_slug(topic)
+    slug = topic_to_slug(topic)
     topic_lower = topic.lower().strip()
 
     matched = None
-    # 1. Exact slug match
     for p in pages:
         if p["name"].lower() == f"{slug}.md":
             matched = p
             break
 
-    # 2. Partial match trên slug (bỏ .md, thay _ thành space)
     if not matched:
         for p in pages:
             page_topic = p["name"].lower().replace(".md", "").replace("_", " ")
@@ -132,45 +266,6 @@ def find_wiki_page(topic: str) -> dict | None:
     return {"id": matched["id"], "name": matched["name"], "content": content}
 
 
-def find_wiki_pages_by_keywords(keywords: list[str], max_pages: int = 2) -> list[dict]:
-    """
-    Tìm các wiki pages liên quan theo danh sách keywords (match tên topic).
-    Dùng cho QA context — trả về [{id, name, content}].
-    Giới hạn max_pages để kiểm soát token.
-    """
-    if not keywords:
-        return []
-
-    pages = list_wiki_pages()
-    if not pages:
-        return []
-
-    scored: list[tuple[int, dict]] = []
-    for p in pages:
-        page_topic = p["name"].lower().replace(".md", "").replace("_", " ")
-        score = sum(1 for kw in keywords if kw.lower() in page_topic)
-        if score > 0:
-            scored.append((score, p))
-
-    scored.sort(key=lambda x: x[0], reverse=True)
-    top = [p for _, p in scored[:max_pages]]
-
-    if not top:
-        return []
-
-    service = _get_service()
-    results = []
-    for p in top:
-        try:
-            content = _read_file(service, p["id"])
-            results.append({"id": p["id"], "name": p["name"], "content": content})
-        except Exception as e:
-            print(f"[wiki] Skip page {p['id']}: {e}")
-
-    audit_log("wiki_keyword_search", details=f"keywords={keywords}, found={len(results)}")
-    return results
-
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # SAVE / APPEND
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -185,7 +280,7 @@ def save_wiki_page(topic: str, content: str, file_id: str = None) -> str:
     validate_folder(wiki_folder_id)
 
     service = _get_service()
-    filename = f"{_topic_to_slug(topic)}.md"
+    filename = f"{topic_to_slug(topic)}.md"
     media = MediaInMemoryUpload(content.encode("utf-8"), mimetype=MIME_MARKDOWN, resumable=False)
 
     if file_id:
@@ -257,10 +352,10 @@ def build_wiki_section(content_to_add: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# INTERNAL
+# UTILS
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _topic_to_slug(topic: str) -> str:
+def topic_to_slug(topic: str) -> str:
     """Chuyển tên topic thành slug an toàn cho tên file."""
     slug = topic.lower().strip()
     slug = re.sub(r'[<>:"/\\|?*\s\x00-\x1f]+', '_', slug)

@@ -25,7 +25,7 @@ from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     PENDING_CHOICE_TIMEOUT_SEC, FUZZY_SHOW_LIMIT,
 )
-from claude_client import ask_claude, summarize_notes, extract_search_intent, extract_wiki_updates, answer_from_wiki
+from claude_client import ask_claude, summarize_notes, extract_search_intent, extract_wiki_updates, answer_from_wiki, generate_wiki_tldr
 from drive_client import (
     save_note, search_notes, get_recent_notes, test_drive_connection,
     find_files_fuzzy, append_to_file, read_file_by_id, list_recent_files,
@@ -34,10 +34,11 @@ from drive_client import (
 )
 from wiki_client import (
     list_wiki_pages, get_wiki_topic_names, find_wiki_page,
-    find_wiki_pages_by_keywords, save_wiki_page, append_to_wiki_page,
+    save_wiki_page, append_to_wiki_page,
     build_new_wiki_page, build_wiki_section,
+    add_to_wiki_index, retrieve_wiki_pages,
 )
-from config import MAX_WIKI_UPDATES, MAX_WIKI_PAGES_CONTEXT, MAX_WIKI_CONTEXT_CHARS
+from config import MAX_WIKI_UPDATES
 from cost_monitor import record_usage, get_current_cost, check_and_alert
 from security import get_security_status
 from timeutils import current_week_range_str
@@ -596,10 +597,21 @@ async def _cmd_tim(chat_id: str, keyword: str):
         await send_message(chat_id, f"Loi khi tim: {str(e)[:500]}", use_markdown=False)
 
 
+def _update_index_after_create(topic: str, filename: str, topic_type: str, content_to_add: str):
+    """Generate TLDR và cập nhật _index.md sau khi tạo wiki page mới. Non-fatal nếu lỗi."""
+    try:
+        tldr, tldr_tokens = generate_wiki_tldr(topic, content_to_add)
+        record_usage(tldr_tokens // 2, tldr_tokens // 2)
+        slug = filename.replace(".md", "")
+        add_to_wiki_index(topic, slug, topic_type, tldr)
+    except Exception as e:
+        print(f"[bot] Wiki index update (non-fatal): {e}")
+
+
 async def _cmd_wiki_ingest(chat_id: str, content: str):
     """
     wiki <nội dung> — Ingest raw content vào wiki layer.
-    Flow: Claude phân tích → identify topics → create/append wiki pages.
+    Flow: Claude phân tích → identify topics → create/append wiki pages + update index.
     """
     if not content:
         await send_message(chat_id, "Cu phap: wiki <noi dung can luu vao wiki>", use_markdown=False)
@@ -637,21 +649,22 @@ async def _cmd_wiki_ingest(chat_id: str, content: str):
 
             try:
                 if action == "update" and existing_topic_name:
-                    # Tìm page cũ theo tên topic existing
                     page = find_wiki_page(existing_topic_name)
                     if page:
                         section = build_wiki_section(content_to_add)
                         filename = append_to_wiki_page(page["id"], section)
                         results.append(f"Cap nhat: {filename}")
                     else:
-                        # Không tìm thấy → tạo mới
+                        # Không tìm thấy → tạo mới + update index
                         page_content = build_new_wiki_page(topic, topic_type, content_to_add)
                         filename = save_wiki_page(topic, page_content)
+                        _update_index_after_create(topic, filename, topic_type, content_to_add)
                         results.append(f"Tao moi: {filename}")
                 else:
-                    # create
+                    # create + update index
                     page_content = build_new_wiki_page(topic, topic_type, content_to_add)
                     filename = save_wiki_page(topic, page_content)
+                    _update_index_after_create(topic, filename, topic_type, content_to_add)
                     results.append(f"Tao moi: {filename}")
             except PermissionError as e:
                 results.append(f"Tu choi ({topic}): {str(e)[:100]}")
@@ -684,9 +697,8 @@ async def _cmd_wiki_query(chat_id: str, question: str):
 
     await send_message(chat_id, "Dang tim trong wiki...", use_markdown=False)
     try:
-        # Tách keywords từ câu hỏi (đơn giản: split words > 2 chars)
         keywords = [w for w in question.lower().split() if len(w) > 2]
-        wiki_pages = find_wiki_pages_by_keywords(keywords, max_pages=MAX_WIKI_PAGES_CONTEXT)
+        wiki_pages = retrieve_wiki_pages(question, keywords)
 
         if not wiki_pages:
             await send_message(
@@ -697,7 +709,7 @@ async def _cmd_wiki_query(chat_id: str, question: str):
             )
             return
 
-        reply, tokens = answer_from_wiki(question, wiki_pages, MAX_WIKI_CONTEXT_CHARS)
+        reply, tokens = answer_from_wiki(question, wiki_pages)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
 
@@ -797,15 +809,13 @@ async def _handle_general_question(chat_id: str, text: str):
 
         context_parts = []
 
-        # Step 2: Tìm wiki pages liên quan (nếu needs_search)
-        if intent.get("needs_search") and intent.get("keywords"):
+        # Step 2: Tìm wiki pages liên quan qua index (nếu needs_search)
+        if intent.get("needs_search"):
             try:
-                wiki_pages = find_wiki_pages_by_keywords(
-                    intent["keywords"], max_pages=MAX_WIKI_PAGES_CONTEXT
-                )
+                wiki_pages = retrieve_wiki_pages(text, intent.get("keywords", []))
                 if wiki_pages:
                     wiki_block = "\n\n".join(
-                        f"[Wiki: {p['name'].replace('.md','')}]\n{p['content'][:MAX_WIKI_CONTEXT_CHARS]}"
+                        f"[Wiki: {p['name'].replace('.md', '')}]\n{p['content']}"
                         for p in wiki_pages
                     )
                     context_parts.append(wiki_block)
