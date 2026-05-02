@@ -20,3 +20,6 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+
+# Claude Code
+.claude/
