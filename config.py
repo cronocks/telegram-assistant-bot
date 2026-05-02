@@ -44,6 +44,6 @@ FUZZY_SHOW_LIMIT   = 10           # hiện tối đa N kết quả khi nhiều m
 
 # ── Wiki ──────────────────────────────────────────────────────────────────────
 WIKI_SUBFOLDER          = os.getenv("WIKI_SUBFOLDER", "Wiki")
-MAX_WIKI_UPDATES        = 3       # tối đa N topics mỗi lần ingest
-MAX_WIKI_PAGES_CONTEXT  = 2       # tối đa N wiki pages đưa vào context QA
-MAX_WIKI_CONTEXT_CHARS  = 400     # cắt mỗi wiki page ở N chars khi làm context
+MAX_WIKI_UPDATES        = int(os.getenv("MAX_WIKI_UPDATES", "3"))
+MAX_WIKI_PAGES_CONTEXT  = int(os.getenv("MAX_WIKI_PAGES_CONTEXT", "2"))
+MAX_WIKI_CONTEXT_CHARS  = int(os.getenv("MAX_WIKI_CONTEXT_CHARS", "400"))
