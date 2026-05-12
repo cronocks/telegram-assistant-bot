@@ -105,3 +105,24 @@ bạn muốn tôi lập kế hoạch riêng cho phần đó không?"
 ❌ Sai:
 [Âm thầm sửa X trong lúc thực hiện task đã duyệt]
 ```
+
+---
+
+## Quy ước viết code
+
+**Tất cả code, comment, docstring viết bằng tiếng Anh.**
+
+Áp dụng cho:
+- Tên biến, hàm, class, file, module
+- Inline comment (`# ...`)
+- Docstring (`"""..."""`)
+- Log messages (`print`, `logger.info`, error message trong exception)
+- Commit messages
+
+Ngoại lệ — VẪN tiếng Việt:
+- String hiển thị cho user (tin nhắn Telegram, Discord, web UI reply)
+- Constants/identifiers map trực tiếp với user input tiếng Việt (vd `PREFIX_GHI_NHO_VAO`, `EXACT_XEM_NHAT_KY`) — giữ nguyên để trace dễ về intent
+- Tài liệu tiếng Việt (README, ADR, design notes)
+- CLAUDE.md và các file workflow
+
+Khi sửa file cũ có comment tiếng Việt: dịch sang tiếng Anh trong cùng lần edit (không tách 2 pass).

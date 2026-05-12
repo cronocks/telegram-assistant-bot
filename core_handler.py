@@ -1,0 +1,1022 @@
+"""core_handler.py — Channel-agnostic message dispatcher.
+
+The single public entry point is `handle_message(msg, deps)`. It assumes a
+caller (a channel adapter) has already authorized the inbound message and
+normalized it to a ChannelMessage. All side effects (LLM calls, storage
+access, replies) go through `deps`, which holds the active adapters.
+
+User-facing strings remain Vietnamese; everything else is English.
+"""
+import re
+import time
+import traceback
+from dataclasses import dataclass
+
+from config import (
+    FUZZY_SHOW_LIMIT,
+    MAX_WIKI_UPDATES,
+    PENDING_CHOICE_TIMEOUT_SEC,
+)
+from cost_monitor import check_and_alert, get_current_cost, record_usage
+from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, WikiStore
+from security import get_security_status
+from timeutils import current_week_range_str, time_str, today_str
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CoreDeps — dependency bundle injected by main.py
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class CoreDeps:
+    """Bundle of adapter instances the core handler depends on."""
+    llm: LLMClient
+    notes: NoteStore
+    wiki: WikiStore
+    channel: ChannelAdapter
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pending state
+# ═══════════════════════════════════════════════════════════════════════════════
+# State per chat_id, used to resolve follow-up replies (choice 1/2 or yes/no).
+# Shape:
+#   {
+#     "type": "fuzzy_append" | "fuzzy_view" | "create_new_confirm",
+#     "expires_at": float (unix ts),
+#     "data": {...}  # depends on type
+#   }
+
+_pending: dict[str, dict] = {}
+
+
+def _set_pending(chat_id: str, ptype: str, data: dict) -> None:
+    _pending[chat_id] = {
+        "type": ptype,
+        "expires_at": time.time() + PENDING_CHOICE_TIMEOUT_SEC,
+        "data": data,
+    }
+
+
+def _get_pending(chat_id: str) -> dict | None:
+    p = _pending.get(chat_id)
+    if not p:
+        return None
+    if time.time() > p["expires_at"]:
+        _pending.pop(chat_id, None)
+        return None
+    return p
+
+
+def _clear_pending(chat_id: str) -> None:
+    _pending.pop(chat_id, None)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Parsing helpers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _norm(text: str) -> str:
+    """Lowercase + strip. Diacritics are preserved (Vietnamese)."""
+    return text.strip().lower()
+
+
+def _starts_with_any(text: str, prefixes: list[str]) -> str | None:
+    """Return the matching prefix or None."""
+    low = _norm(text)
+    for p in prefixes:
+        if low.startswith(p.lower()):
+            return p
+    return None
+
+
+def _strip_prefix(text: str, prefix: str) -> str:
+    """Strip prefix (case-insensitive) from the start; return the remainder."""
+    if text.lower().startswith(prefix.lower()):
+        return text[len(prefix):].strip()
+    return text.strip()
+
+
+def _parse_choice_number(text: str) -> int | None:
+    """Parse a single number ('1', '2', '10') from a short reply; else None."""
+    cleaned = text.strip().rstrip(".").rstrip(")")
+    if cleaned.isdigit():
+        n = int(cleaned)
+        if 1 <= n <= 99:
+            return n
+    return None
+
+
+def _parse_yes_no(text: str) -> bool | None:
+    """Parse Vietnamese yes/no markers; returns True/False/None."""
+    low = _norm(text)
+    yes_words = {
+        "yes", "y", "co", "có", "ok",
+        "đồng ý", "dong y",
+        "tao moi", "tạo mới", "tạo", "tao",
+    }
+    no_words = {"no", "n", "khong", "không", "huy", "hủy", "thoi", "thôi"}
+    if low in yes_words:
+        return True
+    if low in no_words:
+        return False
+    return None
+
+
+def _sanitize_filename(name: str) -> str:
+    """Strip filesystem-unsafe characters; truncate to 80 chars."""
+    name = name.strip()
+    # Drop control / FS-illegal characters; keep Vietnamese letters, digits, spaces, dashes.
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '', name)
+    name = name.strip()
+    return name[:80] if name else "untitled"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Pending state resolvers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _resolve_fuzzy_append(
+    chat_id: str, pending: dict, text: str, deps: CoreDeps,
+) -> bool:
+    """Handle a reply to a pending fuzzy_append prompt.
+
+    Returns True if the message was consumed; False to let it fall through to
+    normal command handling.
+    """
+    data = pending["data"]
+    matches = data["matches"]
+    content = data["content"]
+
+    n = _parse_choice_number(text)
+    if n is not None:
+        if 1 <= n <= len(matches):
+            chosen = matches[n - 1]
+            _clear_pending(chat_id)
+            await deps.channel.send(
+                chat_id, f"Dang them vao file: {chosen['name']}...", use_markdown=False,
+            )
+            try:
+                entry = f"\n## {time_str()}\n{content}\n"
+                filename = deps.notes.append_to_file(chosen["id"], entry)
+                await deps.channel.send(
+                    chat_id, f"Da them vao: {filename}", use_markdown=False,
+                )
+            except Exception as e:
+                traceback.print_exc()
+                await deps.channel.send(
+                    chat_id, f"Loi khi them: {str(e)[:400]}", use_markdown=False,
+                )
+            return True
+        await deps.channel.send(
+            chat_id, f"So khong hop le. Hay chon tu 1 den {len(matches)}.",
+            use_markdown=False,
+        )
+        return True
+
+    yn = _parse_yes_no(text)
+    if yn is False:
+        _clear_pending(chat_id)
+        await deps.channel.send(chat_id, "Da huy.", use_markdown=False)
+        return True
+
+    return False
+
+
+async def _resolve_fuzzy_view(
+    chat_id: str, pending: dict, text: str, deps: CoreDeps,
+) -> bool:
+    """Handle a reply to a pending fuzzy_view prompt."""
+    matches = pending["data"]["matches"]
+
+    n = _parse_choice_number(text)
+    if n is not None:
+        if 1 <= n <= len(matches):
+            chosen = matches[n - 1]
+            _clear_pending(chat_id)
+            try:
+                file_data = deps.notes.read_file_by_id(chosen["id"])
+                content = file_data["content"]
+                # Telegram limit is ~4096 chars; cut conservatively.
+                if len(content) > 3500:
+                    content = content[:3500] + "\n\n[...] (file qua dai, da cat)"
+                await deps.channel.send(
+                    chat_id,
+                    f"=== {file_data['name']} ===\n\n{content}",
+                    use_markdown=False,
+                )
+            except Exception as e:
+                traceback.print_exc()
+                await deps.channel.send(
+                    chat_id, f"Loi khi doc: {str(e)[:400]}", use_markdown=False,
+                )
+            return True
+        await deps.channel.send(
+            chat_id, f"So khong hop le. Hay chon tu 1 den {len(matches)}.",
+            use_markdown=False,
+        )
+        return True
+
+    yn = _parse_yes_no(text)
+    if yn is False:
+        _clear_pending(chat_id)
+        await deps.channel.send(chat_id, "Da huy.", use_markdown=False)
+        return True
+
+    return False
+
+
+async def _resolve_create_new_confirm(
+    chat_id: str, pending: dict, text: str, deps: CoreDeps,
+) -> bool:
+    """Handle yes/no confirmation for creating a new file after fuzzy miss."""
+    data = pending["data"]
+    yn = _parse_yes_no(text)
+
+    if yn is True:
+        _clear_pending(chat_id)
+        filename = data["filename"]
+        content = data["content"]
+        await deps.channel.send(
+            chat_id, f"Dang tao file: {filename}...", use_markdown=False,
+        )
+        try:
+            saved_name = deps.notes.save_note(
+                title=filename,
+                content=content,
+                custom_filename=_sanitize_filename(filename),
+            )
+            await deps.channel.send(
+                chat_id, f"Da tao: {saved_name}", use_markdown=False,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            await deps.channel.send(
+                chat_id, f"Loi khi tao: {str(e)[:400]}", use_markdown=False,
+            )
+        return True
+
+    if yn is False:
+        _clear_pending(chat_id)
+        await deps.channel.send(chat_id, "Da huy.", use_markdown=False)
+        return True
+
+    return False
+
+
+async def _try_resolve_pending(
+    chat_id: str, text: str, deps: CoreDeps,
+) -> bool:
+    """If a pending state exists, attempt to resolve it. Returns True if handled."""
+    pending = _get_pending(chat_id)
+    if not pending:
+        return False
+
+    ptype = pending["type"]
+    if ptype == "fuzzy_append":
+        return await _resolve_fuzzy_append(chat_id, pending, text, deps)
+    if ptype == "fuzzy_view":
+        return await _resolve_fuzzy_view(chat_id, pending, text, deps)
+    if ptype == "create_new_confirm":
+        return await _resolve_create_new_confirm(chat_id, pending, text, deps)
+
+    return False
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Command handlers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
+    await deps.channel.send(chat_id, (
+        "Xin chao! Toi la Claude Bot.\n\n"
+        "*LENH GHI CHU:*\n"
+        "`ghi nho [noi dung]` — Tao file moi (Claude tu dat ten)\n"
+        "`ghi nho vao [ten]: [noi dung]` — Them vao file co san (fuzzy match)\n"
+        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)\n\n"
+        "*LENH WIKI (LLM Wiki):*\n"
+        "`wiki [noi dung]` — Ingest vao wiki (Claude tu to chuc theo topic)\n"
+        "`hoi wiki [cau hoi]` — Hoi truc tiep tu wiki\n"
+        "`xem wiki` — Liet ke tat ca wiki pages\n"
+        "`xem wiki [topic]` — Doc 1 wiki page\n\n"
+        "*LENH XEM:*\n"
+        "`xem nhat ky` — Doc nhat ky hom nay\n"
+        "`xem [ten]` — Doc 1 file (fuzzy match)\n"
+        "`liet ke` — Liet ke 10 file gan nhat\n"
+        "`tim [tu khoa]` — Tim trong noi dung file\n"
+        "`tom tat tuan nay` — Tom tat ghi chu 7 ngay\n\n"
+        "*LENH HE THONG:*\n"
+        "`/cost` — Chi phi thang\n"
+        "`/test` — Kiem tra Drive\n"
+        "`/security` — Cau hinh bao mat\n\n"
+        "*HOI DAP:*\n"
+        "Cau hoi tu nhien — bot tim wiki + vault roi tra loi"
+    ))
+
+
+async def _cmd_cost(chat_id: str, deps: CoreDeps) -> None:
+    info = get_current_cost()
+    bar_filled = int(info["percent"] / 10)
+    bar = "█" * bar_filled + "░" * (10 - bar_filled)
+    await deps.channel.send(chat_id, (
+        f"Chi phi thang {info['month']}\n\n"
+        f"`{bar}` {info['percent']}%\n"
+        f"Da dung: `${info['cost_usd']}` / `$10.00`\n"
+        f"Input tokens: `{info.get('input_tokens', 0):,}`\n"
+        f"Output tokens: `{info.get('output_tokens', 0):,}`"
+    ))
+
+
+async def _cmd_test(chat_id: str, deps: CoreDeps) -> None:
+    await deps.channel.send(chat_id, "Dang kiem tra Drive...")
+    try:
+        result = deps.notes.test_connection()
+        await deps.channel.send(
+            chat_id,
+            f"OK Drive\nFolder: {result.get('name')}\nID: {result.get('id')}",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Drive Error: {str(e)[:500]}", use_markdown=False,
+        )
+
+
+async def _cmd_security(chat_id: str, deps: CoreDeps) -> None:
+    try:
+        s = get_security_status()
+        msg = (
+            f"Cau hinh bao mat:\n\n"
+            f"Scope: {s['scope']}\n"
+            f"Folder ID: {s.get('configured_folder_id', 'N/A')}\n"
+            f"Trusted folders: {s.get('trusted_folders_count', 0)}\n"
+            f"Owner email: {s['owner_email']}\n"
+            f"Transfer ownership: {s['ownership_transfer_enabled']}\n"
+            f"Rate limit: {s['rate_limit_used']} files/hour\n"
+            f"Allowed extensions: {s['allowed_extensions']}\n"
+            f"Allowed mimetypes: {s['allowed_mimetypes']}"
+        )
+        await deps.channel.send(chat_id, msg, use_markdown=False)
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+async def _cmd_ghi_nho(chat_id: str, content: str, deps: CoreDeps) -> None:
+    """ghi nhớ <content> → create a new file with a Claude-generated title."""
+    if not content:
+        await deps.channel.send(chat_id, "Vui long nhap noi dung can ghi nho.")
+        return
+    await deps.channel.send(chat_id, "Dang luu...")
+    try:
+        title, tokens = deps.llm.ask(
+            f"Tao tieu de ngan (toi da 6 tu) cho ghi chu sau, chi tra ve tieu de: {content}"
+        )
+        record_usage(tokens // 2, tokens // 2)
+        filename = deps.notes.save_note(title.strip(), content)
+        await deps.channel.send(chat_id, f"Da luu: {filename}", use_markdown=False)
+    except PermissionError as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Loi khi luu: {str(e)[:500]}", use_markdown=False,
+        )
+
+
+async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
+    """ghi nhớ vào <name>: <content> — split on the first ':' and append."""
+    if ":" not in body:
+        await deps.channel.send(
+            chat_id,
+            "Cu phap: ghi nho vao <ten-file>: <noi dung>\n"
+            "Vi du: ghi nho vao kiem tra: them cau hoi moi",
+            use_markdown=False,
+        )
+        return
+
+    name_part, content = body.split(":", 1)
+    name_part = name_part.strip()
+    content = content.strip()
+
+    if not name_part:
+        await deps.channel.send(chat_id, "Thieu ten file.", use_markdown=False)
+        return
+    if not content:
+        await deps.channel.send(chat_id, "Thieu noi dung.", use_markdown=False)
+        return
+
+    await deps.channel.send(
+        chat_id, f"Dang tim file '{name_part}'...", use_markdown=False,
+    )
+
+    try:
+        matches = deps.notes.find_files_fuzzy(name_part)
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False,
+        )
+        return
+
+    # Case 1: exactly one match → append directly.
+    if len(matches) == 1:
+        chosen = matches[0]
+        try:
+            entry = f"\n## {time_str()}\n{content}\n"
+            filename = deps.notes.append_to_file(chosen["id"], entry)
+            await deps.channel.send(
+                chat_id, f"Da them vao: {filename}", use_markdown=False,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            await deps.channel.send(
+                chat_id, f"Loi khi them: {str(e)[:400]}", use_markdown=False,
+            )
+        return
+
+    # Case 2: multiple matches → ask user to pick.
+    if len(matches) > 1:
+        shown = matches[:FUZZY_SHOW_LIMIT]
+        msg_lines = [f"Tim thay {len(matches)} file khop voi '{name_part}':"]
+        for i, f in enumerate(shown, 1):
+            msg_lines.append(f"{i}. {f['name']}")
+        if len(matches) > FUZZY_SHOW_LIMIT:
+            msg_lines.append(f"... ({len(matches) - FUZZY_SHOW_LIMIT} file khac)")
+        msg_lines.append(f"\nTra loi 1-{len(shown)} de chon, hoac 'huy'.")
+        msg_lines.append(f"(Het han sau {PENDING_CHOICE_TIMEOUT_SEC}s)")
+
+        _set_pending(chat_id, "fuzzy_append", {
+            "matches": shown,
+            "content": content,
+        })
+        await deps.channel.send(chat_id, "\n".join(msg_lines), use_markdown=False)
+        return
+
+    # Case 3: no match → offer to create.
+    _set_pending(chat_id, "create_new_confirm", {
+        "filename": name_part,
+        "content": content,
+    })
+    await deps.channel.send(
+        chat_id,
+        f"Khong tim thay file '{name_part}'.\n"
+        f"Tao file moi voi ten do? (yes/no)\n"
+        f"(Het han sau {PENDING_CHOICE_TIMEOUT_SEC}s)",
+        use_markdown=False,
+    )
+
+
+async def _cmd_nhat_ky(chat_id: str, content: str, deps: CoreDeps) -> None:
+    """nhật ký <content> → append to today's journal."""
+    if not content:
+        await deps.channel.send(chat_id, "Vui long nhap noi dung.", use_markdown=False)
+        return
+
+    await deps.channel.send(chat_id, "Dang ghi nhat ky...")
+    try:
+        filename, action = deps.notes.add_to_daily_journal(content)
+        verb = "Da tao moi" if action == "created" else "Da them vao"
+        await deps.channel.send(
+            chat_id, f"{verb}: {filename}", use_markdown=False,
+        )
+    except PermissionError as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+async def _cmd_xem_nhat_ky(chat_id: str, deps: CoreDeps) -> None:
+    """xem nhật ký → read today's journal."""
+    try:
+        journal = deps.notes.get_today_journal()
+        if not journal:
+            await deps.channel.send(
+                chat_id,
+                f"Chua co nhat ky cho ngay {today_str()}. "
+                f"Hay tao bang lenh: nhat ky <noi dung>",
+                use_markdown=False,
+            )
+            return
+        content = journal["content"]
+        if len(content) > 3500:
+            content = content[:3500] + "\n\n[...] (qua dai, da cat)"
+        await deps.channel.send(
+            chat_id, f"=== {journal['name']} ===\n\n{content}", use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+async def _cmd_xem(chat_id: str, name_query: str, deps: CoreDeps) -> None:
+    """xem <name> → read a file (fuzzy match)."""
+    if not name_query:
+        await deps.channel.send(chat_id, "Cu phap: xem <ten-file>", use_markdown=False)
+        return
+
+    try:
+        matches = deps.notes.find_files_fuzzy(name_query)
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False,
+        )
+        return
+
+    if not matches:
+        await deps.channel.send(
+            chat_id,
+            f"Khong tim thay file nao khop voi '{name_query}'.",
+            use_markdown=False,
+        )
+        return
+
+    if len(matches) == 1:
+        chosen = matches[0]
+        try:
+            file_data = deps.notes.read_file_by_id(chosen["id"])
+            content = file_data["content"]
+            if len(content) > 3500:
+                content = content[:3500] + "\n\n[...] (qua dai, da cat)"
+            await deps.channel.send(
+                chat_id, f"=== {file_data['name']} ===\n\n{content}",
+                use_markdown=False,
+            )
+        except Exception as e:
+            traceback.print_exc()
+            await deps.channel.send(
+                chat_id, f"Loi khi doc: {str(e)[:400]}", use_markdown=False,
+            )
+        return
+
+    # Multiple matches → ask user to pick.
+    shown = matches[:FUZZY_SHOW_LIMIT]
+    msg_lines = [f"Tim thay {len(matches)} file khop voi '{name_query}':"]
+    for i, f in enumerate(shown, 1):
+        msg_lines.append(f"{i}. {f['name']}")
+    if len(matches) > FUZZY_SHOW_LIMIT:
+        msg_lines.append(f"... ({len(matches) - FUZZY_SHOW_LIMIT} file khac)")
+    msg_lines.append(f"\nTra loi 1-{len(shown)} de chon, hoac 'huy'.")
+
+    _set_pending(chat_id, "fuzzy_view", {"matches": shown})
+    await deps.channel.send(chat_id, "\n".join(msg_lines), use_markdown=False)
+
+
+async def _cmd_liet_ke(chat_id: str, deps: CoreDeps) -> None:
+    """liệt kê → list 10 most recent files."""
+    try:
+        files = deps.notes.list_recent_files()
+        if not files:
+            await deps.channel.send(
+                chat_id, "Vault trong, chua co ghi chu nao.", use_markdown=False,
+            )
+            return
+        msg_lines = ["10 file gan nhat:"]
+        for i, f in enumerate(files, 1):
+            modified = f.get("modifiedTime", "")[:10]
+            msg_lines.append(f"{i}. {f['name']}  ({modified})")
+        await deps.channel.send(chat_id, "\n".join(msg_lines), use_markdown=False)
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+async def _cmd_tim(chat_id: str, keyword: str, deps: CoreDeps) -> None:
+    if not keyword:
+        await deps.channel.send(chat_id, "Vui long nhap tu khoa.")
+        return
+    await deps.channel.send(
+        chat_id, f"Dang tim '{keyword}'...", use_markdown=False,
+    )
+    try:
+        notes = deps.notes.search_notes(keyword)
+        if not notes:
+            await deps.channel.send(
+                chat_id, "Khong tim thay ghi chu nao.", use_markdown=False,
+            )
+            return
+        summary, tokens = deps.llm.summarize_notes(notes)
+        record_usage(tokens // 2, tokens // 2)
+        check_and_alert()
+        await deps.channel.send(
+            chat_id, f"Ket qua:\n\n{summary}", use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Loi khi tim: {str(e)[:500]}", use_markdown=False,
+        )
+
+
+def _update_index_after_create(
+    topic: str,
+    filename: str,
+    topic_type: str,
+    content_to_add: str,
+    deps: CoreDeps,
+) -> None:
+    """Generate a TLDR and append it to the wiki index. Non-fatal on error."""
+    try:
+        tldr, tldr_tokens = deps.llm.generate_wiki_tldr(topic, content_to_add)
+        record_usage(tldr_tokens // 2, tldr_tokens // 2)
+        slug = filename.replace(".md", "")
+        deps.wiki.add_to_index(topic, slug, topic_type, tldr)
+    except Exception as e:
+        print(f"[core] Wiki index update (non-fatal): {e}")
+
+
+async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
+    """wiki <content> — ingest raw content into the wiki layer.
+
+    Flow: Claude analyzes → identifies topics → creates/appends wiki pages and
+    updates the index.
+    """
+    if not content:
+        await deps.channel.send(
+            chat_id, "Cu phap: wiki <noi dung can luu vao wiki>", use_markdown=False,
+        )
+        return
+
+    await deps.channel.send(
+        chat_id, "Dang phan tich va cap nhat wiki...", use_markdown=False,
+    )
+    try:
+        # 1. Existing topic names (lightweight).
+        existing_topics = deps.wiki.get_topic_names()
+
+        # 2. Claude returns a list of structured updates.
+        updates, tokens = deps.llm.extract_wiki_updates(content, existing_topics)
+        record_usage(tokens // 2, tokens // 2)
+
+        if not updates:
+            await deps.channel.send(
+                chat_id,
+                "Khong tim thay thong tin dang ke de luu vao wiki.\n"
+                "Thu nhap chi tiet hon: ten nguoi, du an, khai niem cu the.",
+                use_markdown=False,
+            )
+            return
+
+        # 3. Apply each update up to MAX_WIKI_UPDATES.
+        results: list[str] = []
+        for upd in updates[:MAX_WIKI_UPDATES]:
+            topic = upd.get("topic", "").strip()
+            topic_type = upd.get("type", "other")
+            action = upd.get("action", "create")
+            existing_topic_name = upd.get("existing_topic", "").strip()
+            content_to_add = upd.get("content_to_add", "").strip()
+
+            if not topic or not content_to_add:
+                continue
+
+            try:
+                if action == "update" and existing_topic_name:
+                    page = deps.wiki.find_page(existing_topic_name)
+                    if page:
+                        section = deps.wiki.build_section(content_to_add)
+                        filename = deps.wiki.append_to_page(page["id"], section)
+                        results.append(f"Cap nhat: {filename}")
+                    else:
+                        # Fall back to create + index update.
+                        page_content = deps.wiki.build_new_page(
+                            topic, topic_type, content_to_add,
+                        )
+                        filename = deps.wiki.save_page(topic, page_content)
+                        _update_index_after_create(
+                            topic, filename, topic_type, content_to_add, deps,
+                        )
+                        results.append(f"Tao moi: {filename}")
+                else:
+                    page_content = deps.wiki.build_new_page(
+                        topic, topic_type, content_to_add,
+                    )
+                    filename = deps.wiki.save_page(topic, page_content)
+                    _update_index_after_create(
+                        topic, filename, topic_type, content_to_add, deps,
+                    )
+                    results.append(f"Tao moi: {filename}")
+            except PermissionError as e:
+                results.append(f"Tu choi ({topic}): {str(e)[:100]}")
+            except Exception as e:
+                traceback.print_exc()
+                results.append(f"Loi ({topic}): {str(e)[:100]}")
+
+        if results:
+            await deps.channel.send(
+                chat_id,
+                "Wiki da cap nhat:\n" + "\n".join(f"- {r}" for r in results),
+                use_markdown=False,
+            )
+        else:
+            await deps.channel.send(
+                chat_id, "Khong co thay doi nao duoc thuc hien.",
+                use_markdown=False,
+            )
+
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Loi khi ingest wiki: {str(e)[:400]}", use_markdown=False,
+        )
+
+
+async def _cmd_wiki_query(chat_id: str, question: str, deps: CoreDeps) -> None:
+    """hỏi wiki <question> — answer directly from the wiki layer."""
+    if not question:
+        await deps.channel.send(
+            chat_id, "Cu phap: hoi wiki <cau hoi>", use_markdown=False,
+        )
+        return
+
+    await deps.channel.send(
+        chat_id, "Dang tim trong wiki...", use_markdown=False,
+    )
+    try:
+        keywords = [w for w in question.lower().split() if len(w) > 2]
+        wiki_pages = deps.wiki.retrieve_pages(question, keywords)
+
+        if not wiki_pages:
+            await deps.channel.send(
+                chat_id,
+                "Khong tim thay trang wiki lien quan.\n"
+                "Hay ingest truoc bang lenh: wiki <noi dung>",
+                use_markdown=False,
+            )
+            return
+
+        reply, tokens = deps.llm.answer_from_wiki(question, wiki_pages)
+        record_usage(tokens // 2, tokens // 2)
+        check_and_alert()
+
+        page_names = ", ".join(p["name"].replace(".md", "") for p in wiki_pages)
+        await deps.channel.send(
+            chat_id,
+            f"[Wiki: {page_names}]\n\n{reply}",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(
+            chat_id, f"Loi khi query wiki: {str(e)[:400]}", use_markdown=False,
+        )
+
+
+async def _cmd_xem_wiki_list(chat_id: str, deps: CoreDeps) -> None:
+    """xem wiki — list all wiki pages."""
+    try:
+        pages = deps.wiki.list_pages()
+        if not pages:
+            await deps.channel.send(
+                chat_id,
+                "Wiki chua co trang nao. Hay ingest bang lenh: wiki <noi dung>",
+                use_markdown=False,
+            )
+            return
+        lines = [f"Wiki ({len(pages)} trang):"]
+        for i, p in enumerate(pages, 1):
+            modified = p.get("modifiedTime", "")[:10]
+            topic = p["name"].replace(".md", "").replace("_", " ")
+            lines.append(f"{i}. {topic}  ({modified})")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_xem_wiki_page(
+    chat_id: str, topic_query: str, deps: CoreDeps,
+) -> None:
+    """xem wiki <topic> — read one wiki page."""
+    if not topic_query:
+        await _cmd_xem_wiki_list(chat_id, deps)
+        return
+    try:
+        page = deps.wiki.find_page(topic_query)
+        if not page:
+            await deps.channel.send(
+                chat_id,
+                f"Khong tim thay wiki page cho '{topic_query}'.\n"
+                f"Xem danh sach: xem wiki",
+                use_markdown=False,
+            )
+            return
+        content = page["content"]
+        if len(content) > 3500:
+            content = content[:3500] + "\n\n[...] (da cat)"
+        topic_name = page["name"].replace(".md", "").replace("_", " ")
+        await deps.channel.send(
+            chat_id,
+            f"=== Wiki: {topic_name} ===\n\n{content}",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
+    week_range = current_week_range_str()
+    await deps.channel.send(
+        chat_id,
+        f"Dang doc ghi chu tuan nay ({week_range})...",
+        use_markdown=False,
+    )
+    try:
+        notes = deps.notes.get_current_week_notes(max_results=20)
+        if not notes:
+            await deps.channel.send(
+                chat_id,
+                f"Khong co ghi chu nao trong tuan nay ({week_range}).",
+                use_markdown=False,
+            )
+            return
+        summary, tokens = deps.llm.summarize_notes(notes)
+        record_usage(tokens // 2, tokens // 2)
+        check_and_alert()
+        await deps.channel.send(
+            chat_id,
+            f"Tom tat tuan nay ({week_range}) — {len(notes)} ghi chu:\n\n{summary}",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+async def _handle_general_question(
+    chat_id: str, text: str, deps: CoreDeps,
+) -> None:
+    """Free-form question fallback — smart search + Claude answer.
+
+    Pipeline:
+      1. extract_search_intent(text) → keywords + days_back + needs_search
+      2. If needs_search: retrieve wiki pages + smart_search raw notes
+      3. ask Claude with the combined context
+    """
+    await deps.channel.send(chat_id, "Dang xu ly...")
+    try:
+        # Step 1: intent extraction.
+        intent, intent_tokens = deps.llm.extract_search_intent(text)
+        record_usage(intent_tokens // 2, intent_tokens // 2)
+
+        context_parts: list[str] = []
+
+        # Step 2: wiki pages via index.
+        if intent.get("needs_search"):
+            try:
+                wiki_pages = deps.wiki.retrieve_pages(text, intent.get("keywords", []))
+                if wiki_pages:
+                    wiki_block = "\n\n".join(
+                        f"[Wiki: {p['name'].replace('.md', '')}]\n{p['content']}"
+                        for p in wiki_pages
+                    )
+                    context_parts.append(wiki_block)
+            except Exception as e:
+                print(f"[core] Wiki search error (non-fatal): {e}")
+
+        # Step 3: smart search raw notes.
+        if intent.get("needs_search") and intent.get("keywords"):
+            try:
+                notes = deps.notes.smart_search(
+                    keywords=intent["keywords"],
+                    days_back=intent.get("days_back", 0) or 0,
+                )
+                if notes:
+                    notes_block = "\n\n".join(
+                        [f"[{n['name']}]\n{n['content']}" for n in notes[:5]]
+                    )
+                    context_parts.append(notes_block)
+            except Exception as e:
+                print(f"[core] Smart search error: {e}")
+                try:
+                    fallback_notes = deps.notes.search_notes(
+                        intent["keywords"][0], max_results=2,
+                    )
+                    if fallback_notes:
+                        context_parts.append("\n\n".join(
+                            [f"[{n['name']}]\n{n['content']}" for n in fallback_notes]
+                        ))
+                except Exception:
+                    pass
+
+        notes_context = "\n\n".join(context_parts)
+
+        # Step 4: ask Claude.
+        reply, tokens = deps.llm.ask(text, notes_context)
+        record_usage(tokens // 2, tokens // 2)
+        check_and_alert()
+        await deps.channel.send(chat_id, reply, use_markdown=False)
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Main dispatcher
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Command prefixes — names map directly to Vietnamese user input, so they
+# stay Vietnamese per CLAUDE.md coding conventions exception.
+PREFIX_GHI_NHO_VAO = ["ghi nhớ vào ", "ghi nho vao "]
+PREFIX_GHI_NHO     = ["ghi nhớ ", "ghi nho "]
+PREFIX_NHAT_KY     = ["nhật ký ", "nhat ky "]
+PREFIX_TIM         = ["tìm ", "tim "]
+PREFIX_XEM         = ["xem ", "xem "]   # must check "xem nhật ký" / "xem wiki" first
+EXACT_XEM_NHAT_KY  = {"xem nhật ký", "xem nhat ky"}
+EXACT_LIET_KE      = {"liệt kê", "liet ke"}
+
+# Wiki-specific commands (must be matched before generic "xem ").
+PREFIX_WIKI        = ["wiki "]
+PREFIX_HOI_WIKI    = ["hỏi wiki ", "hoi wiki "]
+EXACT_XEM_WIKI     = {"xem wiki"}
+PREFIX_XEM_WIKI    = ["xem wiki "]
+
+
+async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
+    """Dispatch a normalized inbound message to the appropriate handler."""
+    chat_id = msg.chat_id
+    text = msg.text.strip()
+    if not text:
+        return
+
+    # ── Step 1: try to resolve a pending state first ────────────────────────
+    if await _try_resolve_pending(chat_id, text, deps):
+        return
+
+    # ── Step 2: system commands ────────────────────────────────────────────
+    low = _norm(text)
+
+    if text == "/start":
+        await _cmd_start(chat_id, deps); return
+    if text == "/cost":
+        await _cmd_cost(chat_id, deps); return
+    if text == "/test":
+        await _cmd_test(chat_id, deps); return
+    if text == "/security":
+        await _cmd_security(chat_id, deps); return
+
+    # ── Step 3: exact-match commands ───────────────────────────────────────
+    if low in EXACT_XEM_NHAT_KY:
+        await _cmd_xem_nhat_ky(chat_id, deps); return
+    if low in EXACT_LIET_KE:
+        await _cmd_liet_ke(chat_id, deps); return
+
+    # ── Step 4: wiki commands (checked before "xem" to avoid overlap) ──────
+    matched = _starts_with_any(text, PREFIX_HOI_WIKI)
+    if matched:
+        question = _strip_prefix(text, matched)
+        await _cmd_wiki_query(chat_id, question, deps); return
+
+    matched = _starts_with_any(text, PREFIX_XEM_WIKI)
+    if matched:
+        topic_query = _strip_prefix(text, matched)
+        await _cmd_xem_wiki_page(chat_id, topic_query, deps); return
+
+    if low in EXACT_XEM_WIKI:
+        await _cmd_xem_wiki_list(chat_id, deps); return
+
+    matched = _starts_with_any(text, PREFIX_WIKI)
+    if matched:
+        content = _strip_prefix(text, matched)
+        await _cmd_wiki_ingest(chat_id, content, deps); return
+
+    # ── Step 5: general prefix commands (priority-ordered) ─────────────────
+    matched = _starts_with_any(text, PREFIX_GHI_NHO_VAO)
+    if matched:
+        body = _strip_prefix(text, matched)
+        await _cmd_ghi_nho_vao(chat_id, body, deps); return
+
+    matched = _starts_with_any(text, PREFIX_GHI_NHO)
+    if matched:
+        content = _strip_prefix(text, matched)
+        await _cmd_ghi_nho(chat_id, content, deps); return
+
+    matched = _starts_with_any(text, PREFIX_NHAT_KY)
+    if matched:
+        content = _strip_prefix(text, matched)
+        await _cmd_nhat_ky(chat_id, content, deps); return
+
+    matched = _starts_with_any(text, PREFIX_TIM)
+    if matched:
+        keyword = _strip_prefix(text, matched)
+        await _cmd_tim(chat_id, keyword, deps); return
+
+    matched = _starts_with_any(text, PREFIX_XEM)
+    if matched:
+        name_query = _strip_prefix(text, matched)
+        await _cmd_xem(chat_id, name_query, deps); return
+
+    if ("tóm tắt" in low or "tom tat" in low) and ("tuần" in low or "tuan" in low):
+        await _cmd_tom_tat_tuan(chat_id, deps); return
+
+    # ── Step 6: free-form question → wiki + smart search + Claude ──────────
+    await _handle_general_question(chat_id, text, deps)
