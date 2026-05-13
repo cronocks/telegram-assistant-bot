@@ -525,6 +525,7 @@ INDEX (user_id, category_id, occurred_at)
 | 32 | Git role split | Claude tạo branch + commit + push + đưa link; **user merge** (git bash local) + **xóa feature branch**; Claude chỉ hỗ trợ git khi user nhờ | User giữ quyền kiểm soát tuyệt đối với main/dev | 2026-05-12 |
 | 33 | 🚨 Git ops 100% user-owned (replaces #32) | User làm **TẤT CẢ** thao tác git. Claude mặc định = không chạm git. Khi user nhờ chạy lệnh git: bắt buộc protocol 4 bước (show → confirm → execute → report). Edit file không phải git op. | Incident 2026-05-12: Claude tự branch off `dev` → khi merge vào main đã kéo FR-1 lên production ngoài ý muốn. Quy tắc cũ (#32) cho Claude tự create branch → vẫn còn footgun. | 2026-05-12 |
 | 34 | Read-only ops miễn protocol | Claude tự do chạy: Read/Glob/Grep, `git log/show/diff/status/branch/ls-remote`, `git fetch` (cả `-p`), Bash view-only — không cần show + confirm | Read-only không thay đổi state nào nguy hiểm; ép protocol cho chúng làm chậm việc mà không đem lại safety | 2026-05-12 |
+| 35 | Shell content English only | Commit messages, inline bash comments, shell script content, và lệnh bash gợi ý trong chat reply — **bắt buộc English**, không có Vietnamese (kể cả không dấu) | Git bash trên Windows không render Vietnamese diacritics tốt → vỡ font khi user paste. Tránh ambiguity bằng cách dùng English duy nhất. | 2026-05-12 |
 
 ---
 
