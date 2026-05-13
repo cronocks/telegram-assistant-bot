@@ -150,3 +150,32 @@ Ngoại lệ — VẪN tiếng Việt:
 - CLAUDE.md và các file workflow
 
 Khi sửa file cũ có comment tiếng Việt: dịch sang tiếng Anh trong cùng lần edit (không tách 2 pass).
+
+### Shell content — English only, không ngoại lệ
+
+Mọi nội dung sẽ đi vào terminal (git bash, PowerShell, etc.) **bắt buộc dùng English**, kể cả comment trong lệnh:
+
+- Commit messages (`git commit -m "..."`)
+- Inline comment trong lệnh bash (`# do this`, `# verify result`)
+- Content của shell script (`.sh`, `.ps1`, `.bat`)
+- **Lệnh bash gợi ý trong chat reply** mà Claude đưa cho user copy-paste (vd block ```bash``` chứa `git add`, `rm -rf`, ...)
+
+**Lý do:** Git bash trên Windows không render Vietnamese diacritics tốt → vỡ font, khó đọc, dễ paste sai lệnh. Giữ shell content thuần ASCII English để tránh.
+
+**Phân biệt rõ với chat text:** Khi Claude giải thích/trao đổi trong chat (user đọc trong Claude UI, không phải terminal) → vẫn dùng Vietnamese có dấu bình thường. Quy tắc này chỉ áp dụng cho nội dung mục tiêu là terminal.
+
+**Ví dụ:**
+
+✅ Đúng:
+```bash
+# Stage and commit doc changes
+git add CLAUDE.md docs/ROADMAP.md
+git commit -m "docs: add shell content English rule"
+```
+
+❌ Sai:
+```bash
+# Stage và commit các file doc đã đổi
+git add CLAUDE.md docs/ROADMAP.md
+git commit -m "docs: thêm quy ước English cho shell content"
+```
