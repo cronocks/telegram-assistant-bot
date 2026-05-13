@@ -1,3 +1,27 @@
+# 🚨 Git Operations — User-Owned (MANDATORY)
+
+> **TUYỆT ĐỐI:** Claude KHÔNG tự ý chạy bất kỳ lệnh git nào trong project này. Tất cả git operations (`branch`, `checkout`, `fetch`, `pull`, `add`, `commit`, `push`, `merge`, `rebase`, `reset`, `cherry-pick`, `tag`, xóa branch local/remote, ...) **do user thực hiện**.
+
+Khi user yêu cầu Claude chạy một lệnh git cụ thể (ngoại lệ duy nhất), bắt buộc protocol 4 bước:
+
+1. **Show** — Hiển thị chính xác lệnh sẽ chạy (đầy đủ flags, arguments)
+2. **Wait** — Dừng lại, chờ user xác nhận lại ("go", "ok", "xác nhận", ...) **kể cả khi user vừa mới yêu cầu** — đây là confirm lần thứ 2 có chủ ý
+3. **Execute** — Chạy đúng lệnh đã show, không thêm / bớt / sửa argument
+4. **Report** — Hiển thị output thật của lệnh
+
+Edit file (Edit/Write tool) **không phải** git operation — Claude vẫn được phép edit theo Workflow bên dưới. File edit không tự động đẩy lên git; user vẫn add/commit/push.
+
+**Read-only được miễn protocol** — Claude tự do thực hiện không cần confirm:
+- Đọc file (Read, Glob, Grep)
+- Git read-only: `git log`, `git show`, `git diff` (view), `git status`, `git branch` (list), `git ls-remote`, `git fetch` / `git fetch -p`
+- Bash view-only: `ls`, `cat`, `head`, `tail`
+
+Tiêu chí: không thay đổi working tree, không thay đổi branch state, không push/pull commit. Khi nghi ngờ → áp dụng protocol 4 bước (an toàn hơn).
+
+**Chi tiết đầy đủ, examples Good/Bad, và root-cause incident:** xem `docs/ROADMAP.md` Section 3.6.
+
+---
+
 # Workflow — Plan Before You Touch
 
 Quy trình bắt buộc cho mọi thao tác file trong project này.
