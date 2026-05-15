@@ -383,6 +383,70 @@ class SqliteUserStore:
             )
         return True
 
+    # ── Parent links ──────────────────────────────────────────────────────────
+
+    def set_parent(self, user_id: int, parent_id: int, set_by: int) -> None:
+        """Set or replace the active parent for user_id.
+
+        Deactivates any existing active parent link first.
+        Raises ValueError if user_id == parent_id or either user is not found.
+        """
+        if user_id == parent_id:
+            raise ValueError("A user cannot be their own parent.")
+        if self.get_user_by_id(user_id) is None:
+            raise ValueError(f"User {user_id} not found.")
+        if self.get_user_by_id(parent_id) is None:
+            raise ValueError(f"Parent user {parent_id} not found.")
+
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE parent_links SET active = 0, removed_at = ? WHERE user_id = ? AND active = 1",
+                (now, user_id),
+            )
+            self._conn.execute(
+                "INSERT INTO parent_links (user_id, parent_id, set_by) VALUES (?, ?, ?)",
+                (user_id, parent_id, set_by),
+            )
+
+    def get_parent(self, user_id: int) -> User | None:
+        """Return the active parent of user_id, or None."""
+        row = self._conn.execute(
+            """
+            SELECT u.* FROM users u
+            JOIN parent_links pl ON pl.parent_id = u.id
+            WHERE pl.user_id = ? AND pl.active = 1
+            """,
+            (user_id,),
+        ).fetchone()
+        return _row_to_user(row) if row else None
+
+    def get_children(self, parent_id: int) -> list[User]:
+        """Return all active children of parent_id."""
+        rows = self._conn.execute(
+            """
+            SELECT u.* FROM users u
+            JOIN parent_links pl ON pl.user_id = u.id
+            WHERE pl.parent_id = ? AND pl.active = 1
+            ORDER BY u.id
+            """,
+            (parent_id,),
+        ).fetchall()
+        return [_row_to_user(r) for r in rows]
+
+    def remove_parent(self, user_id: int, removed_by: int) -> bool:
+        """Deactivate the active parent link for user_id.
+
+        Returns True if a link was deactivated, False if none was active.
+        """
+        now = datetime.now(timezone.utc).isoformat()
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE parent_links SET active = 0, removed_at = ? WHERE user_id = ? AND active = 1",
+                (now, user_id),
+            )
+        return cur.rowcount > 0
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
     def bootstrap_admin(self) -> User | None:

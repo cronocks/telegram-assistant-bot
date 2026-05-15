@@ -603,6 +603,89 @@ async def _cmd_duyet_username(
         )
 
 
+async def _cmd_dat_cha(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat cha: <user_id> <parent_id> — admin/manager sets a parent for a user."""
+    if not has_role(user, "admin", "manager"):
+        await deps.channel.send(chat_id, "Chỉ admin/manager mới có thể đặt quan hệ cha-con.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: dat cha: <user_id> <parent_id>\n"
+            "Ví dụ: dat cha: 3 1 (user 3 có cha là user 1)\n"
+            "Dùng: dat cha: <user_id> 0 để xóa quan hệ cha-con.",
+            use_markdown=False,
+        )
+        return
+
+    user_id = int(parts[0])
+    parent_id = int(parts[1])
+
+    try:
+        if parent_id == 0:
+            removed = deps.user_store.remove_parent(user_id, user.id)
+            if removed:
+                await deps.channel.send(chat_id, f"Đã xóa quan hệ cha-con của user #{user_id}.", use_markdown=False)
+            else:
+                await deps.channel.send(chat_id, f"User #{user_id} không có quan hệ cha-con nào đang hoạt động.", use_markdown=False)
+        else:
+            deps.user_store.set_parent(user_id, parent_id, user.id)
+            child = deps.user_store.get_user_by_id(user_id)
+            parent = deps.user_store.get_user_by_id(parent_id)
+            child_name = child.name if child else f"#{user_id}"
+            parent_name = parent.name if parent else f"#{parent_id}"
+            await deps.channel.send(
+                chat_id,
+                f"Đã đặt {child_name} (#{user_id}) có cha là {parent_name} (#{parent_id}).",
+                use_markdown=False,
+            )
+    except ValueError as e:
+        await deps.channel.send(chat_id, str(e), use_markdown=False)
+
+
+async def _cmd_xem_cha(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem cha: <user_id> — show parent and children of a user."""
+    if not has_role(user, "admin", "manager"):
+        await deps.channel.send(chat_id, "Chỉ admin/manager mới có thể xem quan hệ cha-con.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if not parts or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id, "Cú pháp: xem cha: <user_id>", use_markdown=False,
+        )
+        return
+
+    target_id = int(parts[0])
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    lines = [f"Quan hệ của {target.name} (#{target_id}):"]
+
+    parent = deps.user_store.get_parent(target_id)
+    if parent:
+        lines.append(f"• Cha: {parent.name} (#{parent.id})")
+    else:
+        lines.append("• Cha: (chưa có)")
+
+    children = deps.user_store.get_children(target_id)
+    if children:
+        child_list = ", ".join(f"{c.name} (#{c.id})" for c in children)
+        lines.append(f"• Con: {child_list}")
+    else:
+        lines.append("• Con: (chưa có)")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
@@ -1252,6 +1335,8 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "DUYET_BIRTHDATE":    ["duyet birthdate", "duyệt birthdate", "approve birthdate"],
     "DAT_USERNAME":       ["dat username: ", "đặt username: ", "set username: "],
     "DUYET_USERNAME":     ["duyet username", "duyệt username", "approve username"],
+    "DAT_CHA":            ["dat cha: ", "đặt cha: ", "set parent: "],
+    "XEM_CHA":            ["xem cha: ", "view parent: "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
     "XEM_WIKI_PAGE": ["xem wiki "],
     "XEM_WIKI":      ["xem wiki"],
@@ -1307,6 +1392,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_username(chat_id, remainder, user, deps); return
         if cmd_id == "DUYET_USERNAME":
             await _cmd_duyet_username(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_CHA":
+            await _cmd_dat_cha(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_CHA":
+            await _cmd_xem_cha(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
