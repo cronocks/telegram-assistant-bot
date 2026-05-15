@@ -129,3 +129,59 @@ class TestBootstrapAdmin:
             store.bootstrap_admin()
             store.bootstrap_admin()
         assert len(store.list_users()) == 1
+
+    def test_bootstrap_binds_telegram_channel(self, store):
+        with patch("config.TELEGRAM_CHAT_ID", "123456"):
+            admin = store.bootstrap_admin()
+        found = store.find_by_channel("telegram", "123456")
+        assert found is not None
+        assert found.id == admin.id
+
+
+class TestChannelBindings:
+    def test_bind_and_find(self, store, sample_admin):
+        store.bind_channel(sample_admin.id, "telegram", "111")
+        user = store.find_by_channel("telegram", "111")
+        assert user is not None
+        assert user.id == sample_admin.id
+
+    def test_find_unknown_returns_none(self, store):
+        assert store.find_by_channel("telegram", "999") is None
+
+    def test_duplicate_binding_raises(self, store, sample_admin):
+        store.bind_channel(sample_admin.id, "telegram", "111")
+        with pytest.raises(Exception):
+            store.bind_channel(sample_admin.id, "telegram", "111")
+
+    def test_different_channels_are_independent(self, store, sample_admin):
+        store.bind_channel(sample_admin.id, "telegram", "111")
+        store.bind_channel(sample_admin.id, "discord", "111")
+        assert store.find_by_channel("telegram", "111") is not None
+        assert store.find_by_channel("discord", "111") is not None
+
+
+class TestInviteCodes:
+    def test_create_and_consume(self, store, sample_admin):
+        member = store.create_user(name="Alice", role="member")
+        code = store.create_invite_code(
+            intended_user_id=member.id, created_by=sample_admin.id
+        )
+        assert len(code) == 8
+
+        user = store.consume_invite_code(code, "telegram", "222")
+        assert user is not None
+        assert user.id == member.id
+        # Binding created
+        assert store.find_by_channel("telegram", "222") is not None
+
+    def test_consumed_code_cannot_be_reused(self, store, sample_admin):
+        member = store.create_user(name="Alice", role="member")
+        code = store.create_invite_code(
+            intended_user_id=member.id, created_by=sample_admin.id
+        )
+        store.consume_invite_code(code, "telegram", "222")
+        result = store.consume_invite_code(code, "telegram", "333")
+        assert result is None
+
+    def test_invalid_code_returns_none(self, store):
+        assert store.consume_invite_code("badcode1", "telegram", "444") is None

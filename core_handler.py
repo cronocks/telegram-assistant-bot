@@ -18,7 +18,7 @@ from config import (
     PENDING_CHOICE_TIMEOUT_SEC,
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
-from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, WikiStore
+from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
 
@@ -34,6 +34,7 @@ class CoreDeps:
     notes: NoteStore
     wiki: WikiStore
     channel: ChannelAdapter
+    user_store: UserStore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -286,6 +287,58 @@ async def _try_resolve_pending(
 # ═══════════════════════════════════════════════════════════════════════════════
 # Command handlers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+_VALID_ROLES = {"admin", "manager", "member", "readonly"}
+
+
+async def _cmd_them_user(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """them user: <name>, <role> — admin creates a new user and returns an invite code."""
+    if not user.is_admin:
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể thêm user.", use_markdown=False)
+        return
+
+    parts = body.split(",", 1)
+    if len(parts) != 2:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: them user: <tên>, <role>\n"
+            "Role hợp lệ: admin, manager, member, readonly",
+            use_markdown=False,
+        )
+        return
+
+    name = parts[0].strip()
+    role = parts[1].strip().lower()
+
+    if not name:
+        await deps.channel.send(chat_id, "Thiếu tên user.", use_markdown=False)
+        return
+    if role not in _VALID_ROLES:
+        await deps.channel.send(
+            chat_id,
+            f"Role không hợp lệ: '{role}'. Chọn: admin, manager, member, readonly",
+            use_markdown=False,
+        )
+        return
+
+    try:
+        new_user = deps.user_store.create_user(name=name, role=role)
+        code = deps.user_store.create_invite_code(
+            intended_user_id=new_user.id, created_by=user.id
+        )
+        await deps.channel.send(
+            chat_id,
+            f"Đã tạo user *{name}* (role: {role}, id: {new_user.id}).\n\n"
+            f"Mã mời (hết hạn sau 7 ngày):\n`{code}`\n\n"
+            f"Gửi mã này cho {name}, họ dùng lệnh:\n`dang ky: {code}`",
+        )
+    except Exception as e:
+        await deps.channel.send(
+            chat_id, f"Lỗi khi tạo user: {str(e)[:400]}", use_markdown=False,
+        )
+
 
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
@@ -926,6 +979,7 @@ async def _handle_general_question(
 
 # Command prefixes — names map directly to Vietnamese user input, so they
 # stay Vietnamese per CLAUDE.md coding conventions exception.
+PREFIX_THEM_USER   = ["them user: ", "thêm user: "]
 PREFIX_GHI_NHO_VAO = ["ghi nhớ vào ", "ghi nho vao "]
 PREFIX_GHI_NHO     = ["ghi nhớ ", "ghi nho "]
 PREFIX_NHAT_KY     = ["nhật ký ", "nhat ky "]
@@ -941,7 +995,7 @@ EXACT_XEM_WIKI     = {"xem wiki"}
 PREFIX_XEM_WIKI    = ["xem wiki "]
 
 
-async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
+async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> None:
     """Dispatch a normalized inbound message to the appropriate handler."""
     chat_id = msg.chat_id
     text = msg.text.strip()
@@ -989,7 +1043,13 @@ async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
         content = _strip_prefix(text, matched)
         await _cmd_wiki_ingest(chat_id, content, deps); return
 
-    # ── Step 5: general prefix commands (priority-ordered) ─────────────────
+    # ── Step 5: admin commands ─────────────────────────────────────────────
+    matched = _starts_with_any(text, PREFIX_THEM_USER)
+    if matched:
+        body = _strip_prefix(text, matched)
+        await _cmd_them_user(chat_id, body, user, deps); return
+
+    # ── Step 6: general prefix commands (priority-ordered) ─────────────────
     matched = _starts_with_any(text, PREFIX_GHI_NHO_VAO)
     if matched:
         body = _strip_prefix(text, matched)
@@ -1018,5 +1078,5 @@ async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
     if ("tóm tắt" in low or "tom tat" in low) and ("tuần" in low or "tuan" in low):
         await _cmd_tom_tat_tuan(chat_id, deps); return
 
-    # ── Step 6: free-form question → wiki + smart search + Claude ──────────
+    # ── Step 7: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps)

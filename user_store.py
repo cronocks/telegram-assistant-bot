@@ -1,12 +1,10 @@
-"""user_store.py — SQLite-backed user registry (partial: user CRUD + bootstrap).
-
-Channel bindings and invite codes are added in the next commit.
-"""
+"""user_store.py — SQLite-backed user registry."""
 from __future__ import annotations
 
 import logging
+import secrets
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 import config
 from db.connection import get_connection
@@ -20,7 +18,7 @@ class SqliteUserStore:
         # Accept an injected connection (useful for tests with in-memory DB).
         self._conn = conn or get_connection()
 
-    # ── Queries ───────────────────────────────────────────────────────────────
+    # ── User queries ──────────────────────────────────────────────────────────
 
     def get_user_by_id(self, user_id: int) -> User | None:
         row = self._conn.execute(
@@ -37,7 +35,19 @@ class SqliteUserStore:
             ).fetchall()
         return [_row_to_user(r) for r in rows]
 
-    # ── Mutations ─────────────────────────────────────────────────────────────
+    def find_by_channel(self, channel: str, chat_id: str) -> User | None:
+        """Return the active user bound to (channel, chat_id), or None."""
+        row = self._conn.execute(
+            """
+            SELECT u.* FROM users u
+            JOIN channel_bindings cb ON cb.user_id = u.id
+            WHERE cb.channel = ? AND cb.chat_id = ?
+            """,
+            (channel, chat_id),
+        ).fetchone()
+        return _row_to_user(row) if row else None
+
+    # ── User mutations ────────────────────────────────────────────────────────
 
     def create_user(
         self,
@@ -72,13 +82,87 @@ class SqliteUserStore:
                 (role, user_id),
             )
 
+    # ── Channel bindings ──────────────────────────────────────────────────────
+
+    def bind_channel(self, user_id: int, channel: str, chat_id: str) -> None:
+        """Bind a (channel, chat_id) pair to a user. Raises on duplicate."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO channel_bindings (user_id, channel, chat_id)
+                VALUES (?, ?, ?)
+                """,
+                (user_id, channel, chat_id),
+            )
+
+    # ── Invite codes ──────────────────────────────────────────────────────────
+
+    def create_invite_code(
+        self,
+        intended_user_id: int,
+        created_by: int,
+        ttl_days: int = 7,
+    ) -> str:
+        """Generate an 8-char hex invite code valid for ttl_days days."""
+        code = secrets.token_hex(4)  # 8 hex chars
+        expires_at = datetime.now(timezone.utc) + timedelta(days=ttl_days)
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO invite_codes
+                    (code, intended_user_id, created_by, expires_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (code, intended_user_id, created_by, expires_at.isoformat()),
+            )
+        return code
+
+    def consume_invite_code(
+        self, code: str, channel: str, chat_id: str
+    ) -> User | None:
+        """Validate and consume an invite code; bind the channel; return the user.
+
+        Returns None if the code is invalid, expired, or already used.
+        """
+        row = self._conn.execute(
+            """
+            SELECT * FROM invite_codes
+            WHERE code = ? AND used_at IS NULL AND expires_at > CURRENT_TIMESTAMP
+            """,
+            (code,),
+        ).fetchone()
+        if not row:
+            return None
+
+        user_id = row["intended_user_id"]
+        now = datetime.now(timezone.utc).isoformat()
+
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE invite_codes
+                SET used_at = ?, used_channel = ?, used_chat_id = ?
+                WHERE code = ?
+                """,
+                (now, channel, chat_id, code),
+            )
+            self._conn.execute(
+                """
+                INSERT OR IGNORE INTO channel_bindings (user_id, channel, chat_id)
+                VALUES (?, ?, ?)
+                """,
+                (user_id, channel, chat_id),
+            )
+
+        return self.get_user_by_id(user_id)
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
     def bootstrap_admin(self) -> User | None:
-        """Create the first admin user from TELEGRAM_CHAT_ID env var if users table is empty.
+        """Create the first admin user and bind TELEGRAM_CHAT_ID if users table is empty.
 
-        Returns the existing or newly created admin User, or None if TELEGRAM_CHAT_ID
-        is not set. Channel binding is wired in the next commit.
+        Returns the existing or newly created admin User, or None if
+        TELEGRAM_CHAT_ID is not set.
         """
         count = self._conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         if count > 0:
@@ -90,6 +174,18 @@ class SqliteUserStore:
             return None
 
         admin = self.create_user(name="Bot Owner", role="admin")
+
+        # Bind telegram channel so the owner can use the bot immediately.
+        try:
+            self.bind_channel(admin.id, "telegram", str(config.TELEGRAM_CHAT_ID))
+            logger.info(
+                "bootstrap_admin: bound telegram chat_id=%s to admin id=%s",
+                config.TELEGRAM_CHAT_ID,
+                admin.id,
+            )
+        except Exception as e:
+            logger.warning("bootstrap_admin: could not bind channel: %s", e)
+
         logger.info("bootstrap_admin: created admin user id=%s", admin.id)
         return admin
 
