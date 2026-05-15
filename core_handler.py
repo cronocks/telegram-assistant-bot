@@ -686,6 +686,103 @@ async def _cmd_xem_cha(
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
 
+async def _cmd_xem_quota(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem quota [user_id] — show token quota. Admin can view any user; others see own."""
+    target_id = user.id
+    if body.strip() and has_role(user, "admin", "manager"):
+        parts = body.strip().split()
+        if parts[0].isdigit():
+            target_id = int(parts[0])
+
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    quota = deps.user_store.get_quota(target_id)
+    if quota is None or quota["monthly_token_limit"] == 0:
+        limit_str = "không giới hạn"
+    else:
+        limit_str = f"{quota['monthly_token_limit']:,} tokens/tháng"
+
+    used = quota["used_tokens"] if quota else 0
+    month = quota["month"] if quota else "N/A"
+
+    lines = [
+        f"Quota của {target.name} (#{target_id}):",
+        f"• Giới hạn: {limit_str}",
+        f"• Đã dùng tháng {month}: {used:,} tokens",
+    ]
+    if quota and quota["monthly_token_limit"] > 0:
+        pct = min(100, round(used / quota["monthly_token_limit"] * 100, 1))
+        lines.append(f"• Sử dụng: {pct}%")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_dat_quota(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat quota: <user_id> <tokens> — admin sets monthly token limit (0 = unlimited)."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể đặt quota.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: dat quota: <user_id> <tokens>\n"
+            "Ví dụ: dat quota: 3 100000 (100k tokens/tháng)\n"
+            "Dùng 0 để bỏ giới hạn.",
+            use_markdown=False,
+        )
+        return
+
+    target_id = int(parts[0])
+    limit = int(parts[1])
+
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    deps.user_store.set_quota(target_id, limit)
+    if limit == 0:
+        await deps.channel.send(chat_id, f"Đã bỏ giới hạn quota cho {target.name} (#{target_id}).", use_markdown=False)
+    else:
+        await deps.channel.send(
+            chat_id,
+            f"Đã đặt quota cho {target.name} (#{target_id}): {limit:,} tokens/tháng.",
+            use_markdown=False,
+        )
+
+
+async def _cmd_reset_quota(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """reset quota: <user_id> — admin resets a user's current-month usage to 0."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể reset quota.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if not parts or not parts[0].isdigit():
+        await deps.channel.send(chat_id, "Cú pháp: reset quota: <user_id>", use_markdown=False)
+        return
+
+    target_id = int(parts[0])
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    deps.user_store.reset_usage(target_id)
+    await deps.channel.send(chat_id, f"Đã reset usage của {target.name} (#{target_id}).", use_markdown=False)
+
+
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
@@ -1252,7 +1349,7 @@ async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
 
 
 async def _handle_general_question(
-    chat_id: str, text: str, deps: CoreDeps,
+    chat_id: str, text: str, deps: CoreDeps, user: User | None = None,
 ) -> None:
     """Free-form question fallback — smart search + Claude answer.
 
@@ -1313,10 +1410,22 @@ async def _handle_general_question(
         reply, tokens = deps.llm.ask(text, notes_context)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
+        if user is not None:
+            deps.user_store.record_usage(user.id, tokens)
         await deps.channel.send(chat_id, reply, use_markdown=False)
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+
+
+def _is_over_quota(user: User, deps: CoreDeps) -> bool:
+    """Return True if the user has exceeded their monthly token quota."""
+    if has_role(user, "admin"):
+        return False
+    quota = deps.user_store.get_quota(user.id)
+    if quota is None or quota["monthly_token_limit"] == 0:
+        return False
+    return quota["used_tokens"] >= quota["monthly_token_limit"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1337,6 +1446,9 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "DUYET_USERNAME":     ["duyet username", "duyệt username", "approve username"],
     "DAT_CHA":            ["dat cha: ", "đặt cha: ", "set parent: "],
     "XEM_CHA":            ["xem cha: ", "view parent: "],
+    "XEM_QUOTA":          ["xem quota", "view quota"],
+    "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
+    "RESET_QUOTA":        ["reset quota: "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
     "XEM_WIKI_PAGE": ["xem wiki "],
     "XEM_WIKI":      ["xem wiki"],
@@ -1373,6 +1485,27 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
     if text == "/security":
         await _cmd_security(chat_id, deps); return
 
+    # ── Step 2.5: quota enforcement for LLM-heavy operations ──────────────────
+    # Non-LLM commands (user management, quota admin) bypass this check.
+    _QUOTA_EXEMPT = {
+        "THEM_USER", "XEM_DANH_SACH_USER", "XOA_USER",
+        "DAT_BIRTHDATE", "DUYET_BIRTHDATE",
+        "DAT_USERNAME", "DUYET_USERNAME",
+        "DAT_CHA", "XEM_CHA",
+        "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
+    }
+    _matched = match_command(text, _COMMAND_TABLE)
+    if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
+        if _is_over_quota(user, deps):
+            quota = deps.user_store.get_quota(user.id)
+            await deps.channel.send(
+                chat_id,
+                f"Bạn đã dùng hết quota tháng này ({quota['used_tokens']:,}/{quota['monthly_token_limit']:,} tokens). "
+                "Liên hệ admin để được reset hoặc tăng giới hạn.",
+                use_markdown=False,
+            )
+            return
+
     # ── Step 3: prefix-based dispatch (longest-prefix-first, diacritic-agnostic) ──
     result = match_command(text, _COMMAND_TABLE)
     if result:
@@ -1396,6 +1529,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_cha(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_CHA":
             await _cmd_xem_cha(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_QUOTA":
+            await _cmd_xem_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_QUOTA":
+            await _cmd_dat_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "RESET_QUOTA":
+            await _cmd_reset_quota(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
@@ -1422,4 +1561,4 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_tom_tat_tuan(chat_id, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
-    await _handle_general_question(chat_id, text, deps)
+    await _handle_general_question(chat_id, text, deps, user=user)

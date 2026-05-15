@@ -383,6 +383,71 @@ class SqliteUserStore:
             )
         return True
 
+    # ── Quota ─────────────────────────────────────────────────────────────────
+
+    def get_quota(self, user_id: int) -> dict | None:
+        """Return the quota row for user_id, or None if no row exists.
+
+        Dict keys: user_id, monthly_token_limit, used_tokens, month.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM user_quotas WHERE user_id = ?", (user_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def set_quota(self, user_id: int, monthly_token_limit: int) -> None:
+        """Upsert the monthly token limit for user_id.
+
+        Set monthly_token_limit = 0 for unlimited.
+        """
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO user_quotas (user_id, monthly_token_limit, used_tokens, month)
+                VALUES (?, ?, 0, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    monthly_token_limit = excluded.monthly_token_limit,
+                    updated_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')
+                """,
+                (user_id, monthly_token_limit, month),
+            )
+
+    def record_usage(self, user_id: int, tokens: int) -> None:
+        """Add tokens to the user's current-month usage, auto-resetting if the month changed."""
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        with self._conn:
+            existing = self._conn.execute(
+                "SELECT month FROM user_quotas WHERE user_id = ?", (user_id,)
+            ).fetchone()
+            if existing is None:
+                self._conn.execute(
+                    "INSERT INTO user_quotas (user_id, monthly_token_limit, used_tokens, month) VALUES (?, 0, ?, ?)",
+                    (user_id, tokens, month),
+                )
+            elif existing["month"] != month:
+                self._conn.execute(
+                    "UPDATE user_quotas SET used_tokens = ?, month = ?, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE user_id = ?",
+                    (tokens, month, user_id),
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE user_quotas SET used_tokens = used_tokens + ?, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE user_id = ?",
+                    (tokens, user_id),
+                )
+
+    def reset_usage(self, user_id: int) -> bool:
+        """Reset current-month usage for user_id to 0.
+
+        Returns True if a row was updated, False if no quota row exists.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE user_quotas SET used_tokens = 0, updated_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE user_id = ?",
+                (user_id,),
+            )
+        return cur.rowcount > 0
+
     # ── Parent links ──────────────────────────────────────────────────────────
 
     def set_parent(self, user_id: int, parent_id: int, set_by: int) -> None:
