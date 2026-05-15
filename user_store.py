@@ -158,6 +158,108 @@ class SqliteUserStore:
 
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
+    # ── Birthdate changes ─────────────────────────────────────────────────────
+
+    def request_birthdate_change(self, user_id: int, new_birthdate: date) -> int:
+        """Create a pending birthdate change request. Returns the request id.
+
+        Raises ValueError if there is already a pending request for this user.
+        """
+        existing = self.get_pending_birthdate_change(user_id)
+        if existing is not None:
+            raise ValueError(f"User {user_id} already has a pending birthdate request (id={existing['id']})")
+
+        with self._conn:
+            cur = self._conn.execute(
+                """
+                INSERT INTO birthdate_changes (user_id, new_birthdate)
+                VALUES (?, ?)
+                """,
+                (user_id, new_birthdate.isoformat()),
+            )
+        return cur.lastrowid
+
+    def get_pending_birthdate_change(self, user_id: int) -> dict | None:
+        """Return the pending birthdate change row for a user, or None."""
+        row = self._conn.execute(
+            """
+            SELECT * FROM birthdate_changes
+            WHERE user_id = ? AND approved_at IS NULL AND rejected_at IS NULL
+            ORDER BY requested_at DESC LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return dict(row)
+
+    def list_pending_birthdate_changes(self) -> list[dict]:
+        """Return all pending birthdate change requests."""
+        rows = self._conn.execute(
+            """
+            SELECT bc.*, u.name as user_name
+            FROM birthdate_changes bc
+            JOIN users u ON u.id = bc.user_id
+            WHERE bc.approved_at IS NULL AND bc.rejected_at IS NULL
+            ORDER BY bc.requested_at ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def approve_birthdate_change(self, request_id: int, approver_id: int) -> bool:
+        """Approve a birthdate change request and update the user's birthdate.
+
+        Returns True if approved, False if request not found or already resolved.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM birthdate_changes WHERE id = ? AND approved_at IS NULL AND rejected_at IS NULL",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE birthdate_changes
+                SET approved_by = ?, approved_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (approver_id, request_id),
+            )
+            self._conn.execute(
+                "UPDATE users SET birthdate = ? WHERE id = ?",
+                (row["new_birthdate"], row["user_id"]),
+            )
+        return True
+
+    def reject_birthdate_change(
+        self, request_id: int, approver_id: int, note: str = ""
+    ) -> bool:
+        """Reject a birthdate change request.
+
+        Returns True if rejected, False if request not found or already resolved.
+        """
+        row = self._conn.execute(
+            "SELECT id FROM birthdate_changes WHERE id = ? AND approved_at IS NULL AND rejected_at IS NULL",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE birthdate_changes
+                SET approved_by = ?, rejected_at = CURRENT_TIMESTAMP, rejection_note = ?
+                WHERE id = ?
+                """,
+                (approver_id, note, request_id),
+            )
+        return True
+
+    # ── Bootstrap ─────────────────────────────────────────────────────────────
+
     def bootstrap_admin(self) -> User | None:
         """Create the first admin user and bind TELEGRAM_CHAT_ID if users table is empty.
 

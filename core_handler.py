@@ -403,6 +403,111 @@ async def _cmd_xoa_user(
         await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
 
 
+_MIN_BIRTHDATE = "1900-01-01"
+
+
+async def _cmd_dat_birthdate(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat birthdate: YYYY-MM-DD — request a birthdate change (requires manager approval)."""
+    raw = body.strip()
+    try:
+        new_bd = date.fromisoformat(raw)
+    except ValueError:
+        await deps.channel.send(
+            chat_id,
+            "Định dạng không hợp lệ. Dùng: dat birthdate: YYYY-MM-DD\nVí dụ: dat birthdate: 1990-05-15",
+            use_markdown=False,
+        )
+        return
+
+    today = date.today()
+    if new_bd > today:
+        await deps.channel.send(chat_id, "Ngày sinh không thể là ngày tương lai.", use_markdown=False)
+        return
+    if new_bd < date.fromisoformat(_MIN_BIRTHDATE):
+        await deps.channel.send(chat_id, f"Ngày sinh không hợp lệ (trước {_MIN_BIRTHDATE}).", use_markdown=False)
+        return
+
+    try:
+        req_id = deps.user_store.request_birthdate_change(user.id, new_bd)
+        await deps.channel.send(
+            chat_id,
+            f"Đã gửi yêu cầu đổi ngày sinh thành *{raw}* (mã #{req_id}).\n"
+            f"Vui lòng chờ manager/admin duyệt.",
+        )
+    except ValueError as e:
+        await deps.channel.send(chat_id, f"Bạn đã có yêu cầu đang chờ duyệt. {str(e)}", use_markdown=False)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_duyet_birthdate(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """duyet birthdate: <id> ok | tu choi [ly do] — manager approves or rejects a request."""
+    if not can_manage(user):
+        await deps.channel.send(
+            chat_id, "Chỉ manager/admin mới có thể duyệt yêu cầu.", use_markdown=False,
+        )
+        return
+
+    # No body → show pending list
+    if not body.strip():
+        pending = deps.user_store.list_pending_birthdate_changes()
+        if not pending:
+            await deps.channel.send(chat_id, "Không có yêu cầu ngày sinh nào đang chờ duyệt.", use_markdown=False)
+            return
+        lines = ["Yêu cầu đổi ngày sinh đang chờ:"]
+        for r in pending:
+            lines.append(f"• #{r['id']} — {r['user_name']} → {r['new_birthdate']}")
+        lines.append("\nDùng: duyet birthdate: <id> ok | tu choi [ly do]")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+        return
+
+    parts = body.strip().split(None, 2)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: duyet birthdate: <id> ok | tu choi [lý do]\n"
+            "Hoặc: duyet birthdate để xem danh sách đang chờ.",
+            use_markdown=False,
+        )
+        return
+
+    req_id = int(parts[0])
+    action = parts[1].lower()
+    note = parts[2].strip() if len(parts) > 2 else ""
+
+    if action in ("ok", "duyet", "duyệt"):
+        ok = deps.user_store.approve_birthdate_change(req_id, user.id)
+        if ok:
+            await deps.channel.send(
+                chat_id, f"Đã duyệt yêu cầu #{req_id}.", use_markdown=False,
+            )
+        else:
+            await deps.channel.send(
+                chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False,
+            )
+    elif action in ("tu choi", "từ chối", "reject", "no"):
+        ok = deps.user_store.reject_birthdate_change(req_id, user.id, note)
+        if ok:
+            reason = f" Lý do: {note}" if note else ""
+            await deps.channel.send(
+                chat_id, f"Đã từ chối yêu cầu #{req_id}.{reason}", use_markdown=False,
+            )
+        else:
+            await deps.channel.send(
+                chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False,
+            )
+    else:
+        await deps.channel.send(
+            chat_id,
+            f"Hành động không hợp lệ: '{action}'. Dùng 'ok' hoặc 'tu choi'.",
+            use_markdown=False,
+        )
+
+
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
@@ -1048,6 +1153,8 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "THEM_USER":          ["thêm user: ", "them user: ", "add user: "],
     "XEM_DANH_SACH_USER": ["xem danh sach user", "xem danh sách user", "list users"],
     "XOA_USER":           ["xoa user: ", "xóa user: ", "delete user: "],
+    "DAT_BIRTHDATE":      ["dat birthdate: ", "đặt birthdate: ", "set birthdate: "],
+    "DUYET_BIRTHDATE":    ["duyet birthdate", "duyệt birthdate", "approve birthdate"],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
     "XEM_WIKI_PAGE": ["xem wiki "],
     "XEM_WIKI":      ["xem wiki"],
@@ -1095,6 +1202,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_xem_danh_sach_user(chat_id, user, deps); return
         if cmd_id == "XOA_USER":
             await _cmd_xoa_user(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_BIRTHDATE":
+            await _cmd_dat_birthdate(chat_id, remainder, user, deps); return
+        if cmd_id == "DUYET_BIRTHDATE":
+            await _cmd_duyet_birthdate(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
