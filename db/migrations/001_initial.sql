@@ -1,0 +1,4 @@
+CREATE TABLE IF NOT EXISTS _schema_version (
+    version     INTEGER PRIMARY KEY,
+    applied_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
