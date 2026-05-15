@@ -512,6 +512,35 @@ class SqliteUserStore:
             )
         return cur.rowcount > 0
 
+    # ── Password ──────────────────────────────────────────────────────────────
+
+    def set_password(self, user_id: int, plain: str) -> None:
+        """Hash plain with argon2id and store it in users.password_hash.
+
+        Raises ValueError if user not found.
+        """
+        from auth import hash_password
+        if self.get_user_by_id(user_id) is None:
+            raise ValueError(f"User {user_id} not found.")
+        hashed = hash_password(plain)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE users SET password_hash = ? WHERE id = ?", (hashed, user_id)
+            )
+
+    def check_password(self, user_id: int, plain: str) -> bool:
+        """Return True if plain matches the stored argon2id hash for user_id.
+
+        Returns False for unknown users or users without a password set.
+        """
+        from auth import verify_password
+        row = self._conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None or row["password_hash"] is None:
+            return False
+        return verify_password(plain, row["password_hash"])
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
     def bootstrap_admin(self) -> User | None:

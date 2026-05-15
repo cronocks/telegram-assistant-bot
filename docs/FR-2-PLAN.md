@@ -476,7 +476,7 @@ Trong branch `feature/FR2`, mỗi sub-deliverable một commit (hoặc gộp log
 | 7 | `feat(username): username field + change flow with admin approval` | `db/migrations/005_username_changes.sql`, `user_store.py`, `core_handler.py`, `text_utils.py` (validator + reserved names), `tests/test_username.py` | ✅ done |
 | 8 | `feat(family): parent_links + digest config commands` | `db/migrations/006_parent_links.sql`, `user_store.py`, `core_handler.py`, tests | ✅ done |
 | 9 | `feat(quota): per-user quota tracking` | `db/migrations/007_quota.sql`, `cost_monitor.py`, `core_handler.py`, `tests/test_cost_monitor.py` | ✅ done |
-| 10 | `feat(auth): argon2id password infrastructure (not yet exposed)` | `db/migrations/008_password.sql`, `auth.py`, `interfaces.py`, `requirements.txt`, `tests/test_auth.py` | ⬜ |
+| 10 | `feat(auth): argon2id password infrastructure (not yet exposed)` | `db/migrations/008_password.sql`, `auth.py`, `interfaces.py`, `requirements.txt`, `tests/test_auth.py` | ✅ done |
 | 11 | `docs: update ROADMAP Section 8 + decision log entries from FR-2` | `docs/ROADMAP.md` | ⬜ |
 
 Mỗi commit độc lập build-pass (import OK, migrations apply, có thể chạy `pytest`). FR-2 "hoàn chỉnh" sau commit 11.
