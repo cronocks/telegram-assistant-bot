@@ -19,8 +19,12 @@ from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 from core_handler import CoreDeps, handle_message
 from cost_monitor import check_and_alert
+from db.migrations import run_migrations
 from drive_client import DriveNoteStore
+from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
+
+_REGISTER_PREFIXES = ("dang ky:", "đăng ký:")
 
 scheduler = AsyncIOScheduler()
 
@@ -33,8 +37,9 @@ llm = AnthropicLLM()
 notes = DriveNoteStore()
 wiki = DriveWikiStore(llm=llm)
 channel = TelegramAdapter(token=TELEGRAM_TOKEN, allowed_chat_id=TELEGRAM_CHAT_ID)
+user_store = SqliteUserStore()
 
-deps = CoreDeps(llm=llm, notes=notes, wiki=wiki, channel=channel)
+deps = CoreDeps(llm=llm, notes=notes, wiki=wiki, channel=channel, user_store=user_store)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -43,6 +48,19 @@ deps = CoreDeps(llm=llm, notes=notes, wiki=wiki, channel=channel)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # DB: run migrations then bootstrap first admin user
+    try:
+        run_migrations()
+        user_store = SqliteUserStore()
+        admin = user_store.bootstrap_admin()
+        if admin:
+            print(f"[bot] DB ready — admin: {admin.name} (id={admin.id})")
+        else:
+            print("[bot] DB ready — no bootstrap (TELEGRAM_CHAT_ID not set or users exist)")
+    except Exception as e:
+        print(f"[bot] DB ERROR at startup: {e}")
+        traceback.print_exc()
+
     print("[bot] Testing Google Drive connection at startup...")
     try:
         result = notes.test_connection()
@@ -65,6 +83,23 @@ app = FastAPI(lifespan=lifespan)
 # Webhook & health
 # ═══════════════════════════════════════════════════════════════════════════════
 
+async def _handle_registration(msg_chat_id: str, code: str) -> None:
+    """Handle dang ky command before user auth check."""
+    user = user_store.consume_invite_code(code, "telegram", msg_chat_id)
+    if user is None:
+        await channel.send(
+            msg_chat_id,
+            "Mã mời không hợp lệ, đã dùng, hoặc đã hết hạn. Liên hệ admin để lấy mã mới.",
+            use_markdown=False,
+        )
+        return
+    await channel.send(
+        msg_chat_id,
+        f"Chào mừng *{user.name}*! Tài khoản đã được kích hoạt (role: {user.role}).\n"
+        f"Gõ /start để xem danh sách lệnh.",
+    )
+
+
 @app.post("/webhook")
 async def webhook(request: Request):
     try:
@@ -73,13 +108,31 @@ async def webhook(request: Request):
         if not msg:
             return {"ok": True}
 
-        # Single-user authorization (chat_id lock). FR-2 replaces this with a
-        # user registry across all channels.
-        if not channel.is_authorized(msg):
-            print(f"[security] Rejected message from unauthorized chat_id={msg.chat_id}")
+        # Pre-auth: allow registration command for unbound users.
+        low = msg.text.strip().lower()
+        for prefix in _REGISTER_PREFIXES:
+            if low.startswith(prefix):
+                code = msg.text.strip()[len(prefix):].strip()
+                await _handle_registration(msg.chat_id, code)
+                return {"ok": True}
+
+        # All other commands require a registered, active user.
+        user = user_store.find_by_channel(msg.channel, msg.chat_id)
+        if user is None:
+            await channel.send(
+                msg.chat_id,
+                "Bạn chưa được đăng ký. Liên hệ admin để được mời, "
+                "sau đó dùng lệnh: dang ky: <mã mời>",
+                use_markdown=False,
+            )
+            return {"ok": True}
+        if not user.is_active:
+            await channel.send(
+                msg.chat_id, "Tài khoản của bạn đã bị vô hiệu hóa.", use_markdown=False,
+            )
             return {"ok": True}
 
-        await handle_message(msg, deps)
+        await handle_message(msg, user, deps)
     except Exception as e:
         traceback.print_exc()
     return {"ok": True}

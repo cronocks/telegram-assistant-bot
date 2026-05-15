@@ -18,7 +18,9 @@ from config import (
     PENDING_CHOICE_TIMEOUT_SEC,
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
-from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, WikiStore
+from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
+from permissions import can_manage, has_role
+from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
 
@@ -34,6 +36,7 @@ class CoreDeps:
     notes: NoteStore
     wiki: WikiStore
     channel: ChannelAdapter
+    user_store: UserStore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -286,6 +289,499 @@ async def _try_resolve_pending(
 # ═══════════════════════════════════════════════════════════════════════════════
 # Command handlers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+_VALID_ROLES = {"admin", "manager", "member", "readonly"}
+
+
+async def _cmd_them_user(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """them user: <name>, <role> — admin creates a new user and returns an invite code."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể thêm user.", use_markdown=False)
+        return
+
+    parts = body.split(",", 1)
+    if len(parts) != 2:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: them user: <tên>, <role>\n"
+            "Role hợp lệ: admin, manager, member, readonly",
+            use_markdown=False,
+        )
+        return
+
+    name = parts[0].strip()
+    role = parts[1].strip().lower()
+
+    if not name:
+        await deps.channel.send(chat_id, "Thiếu tên user.", use_markdown=False)
+        return
+    if role not in _VALID_ROLES:
+        await deps.channel.send(
+            chat_id,
+            f"Role không hợp lệ: '{role}'. Chọn: admin, manager, member, readonly",
+            use_markdown=False,
+        )
+        return
+
+    try:
+        new_user = deps.user_store.create_user(name=name, role=role)
+        code = deps.user_store.create_invite_code(
+            intended_user_id=new_user.id, created_by=user.id
+        )
+        await deps.channel.send(
+            chat_id,
+            f"Đã tạo user *{name}* (role: {role}, id: {new_user.id}).\n\n"
+            f"Mã mời (hết hạn sau 7 ngày):\n`{code}`\n\n"
+            f"Gửi mã này cho {name}, họ dùng lệnh:\n`dang ky: {code}`",
+        )
+    except Exception as e:
+        await deps.channel.send(
+            chat_id, f"Lỗi khi tạo user: {str(e)[:400]}", use_markdown=False,
+        )
+
+
+async def _cmd_xem_danh_sach_user(
+    chat_id: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem danh sach user — admin/manager lists all active users."""
+    if not can_manage(user):
+        await deps.channel.send(
+            chat_id, "Chỉ admin hoặc manager mới có thể xem danh sách user.",
+            use_markdown=False,
+        )
+        return
+    try:
+        users = deps.user_store.list_users()
+        if not users:
+            await deps.channel.send(chat_id, "Chưa có user nào.", use_markdown=False)
+            return
+        lines = [f"Danh sách user ({len(users)} người):"]
+        for u in users:
+            lines.append(f"• [{u.id}] {u.name} — {u.role}")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_xoa_user(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xoa user: <id> — admin soft-deletes a user."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể xóa user.", use_markdown=False)
+        return
+
+    if not body.strip().isdigit():
+        await deps.channel.send(
+            chat_id, "Cú pháp: xoa user: <id>\nVí dụ: xoa user: 3",
+            use_markdown=False,
+        )
+        return
+
+    target_id = int(body.strip())
+    if target_id == user.id:
+        await deps.channel.send(
+            chat_id, "Không thể tự xóa tài khoản của mình.", use_markdown=False,
+        )
+        return
+
+    try:
+        target = deps.user_store.get_user_by_id(target_id)
+        if target is None or not target.is_active:
+            await deps.channel.send(
+                chat_id, f"Không tìm thấy user id={target_id}.", use_markdown=False,
+            )
+            return
+        deps.user_store.soft_delete_user(target_id)
+        await deps.channel.send(
+            chat_id, f"Đã vô hiệu hóa user: {target.name} (id={target_id}).",
+            use_markdown=False,
+        )
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+_MIN_BIRTHDATE = "1900-01-01"
+
+
+async def _cmd_dat_birthdate(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat birthdate: YYYY-MM-DD — request a birthdate change (requires manager approval)."""
+    raw = body.strip()
+    try:
+        new_bd = date.fromisoformat(raw)
+    except ValueError:
+        await deps.channel.send(
+            chat_id,
+            "Định dạng không hợp lệ. Dùng: dat birthdate: YYYY-MM-DD\nVí dụ: dat birthdate: 1990-05-15",
+            use_markdown=False,
+        )
+        return
+
+    today = date.today()
+    if new_bd > today:
+        await deps.channel.send(chat_id, "Ngày sinh không thể là ngày tương lai.", use_markdown=False)
+        return
+    if new_bd < date.fromisoformat(_MIN_BIRTHDATE):
+        await deps.channel.send(chat_id, f"Ngày sinh không hợp lệ (trước {_MIN_BIRTHDATE}).", use_markdown=False)
+        return
+
+    try:
+        req_id = deps.user_store.request_birthdate_change(user.id, new_bd)
+        await deps.channel.send(
+            chat_id,
+            f"Đã gửi yêu cầu đổi ngày sinh thành *{raw}* (mã #{req_id}).\n"
+            f"Vui lòng chờ manager/admin duyệt.",
+        )
+    except ValueError as e:
+        await deps.channel.send(chat_id, f"Bạn đã có yêu cầu đang chờ duyệt. {str(e)}", use_markdown=False)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_duyet_birthdate(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """duyet birthdate: <id> ok | tu choi [ly do] — manager approves or rejects a request."""
+    if not can_manage(user):
+        await deps.channel.send(
+            chat_id, "Chỉ manager/admin mới có thể duyệt yêu cầu.", use_markdown=False,
+        )
+        return
+
+    # No body → show pending list
+    if not body.strip():
+        pending = deps.user_store.list_pending_birthdate_changes()
+        if not pending:
+            await deps.channel.send(chat_id, "Không có yêu cầu ngày sinh nào đang chờ duyệt.", use_markdown=False)
+            return
+        lines = ["Yêu cầu đổi ngày sinh đang chờ:"]
+        for r in pending:
+            lines.append(f"• #{r['id']} — {r['user_name']} → {r['new_birthdate']}")
+        lines.append("\nDùng: duyet birthdate: <id> ok | tu choi [ly do]")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+        return
+
+    parts = body.strip().split(None, 2)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: duyet birthdate: <id> ok | tu choi [lý do]\n"
+            "Hoặc: duyet birthdate để xem danh sách đang chờ.",
+            use_markdown=False,
+        )
+        return
+
+    req_id = int(parts[0])
+    action = parts[1].lower()
+    note = parts[2].strip() if len(parts) > 2 else ""
+
+    if action in ("ok", "duyet", "duyệt"):
+        ok = deps.user_store.approve_birthdate_change(req_id, user.id)
+        if ok:
+            await deps.channel.send(
+                chat_id, f"Đã duyệt yêu cầu #{req_id}.", use_markdown=False,
+            )
+        else:
+            await deps.channel.send(
+                chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False,
+            )
+    elif action in ("tu choi", "từ chối", "reject", "no"):
+        ok = deps.user_store.reject_birthdate_change(req_id, user.id, note)
+        if ok:
+            reason = f" Lý do: {note}" if note else ""
+            await deps.channel.send(
+                chat_id, f"Đã từ chối yêu cầu #{req_id}.{reason}", use_markdown=False,
+            )
+        else:
+            await deps.channel.send(
+                chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False,
+            )
+    else:
+        await deps.channel.send(
+            chat_id,
+            f"Hành động không hợp lệ: '{action}'. Dùng 'ok' hoặc 'tu choi'.",
+            use_markdown=False,
+        )
+
+
+async def _cmd_dat_username(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat username: <name> — set username for the first time, or queue a change request."""
+    name = body.strip()
+    if not name:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: dat username: <tên>\nVí dụ: dat username: alice99",
+            use_markdown=False,
+        )
+        return
+
+    err = validate_username(name)
+    if err:
+        await deps.channel.send(chat_id, err, use_markdown=False)
+        return
+
+    try:
+        if user.username is None:
+            deps.user_store.set_username_direct(user.id, name)
+            await deps.channel.send(
+                chat_id, f"Username đã được đặt thành *{name}*.",
+            )
+        else:
+            req_id = deps.user_store.request_username_change(user.id, name)
+            await deps.channel.send(
+                chat_id,
+                f"Đã gửi yêu cầu đổi username thành *{name}* (mã #{req_id}).\n"
+                f"Vui lòng chờ admin duyệt.",
+            )
+    except ValueError as e:
+        await deps.channel.send(chat_id, str(e), use_markdown=False)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_duyet_username(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """duyet username: <id> ok | tu choi [ly do] — admin approves or rejects a request."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể duyệt yêu cầu đổi username.", use_markdown=False,
+        )
+        return
+
+    if not body.strip():
+        pending = deps.user_store.list_pending_username_changes()
+        if not pending:
+            await deps.channel.send(chat_id, "Không có yêu cầu đổi username nào đang chờ duyệt.", use_markdown=False)
+            return
+        lines = ["Yêu cầu đổi username đang chờ:"]
+        for r in pending:
+            old = r["old_username"] or "(chưa có)"
+            lines.append(f"• #{r['id']} — {r['user_name']}: {old} → {r['new_username']}")
+        lines.append("\nDùng: duyet username: <id> ok | tu choi [ly do]")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+        return
+
+    parts = body.strip().split(None, 2)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: duyet username: <id> ok | tu choi [lý do]\n"
+            "Hoặc: duyet username để xem danh sách đang chờ.",
+            use_markdown=False,
+        )
+        return
+
+    req_id = int(parts[0])
+    action = parts[1].lower()
+    note = parts[2].strip() if len(parts) > 2 else ""
+
+    if action in ("ok", "duyet", "duyệt"):
+        ok = deps.user_store.approve_username_change(req_id, user.id)
+        if ok:
+            await deps.channel.send(chat_id, f"Đã duyệt yêu cầu #{req_id}.", use_markdown=False)
+        else:
+            await deps.channel.send(chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False)
+    elif action in ("tu choi", "từ chối", "reject", "no"):
+        ok = deps.user_store.reject_username_change(req_id, user.id, note)
+        if ok:
+            reason = f" Lý do: {note}" if note else ""
+            await deps.channel.send(chat_id, f"Đã từ chối yêu cầu #{req_id}.{reason}", use_markdown=False)
+        else:
+            await deps.channel.send(chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False)
+    else:
+        await deps.channel.send(
+            chat_id,
+            f"Hành động không hợp lệ: '{action}'. Dùng 'ok' hoặc 'tu choi'.",
+            use_markdown=False,
+        )
+
+
+async def _cmd_dat_cha(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat cha: <user_id> <parent_id> — admin/manager sets a parent for a user."""
+    if not has_role(user, "admin", "manager"):
+        await deps.channel.send(chat_id, "Chỉ admin/manager mới có thể đặt quan hệ cha-con.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: dat cha: <user_id> <parent_id>\n"
+            "Ví dụ: dat cha: 3 1 (user 3 có cha là user 1)\n"
+            "Dùng: dat cha: <user_id> 0 để xóa quan hệ cha-con.",
+            use_markdown=False,
+        )
+        return
+
+    user_id = int(parts[0])
+    parent_id = int(parts[1])
+
+    try:
+        if parent_id == 0:
+            removed = deps.user_store.remove_parent(user_id, user.id)
+            if removed:
+                await deps.channel.send(chat_id, f"Đã xóa quan hệ cha-con của user #{user_id}.", use_markdown=False)
+            else:
+                await deps.channel.send(chat_id, f"User #{user_id} không có quan hệ cha-con nào đang hoạt động.", use_markdown=False)
+        else:
+            deps.user_store.set_parent(user_id, parent_id, user.id)
+            child = deps.user_store.get_user_by_id(user_id)
+            parent = deps.user_store.get_user_by_id(parent_id)
+            child_name = child.name if child else f"#{user_id}"
+            parent_name = parent.name if parent else f"#{parent_id}"
+            await deps.channel.send(
+                chat_id,
+                f"Đã đặt {child_name} (#{user_id}) có cha là {parent_name} (#{parent_id}).",
+                use_markdown=False,
+            )
+    except ValueError as e:
+        await deps.channel.send(chat_id, str(e), use_markdown=False)
+
+
+async def _cmd_xem_cha(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem cha: <user_id> — show parent and children of a user."""
+    if not has_role(user, "admin", "manager"):
+        await deps.channel.send(chat_id, "Chỉ admin/manager mới có thể xem quan hệ cha-con.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if not parts or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id, "Cú pháp: xem cha: <user_id>", use_markdown=False,
+        )
+        return
+
+    target_id = int(parts[0])
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    lines = [f"Quan hệ của {target.name} (#{target_id}):"]
+
+    parent = deps.user_store.get_parent(target_id)
+    if parent:
+        lines.append(f"• Cha: {parent.name} (#{parent.id})")
+    else:
+        lines.append("• Cha: (chưa có)")
+
+    children = deps.user_store.get_children(target_id)
+    if children:
+        child_list = ", ".join(f"{c.name} (#{c.id})" for c in children)
+        lines.append(f"• Con: {child_list}")
+    else:
+        lines.append("• Con: (chưa có)")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_xem_quota(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem quota [user_id] — show token quota. Admin can view any user; others see own."""
+    target_id = user.id
+    if body.strip() and has_role(user, "admin", "manager"):
+        parts = body.strip().split()
+        if parts[0].isdigit():
+            target_id = int(parts[0])
+
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    quota = deps.user_store.get_quota(target_id)
+    if quota is None or quota["monthly_token_limit"] == 0:
+        limit_str = "không giới hạn"
+    else:
+        limit_str = f"{quota['monthly_token_limit']:,} tokens/tháng"
+
+    used = quota["used_tokens"] if quota else 0
+    month = quota["month"] if quota else "N/A"
+
+    lines = [
+        f"Quota của {target.name} (#{target_id}):",
+        f"• Giới hạn: {limit_str}",
+        f"• Đã dùng tháng {month}: {used:,} tokens",
+    ]
+    if quota and quota["monthly_token_limit"] > 0:
+        pct = min(100, round(used / quota["monthly_token_limit"] * 100, 1))
+        lines.append(f"• Sử dụng: {pct}%")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_dat_quota(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat quota: <user_id> <tokens> — admin sets monthly token limit (0 = unlimited)."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể đặt quota.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: dat quota: <user_id> <tokens>\n"
+            "Ví dụ: dat quota: 3 100000 (100k tokens/tháng)\n"
+            "Dùng 0 để bỏ giới hạn.",
+            use_markdown=False,
+        )
+        return
+
+    target_id = int(parts[0])
+    limit = int(parts[1])
+
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    deps.user_store.set_quota(target_id, limit)
+    if limit == 0:
+        await deps.channel.send(chat_id, f"Đã bỏ giới hạn quota cho {target.name} (#{target_id}).", use_markdown=False)
+    else:
+        await deps.channel.send(
+            chat_id,
+            f"Đã đặt quota cho {target.name} (#{target_id}): {limit:,} tokens/tháng.",
+            use_markdown=False,
+        )
+
+
+async def _cmd_reset_quota(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """reset quota: <user_id> — admin resets a user's current-month usage to 0."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể reset quota.", use_markdown=False)
+        return
+
+    parts = body.strip().split()
+    if not parts or not parts[0].isdigit():
+        await deps.channel.send(chat_id, "Cú pháp: reset quota: <user_id>", use_markdown=False)
+        return
+
+    target_id = int(parts[0])
+    target = deps.user_store.get_user_by_id(target_id)
+    if target is None:
+        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
+        return
+
+    deps.user_store.reset_usage(target_id)
+    await deps.channel.send(chat_id, f"Đã reset usage của {target.name} (#{target_id}).", use_markdown=False)
+
 
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
@@ -853,7 +1349,7 @@ async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
 
 
 async def _handle_general_question(
-    chat_id: str, text: str, deps: CoreDeps,
+    chat_id: str, text: str, deps: CoreDeps, user: User | None = None,
 ) -> None:
     """Free-form question fallback — smart search + Claude answer.
 
@@ -914,34 +1410,61 @@ async def _handle_general_question(
         reply, tokens = deps.llm.ask(text, notes_context)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
+        if user is not None:
+            deps.user_store.record_usage(user.id, tokens)
         await deps.channel.send(chat_id, reply, use_markdown=False)
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
+def _is_over_quota(user: User, deps: CoreDeps) -> bool:
+    """Return True if the user has exceeded their monthly token quota."""
+    if has_role(user, "admin"):
+        return False
+    quota = deps.user_store.get_quota(user.id)
+    if quota is None or quota["monthly_token_limit"] == 0:
+        return False
+    return quota["used_tokens"] >= quota["monthly_token_limit"]
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Main dispatcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Command prefixes — names map directly to Vietnamese user input, so they
-# stay Vietnamese per CLAUDE.md coding conventions exception.
-PREFIX_GHI_NHO_VAO = ["ghi nhớ vào ", "ghi nho vao "]
-PREFIX_GHI_NHO     = ["ghi nhớ ", "ghi nho "]
-PREFIX_NHAT_KY     = ["nhật ký ", "nhat ky "]
-PREFIX_TIM         = ["tìm ", "tim "]
-PREFIX_XEM         = ["xem ", "xem "]   # must check "xem nhật ký" / "xem wiki" first
-EXACT_XEM_NHAT_KY  = {"xem nhật ký", "xem nhat ky"}
-EXACT_LIET_KE      = {"liệt kê", "liet ke"}
+# Command table — {command_id: [prefix, ...]}
+# Longer prefixes must be listed before shorter ones within the same command
+# so longest-prefix-first in match_command resolves ambiguity correctly.
+# Names that map directly to Vietnamese user input stay Vietnamese per CLAUDE.md.
+_COMMAND_TABLE: dict[str, list[str]] = {
+    "THEM_USER":          ["thêm user: ", "them user: ", "add user: "],
+    "XEM_DANH_SACH_USER": ["xem danh sach user", "xem danh sách user", "list users"],
+    "XOA_USER":           ["xoa user: ", "xóa user: ", "delete user: "],
+    "DAT_BIRTHDATE":      ["dat birthdate: ", "đặt birthdate: ", "set birthdate: "],
+    "DUYET_BIRTHDATE":    ["duyet birthdate", "duyệt birthdate", "approve birthdate"],
+    "DAT_USERNAME":       ["dat username: ", "đặt username: ", "set username: "],
+    "DUYET_USERNAME":     ["duyet username", "duyệt username", "approve username"],
+    "DAT_CHA":            ["dat cha: ", "đặt cha: ", "set parent: "],
+    "XEM_CHA":            ["xem cha: ", "view parent: "],
+    "XEM_QUOTA":          ["xem quota", "view quota"],
+    "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
+    "RESET_QUOTA":        ["reset quota: "],
+    "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
+    "XEM_WIKI_PAGE": ["xem wiki "],
+    "XEM_WIKI":      ["xem wiki"],
+    "WIKI":          ["wiki "],
+    "GHI_NHO_VAO":   ["ghi nhớ vào ", "ghi nho vao "],
+    "GHI_NHO":       ["ghi nhớ ", "ghi nho "],
+    "NHAT_KY":       ["nhật ký ", "nhat ky "],
+    "XEM_NHAT_KY":   ["xem nhật ký", "xem nhat ky"],
+    "LIET_KE":       ["liệt kê", "liet ke"],
+    "TIM":           ["tìm ", "tim ", "search "],
+    "XEM":           ["xem "],
+    "TOM_TAT_TUAN":  ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
+}
 
-# Wiki-specific commands (must be matched before generic "xem ").
-PREFIX_WIKI        = ["wiki "]
-PREFIX_HOI_WIKI    = ["hỏi wiki ", "hoi wiki "]
-EXACT_XEM_WIKI     = {"xem wiki"}
-PREFIX_XEM_WIKI    = ["xem wiki "]
 
-
-async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
+async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> None:
     """Dispatch a normalized inbound message to the appropriate handler."""
     chat_id = msg.chat_id
     text = msg.text.strip()
@@ -952,9 +1475,7 @@ async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
     if await _try_resolve_pending(chat_id, text, deps):
         return
 
-    # ── Step 2: system commands ────────────────────────────────────────────
-    low = _norm(text)
-
+    # ── Step 2: slash commands (not normalized) ────────────────────────────
     if text == "/start":
         await _cmd_start(chat_id, deps); return
     if text == "/cost":
@@ -964,59 +1485,80 @@ async def handle_message(msg: ChannelMessage, deps: CoreDeps) -> None:
     if text == "/security":
         await _cmd_security(chat_id, deps); return
 
-    # ── Step 3: exact-match commands ───────────────────────────────────────
-    if low in EXACT_XEM_NHAT_KY:
-        await _cmd_xem_nhat_ky(chat_id, deps); return
-    if low in EXACT_LIET_KE:
-        await _cmd_liet_ke(chat_id, deps); return
+    # ── Step 2.5: quota enforcement for LLM-heavy operations ──────────────────
+    # Non-LLM commands (user management, quota admin) bypass this check.
+    _QUOTA_EXEMPT = {
+        "THEM_USER", "XEM_DANH_SACH_USER", "XOA_USER",
+        "DAT_BIRTHDATE", "DUYET_BIRTHDATE",
+        "DAT_USERNAME", "DUYET_USERNAME",
+        "DAT_CHA", "XEM_CHA",
+        "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
+    }
+    _matched = match_command(text, _COMMAND_TABLE)
+    if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
+        if _is_over_quota(user, deps):
+            quota = deps.user_store.get_quota(user.id)
+            await deps.channel.send(
+                chat_id,
+                f"Bạn đã dùng hết quota tháng này ({quota['used_tokens']:,}/{quota['monthly_token_limit']:,} tokens). "
+                "Liên hệ admin để được reset hoặc tăng giới hạn.",
+                use_markdown=False,
+            )
+            return
 
-    # ── Step 4: wiki commands (checked before "xem" to avoid overlap) ──────
-    matched = _starts_with_any(text, PREFIX_HOI_WIKI)
-    if matched:
-        question = _strip_prefix(text, matched)
-        await _cmd_wiki_query(chat_id, question, deps); return
+    # ── Step 3: prefix-based dispatch (longest-prefix-first, diacritic-agnostic) ──
+    result = match_command(text, _COMMAND_TABLE)
+    if result:
+        cmd_id, remainder = result
 
-    matched = _starts_with_any(text, PREFIX_XEM_WIKI)
-    if matched:
-        topic_query = _strip_prefix(text, matched)
-        await _cmd_xem_wiki_page(chat_id, topic_query, deps); return
+        if cmd_id == "THEM_USER":
+            await _cmd_them_user(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_DANH_SACH_USER":
+            await _cmd_xem_danh_sach_user(chat_id, user, deps); return
+        if cmd_id == "XOA_USER":
+            await _cmd_xoa_user(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_BIRTHDATE":
+            await _cmd_dat_birthdate(chat_id, remainder, user, deps); return
+        if cmd_id == "DUYET_BIRTHDATE":
+            await _cmd_duyet_birthdate(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_USERNAME":
+            await _cmd_dat_username(chat_id, remainder, user, deps); return
+        if cmd_id == "DUYET_USERNAME":
+            await _cmd_duyet_username(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_CHA":
+            await _cmd_dat_cha(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_CHA":
+            await _cmd_xem_cha(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_QUOTA":
+            await _cmd_xem_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_QUOTA":
+            await _cmd_dat_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "RESET_QUOTA":
+            await _cmd_reset_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "HOI_WIKI":
+            await _cmd_wiki_query(chat_id, remainder, deps); return
+        if cmd_id == "XEM_WIKI_PAGE":
+            await _cmd_xem_wiki_page(chat_id, remainder, deps); return
+        if cmd_id == "XEM_WIKI":
+            await _cmd_xem_wiki_list(chat_id, deps); return
+        if cmd_id == "WIKI":
+            await _cmd_wiki_ingest(chat_id, remainder, deps); return
+        if cmd_id == "GHI_NHO_VAO":
+            await _cmd_ghi_nho_vao(chat_id, remainder, deps); return
+        if cmd_id == "GHI_NHO":
+            await _cmd_ghi_nho(chat_id, remainder, deps); return
+        if cmd_id == "NHAT_KY":
+            await _cmd_nhat_ky(chat_id, remainder, deps); return
+        if cmd_id == "XEM_NHAT_KY":
+            await _cmd_xem_nhat_ky(chat_id, deps); return
+        if cmd_id == "LIET_KE":
+            await _cmd_liet_ke(chat_id, deps); return
+        if cmd_id == "TIM":
+            await _cmd_tim(chat_id, remainder, deps); return
+        if cmd_id == "XEM":
+            await _cmd_xem(chat_id, remainder, deps); return
+        if cmd_id == "TOM_TAT_TUAN":
+            await _cmd_tom_tat_tuan(chat_id, deps); return
 
-    if low in EXACT_XEM_WIKI:
-        await _cmd_xem_wiki_list(chat_id, deps); return
-
-    matched = _starts_with_any(text, PREFIX_WIKI)
-    if matched:
-        content = _strip_prefix(text, matched)
-        await _cmd_wiki_ingest(chat_id, content, deps); return
-
-    # ── Step 5: general prefix commands (priority-ordered) ─────────────────
-    matched = _starts_with_any(text, PREFIX_GHI_NHO_VAO)
-    if matched:
-        body = _strip_prefix(text, matched)
-        await _cmd_ghi_nho_vao(chat_id, body, deps); return
-
-    matched = _starts_with_any(text, PREFIX_GHI_NHO)
-    if matched:
-        content = _strip_prefix(text, matched)
-        await _cmd_ghi_nho(chat_id, content, deps); return
-
-    matched = _starts_with_any(text, PREFIX_NHAT_KY)
-    if matched:
-        content = _strip_prefix(text, matched)
-        await _cmd_nhat_ky(chat_id, content, deps); return
-
-    matched = _starts_with_any(text, PREFIX_TIM)
-    if matched:
-        keyword = _strip_prefix(text, matched)
-        await _cmd_tim(chat_id, keyword, deps); return
-
-    matched = _starts_with_any(text, PREFIX_XEM)
-    if matched:
-        name_query = _strip_prefix(text, matched)
-        await _cmd_xem(chat_id, name_query, deps); return
-
-    if ("tóm tắt" in low or "tom tat" in low) and ("tuần" in low or "tuan" in low):
-        await _cmd_tom_tat_tuan(chat_id, deps); return
-
-    # ── Step 6: free-form question → wiki + smart search + Claude ──────────
-    await _handle_general_question(chat_id, text, deps)
+    # ── Step 4: free-form question → wiki + smart search + Claude ──────────
+    await _handle_general_question(chat_id, text, deps, user=user)

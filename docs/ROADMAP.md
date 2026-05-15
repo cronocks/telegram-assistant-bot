@@ -362,7 +362,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-2 — Users + Roles + Auth + Quota + Birthdate + Parent Links
-**Status:** PENDING (làm sau khi FR-1 verify OK)
+**Status:** ✅ DONE — branch `feature/FR2`, 11 commits, 148 tests passing (2026-05-15)
 **Scope:**
 - SQLite schema: `users`, `parent_links`, `channel_bindings`
 - Argon2id password hash (web auth — chưa expose qua Telegram)
@@ -526,6 +526,13 @@ INDEX (user_id, category_id, occurred_at)
 | 33 | 🚨 Git ops 100% user-owned (replaces #32) | User làm **TẤT CẢ** thao tác git. Claude mặc định = không chạm git. Khi user nhờ chạy lệnh git: bắt buộc protocol 4 bước (show → confirm → execute → report). Edit file không phải git op. | Incident 2026-05-12: Claude tự branch off `dev` → khi merge vào main đã kéo FR-1 lên production ngoài ý muốn. Quy tắc cũ (#32) cho Claude tự create branch → vẫn còn footgun. | 2026-05-12 |
 | 34 | Read-only ops miễn protocol | Claude tự do chạy: Read/Glob/Grep, `git log/show/diff/status/branch/ls-remote`, `git fetch` (cả `-p`), Bash view-only — không cần show + confirm | Read-only không thay đổi state nào nguy hiểm; ép protocol cho chúng làm chậm việc mà không đem lại safety | 2026-05-12 |
 | 35 | Shell content English only | Commit messages, inline bash comments, shell script content, và lệnh bash gợi ý trong chat reply — **bắt buộc English**, không có Vietnamese (kể cả không dấu) | Git bash trên Windows không render Vietnamese diacritics tốt → vỡ font khi user paste. Tránh ambiguity bằng cách dùng English duy nhất. | 2026-05-12 |
+| 36 | Migration runner | File-based idempotent runner (`db/migrations/*.sql`, sorted numerically, `_schema_version` table) thay vì inline Python | Dễ audit, dễ replay trên máy mới, migrations là plain SQL không cần import app code | 2026-05-15 |
+| 37 | `detect_types` bị loại | Bỏ `sqlite3.PARSE_DECLTYPES` khỏi connection config | Auto-convert DATE → `date` object làm `date.fromisoformat()` nhận `date` thay vì `str` → TypeError. Manual ISO parsing an toàn hơn. | 2026-05-15 |
+| 38 | Username first-set vs change | First-set (NULL → value) dùng `set_username_direct` không cần approval; đổi lần sau qua `username_changes` queue + admin duyệt + rate-limit 30 ngày | UX tốt cho lần đầu; sau đó cần kiểm soát để tránh impersonation | 2026-05-15 |
+| 39 | `_normalize_char` tách riêng | Ba tầng normalize: `_normalize_text` (full), `_normalize_prefix` (giữ trailing space), `_normalize_char` (per-char, không collapse whitespace) | `normalize_vn(" ")` → `""` do `.strip()` → offset sai khi map normalized length → original length. `_normalize_char` fix bằng cách bỏ whitespace collapsing. | 2026-05-15 |
+| 40 | `parent_links` bảng riêng | Quan hệ cha-con là bảng `parent_links` thay vì column `parent_id` trên `users` | Hỗ trợ multi-parent, soft history (deactivate thay vì xóa), dễ audit lịch sử thay đổi | 2026-05-15 |
+| 41 | Per-user quota store trong SQLite | `user_quotas` bảng riêng, auto-reset khi sang tháng mới (detect bằng `month` column) | Không cần cron reset; reset xảy ra lazy tại lần ghi đầu tiên của tháng mới | 2026-05-15 |
+| 42 | argon2-cffi cho password | `argon2-cffi` wrapper (argon2id) thay vì bcrypt hay PBKDF2 | Argon2id là winner của Password Hashing Competition 2015; memory-hard → chống GPU brute-force; đã quyết định từ Decision #10 | 2026-05-15 |
 
 ---
 
@@ -537,19 +544,26 @@ INDEX (user_id, category_id, occurred_at)
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-12)
-- ✅ **FR-1** đã merge vào `dev`
-- 🧪 Đang chờ user **test runtime trên Render staging** (bot test Telegram)
-- 📄 `docs/ROADMAP.md` vừa được tạo (file này)
+### Right now (2026-05-15)
+- ✅ **FR-1** đã merge vào `main` (production)
+- ✅ **FR-2** hoàn thành trên branch `feature/FR2` — 11 commits, 148 tests passing
+  - SQLite schema: users, channel_bindings, invite_codes, birthdate_changes, username_changes, parent_links, user_quotas, password_hash
+  - Multi-user registry, roles (admin/manager/member/readonly), soft-delete
+  - Invite code registration flow (Telegram)
+  - Birthdate change flow (manager approval)
+  - Username set + change flow (admin approval, 30-day rate-limit)
+  - Parent-child links (soft history)
+  - Per-user monthly token quota (lazy monthly reset)
+  - Argon2id password infrastructure (not yet exposed via commands)
 
 ### Immediate next steps
-1. User hoàn thành test FR-1 trên staging (theo checklist trong PR FR-1)
-2. Nếu OK → tạo PR `dev` → `main` để deploy production
-3. Sau khi FR-1 lên production: viết **plan FR-2** chi tiết (users + roles + parent_links + auth + quota)
+1. Merge `feature/FR2` → `dev` (test staging)
+2. Nếu staging OK → merge `feature/FR2` → `main` (production)
+3. Bắt đầu plan **FR-3** (SQLite + Scope + L1 Memory)
 
 ### Pending FRs
-- FR-2 (next) — Users + Roles + Auth + Quota + Birthdate + Parent Links
-- FR-3..FR-9 — sequential theo Section 5
+- FR-3 (next) — SQLite + Scope + L1 Memory
+- FR-4..FR-9 — sequential theo Section 5
 
 ---
 

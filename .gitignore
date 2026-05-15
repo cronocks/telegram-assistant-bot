@@ -23,3 +23,9 @@ venv/
 
 # Claude Code
 .claude/
+
+# SQLite database files
+bot.db
+bot.db-journal
+bot.db-wal
+bot.db-shm

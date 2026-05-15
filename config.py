@@ -27,23 +27,26 @@ BUDGET_LIMIT = float(os.getenv("BUDGET_LIMIT", "10.0"))
 ALERT_80     = BUDGET_LIMIT * 0.80
 ALERT_90     = BUDGET_LIMIT * 0.90
 
-# File lưu tracking chi phí local
+# Local file for cost tracking
 COST_FILE = "cost_tracker.json"
 
-# ── Timezone (mới) ────────────────────────────────────────────────────────────
-# UTC+7 — Hà Nội. Dùng offset cố định để không phụ thuộc tzdata trên container.
+# ── Timezone ──────────────────────────────────────────────────────────────────
+# UTC+7 — Hanoi. Fixed offset to avoid tzdata dependency on container.
 TIMEZONE_OFFSET_HOURS = 7
 
-# ── State management cho pending choice (mới) ────────────────────────────────
-PENDING_CHOICE_TIMEOUT_SEC = 60   # state pending hết hạn sau N giây
+# ── Pending choice state ──────────────────────────────────────────────────────
+PENDING_CHOICE_TIMEOUT_SEC = 60   # seconds before pending state expires
 
-# ── List notes (mới) ─────────────────────────────────────────────────────────
-LIST_RECENT_LIMIT  = 10           # liệt kê 10 file gần nhất
-FUZZY_SCAN_LIMIT   = 200          # scan tối đa N file để fuzzy match
-FUZZY_SHOW_LIMIT   = 10           # hiện tối đa N kết quả khi nhiều match
+# ── List notes ────────────────────────────────────────────────────────────────
+LIST_RECENT_LIMIT  = 10           # max files shown in recent list
+FUZZY_SCAN_LIMIT   = 200          # max files scanned for fuzzy match
+FUZZY_SHOW_LIMIT   = 10           # max results shown when multiple matches
 
 # ── Wiki ──────────────────────────────────────────────────────────────────────
 WIKI_SUBFOLDER          = os.getenv("WIKI_SUBFOLDER", "Wiki")
 MAX_WIKI_UPDATES        = int(os.getenv("MAX_WIKI_UPDATES", "3"))
 MAX_WIKI_PAGES_CONTEXT  = int(os.getenv("MAX_WIKI_PAGES_CONTEXT", "2"))
 MAX_WIKI_CONTEXT_CHARS  = int(os.getenv("MAX_WIKI_CONTEXT_CHARS", "400"))
+
+# ── SQLite ────────────────────────────────────────────────────────────────────
+SQLITE_PATH = os.getenv("SQLITE_PATH", "./bot.db")
