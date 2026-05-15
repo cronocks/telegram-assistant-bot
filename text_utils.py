@@ -55,6 +55,35 @@ def match_command(
     return best_command, remainder
 
 
+# ── Username validation ───────────────────────────────────────────────────────
+
+RESERVED_USERNAMES: frozenset[str] = frozenset({
+    "admin", "root", "bot", "system", "support",
+    "owner", "null", "undefined", "me", "you",
+})
+
+_USERNAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+$")
+
+
+def validate_username(name: str) -> str | None:
+    """Validate a username. Returns an error message string, or None if valid.
+
+    Rules:
+    - Length 3–32 characters
+    - Only [A-Za-z0-9_.-] allowed
+    - Not a reserved name (case-insensitive)
+    """
+    if len(name) < 3:
+        return "Username phải có ít nhất 3 ký tự."
+    if len(name) > 32:
+        return "Username không được vượt quá 32 ký tự."
+    if not _USERNAME_RE.match(name):
+        return "Username chỉ được chứa chữ cái, số, dấu gạch dưới (_), dấu chấm (.) và dấu gạch ngang (-)."
+    if name.lower() in RESERVED_USERNAMES:
+        return f"Username '{name}' là tên dành riêng, không thể sử dụng."
+    return None
+
+
 # ── Internal helpers ──────────────────────────────────────────────────────────
 
 def _normalize_text(text: str) -> str:

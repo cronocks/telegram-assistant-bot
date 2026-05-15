@@ -472,8 +472,8 @@ Trong branch `feature/FR2`, mỗi sub-deliverable một commit (hoặc gộp log
 | 3 | `feat(auth): channel bindings + invite-code registration` | `db/migrations/003_channel_bindings.sql`, `user_store.py`, `core_handler.py` (partial), `channel_telegram.py`, `tests/test_user_store.py` | ✅ done |
 | 4 | `feat(text): normalize_vn helper + multi-prefix matcher` | `text_utils.py`, `core_handler.py` (dispatcher refactor), `tests/test_text_utils.py` | ✅ done |
 | 5 | `feat(perms): roles + permissions middleware` | `permissions.py`, `core_handler.py` (commands gated), `tests/test_permissions.py` | ✅ done |
-| 6 | `feat(birthdate): birthdate change flow with manager approval` | `db/migrations/004_birthdate_changes.sql`, `user_store.py`, `core_handler.py`, tests | ⬜ |
-| 7 | `feat(username): username field + change flow with admin approval` | `db/migrations/005_username_changes.sql`, `user_store.py`, `core_handler.py`, `text_utils.py` (validator + reserved names), `tests/test_username.py` | ⬜ |
+| 6 | `feat(birthdate): birthdate change flow with manager approval` | `db/migrations/004_birthdate_changes.sql`, `user_store.py`, `core_handler.py`, tests | ✅ done |
+| 7 | `feat(username): username field + change flow with admin approval` | `db/migrations/005_username_changes.sql`, `user_store.py`, `core_handler.py`, `text_utils.py` (validator + reserved names), `tests/test_username.py` | ✅ done |
 | 8 | `feat(family): parent_links + digest config commands` | `db/migrations/006_parent_links.sql`, `user_store.py`, `core_handler.py`, tests | ⬜ |
 | 9 | `feat(quota): per-user quota tracking` | `db/migrations/007_quota.sql`, `cost_monitor.py`, `core_handler.py`, `tests/test_cost_monitor.py` | ⬜ |
 | 10 | `feat(auth): argon2id password infrastructure (not yet exposed)` | `db/migrations/008_password.sql`, `auth.py`, `interfaces.py`, `requirements.txt`, `tests/test_auth.py` | ⬜ |

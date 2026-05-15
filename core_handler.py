@@ -20,7 +20,7 @@ from config import (
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
-from text_utils import match_command, normalize_vn
+from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
 
@@ -500,6 +500,101 @@ async def _cmd_duyet_birthdate(
             await deps.channel.send(
                 chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False,
             )
+    else:
+        await deps.channel.send(
+            chat_id,
+            f"Hành động không hợp lệ: '{action}'. Dùng 'ok' hoặc 'tu choi'.",
+            use_markdown=False,
+        )
+
+
+async def _cmd_dat_username(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """dat username: <name> — set username for the first time, or queue a change request."""
+    name = body.strip()
+    if not name:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: dat username: <tên>\nVí dụ: dat username: alice99",
+            use_markdown=False,
+        )
+        return
+
+    err = validate_username(name)
+    if err:
+        await deps.channel.send(chat_id, err, use_markdown=False)
+        return
+
+    try:
+        if user.username is None:
+            deps.user_store.set_username_direct(user.id, name)
+            await deps.channel.send(
+                chat_id, f"Username đã được đặt thành *{name}*.",
+            )
+        else:
+            req_id = deps.user_store.request_username_change(user.id, name)
+            await deps.channel.send(
+                chat_id,
+                f"Đã gửi yêu cầu đổi username thành *{name}* (mã #{req_id}).\n"
+                f"Vui lòng chờ admin duyệt.",
+            )
+    except ValueError as e:
+        await deps.channel.send(chat_id, str(e), use_markdown=False)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_duyet_username(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """duyet username: <id> ok | tu choi [ly do] — admin approves or rejects a request."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể duyệt yêu cầu đổi username.", use_markdown=False,
+        )
+        return
+
+    if not body.strip():
+        pending = deps.user_store.list_pending_username_changes()
+        if not pending:
+            await deps.channel.send(chat_id, "Không có yêu cầu đổi username nào đang chờ duyệt.", use_markdown=False)
+            return
+        lines = ["Yêu cầu đổi username đang chờ:"]
+        for r in pending:
+            old = r["old_username"] or "(chưa có)"
+            lines.append(f"• #{r['id']} — {r['user_name']}: {old} → {r['new_username']}")
+        lines.append("\nDùng: duyet username: <id> ok | tu choi [ly do]")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+        return
+
+    parts = body.strip().split(None, 2)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: duyet username: <id> ok | tu choi [lý do]\n"
+            "Hoặc: duyet username để xem danh sách đang chờ.",
+            use_markdown=False,
+        )
+        return
+
+    req_id = int(parts[0])
+    action = parts[1].lower()
+    note = parts[2].strip() if len(parts) > 2 else ""
+
+    if action in ("ok", "duyet", "duyệt"):
+        ok = deps.user_store.approve_username_change(req_id, user.id)
+        if ok:
+            await deps.channel.send(chat_id, f"Đã duyệt yêu cầu #{req_id}.", use_markdown=False)
+        else:
+            await deps.channel.send(chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False)
+    elif action in ("tu choi", "từ chối", "reject", "no"):
+        ok = deps.user_store.reject_username_change(req_id, user.id, note)
+        if ok:
+            reason = f" Lý do: {note}" if note else ""
+            await deps.channel.send(chat_id, f"Đã từ chối yêu cầu #{req_id}.{reason}", use_markdown=False)
+        else:
+            await deps.channel.send(chat_id, f"Không tìm thấy yêu cầu #{req_id} hoặc đã xử lý.", use_markdown=False)
     else:
         await deps.channel.send(
             chat_id,
@@ -1155,6 +1250,8 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XOA_USER":           ["xoa user: ", "xóa user: ", "delete user: "],
     "DAT_BIRTHDATE":      ["dat birthdate: ", "đặt birthdate: ", "set birthdate: "],
     "DUYET_BIRTHDATE":    ["duyet birthdate", "duyệt birthdate", "approve birthdate"],
+    "DAT_USERNAME":       ["dat username: ", "đặt username: ", "set username: "],
+    "DUYET_USERNAME":     ["duyet username", "duyệt username", "approve username"],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
     "XEM_WIKI_PAGE": ["xem wiki "],
     "XEM_WIKI":      ["xem wiki"],
@@ -1206,6 +1303,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_birthdate(chat_id, remainder, user, deps); return
         if cmd_id == "DUYET_BIRTHDATE":
             await _cmd_duyet_birthdate(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_USERNAME":
+            await _cmd_dat_username(chat_id, remainder, user, deps); return
+        if cmd_id == "DUYET_USERNAME":
+            await _cmd_duyet_username(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI_PAGE":

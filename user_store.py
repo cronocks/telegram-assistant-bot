@@ -258,6 +258,131 @@ class SqliteUserStore:
             )
         return True
 
+    # ── Username changes ──────────────────────────────────────────────────────
+
+    def set_username_direct(self, user_id: int, username: str) -> None:
+        """Set username directly (first-set only: current username must be NULL).
+
+        Raises ValueError if user already has a username.
+        """
+        user = self.get_user_by_id(user_id)
+        if user is None:
+            raise ValueError(f"User {user_id} not found")
+        if user.username is not None:
+            raise ValueError(
+                f"User {user_id} already has username '{user.username}'. "
+                "Use request_username_change to change it."
+            )
+        with self._conn:
+            self._conn.execute(
+                "UPDATE users SET username = ? WHERE id = ?", (username, user_id)
+            )
+
+    def request_username_change(self, user_id: int, new_username: str) -> int:
+        """Queue a username change request (requires admin approval).
+
+        Raises ValueError if there is already a pending request, or the
+        rate-limit (30 days since last approved change) has not elapsed.
+        Returns the new request id.
+        """
+        existing = self.get_pending_username_change(user_id)
+        if existing is not None:
+            raise ValueError(f"User {user_id} already has a pending username request (id={existing['id']})")
+
+        last_row = self._conn.execute(
+            "SELECT MAX(approved_at) as last_approved FROM username_changes WHERE user_id = ? AND approved_at IS NOT NULL",
+            (user_id,),
+        ).fetchone()["last_approved"]
+
+        if last_row:
+            from datetime import timezone as _tz
+            last_dt = datetime.fromisoformat(last_row)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=_tz.utc)
+            days_since = (datetime.now(_tz.utc) - last_dt).days
+            if days_since < 30:
+                raise ValueError(
+                    f"Username đã được đổi {days_since} ngày trước. "
+                    f"Phải chờ {30 - days_since} ngày nữa."
+                )
+
+        user = self.get_user_by_id(user_id)
+        old_username = user.username if user else None
+
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO username_changes (user_id, old_username, new_username) VALUES (?, ?, ?)",
+                (user_id, old_username, new_username),
+            )
+        return cur.lastrowid
+
+    def get_pending_username_change(self, user_id: int) -> dict | None:
+        """Return the pending username change row for a user, or None."""
+        row = self._conn.execute(
+            """
+            SELECT * FROM username_changes
+            WHERE user_id = ? AND approved_at IS NULL AND rejected_at IS NULL
+            ORDER BY requested_at DESC LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_pending_username_changes(self) -> list[dict]:
+        """Return all pending username change requests."""
+        rows = self._conn.execute(
+            """
+            SELECT uc.*, u.name as user_name
+            FROM username_changes uc
+            JOIN users u ON u.id = uc.user_id
+            WHERE uc.approved_at IS NULL AND uc.rejected_at IS NULL
+            ORDER BY uc.requested_at ASC
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def approve_username_change(self, request_id: int, approver_id: int) -> bool:
+        """Approve a username change and update users.username.
+
+        Returns True if approved, False if not found or already resolved.
+        """
+        row = self._conn.execute(
+            "SELECT * FROM username_changes WHERE id = ? AND approved_at IS NULL AND rejected_at IS NULL",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        with self._conn:
+            self._conn.execute(
+                "UPDATE username_changes SET approved_by = ?, approved_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (approver_id, request_id),
+            )
+            self._conn.execute(
+                "UPDATE users SET username = ? WHERE id = ?",
+                (row["new_username"], row["user_id"]),
+            )
+        return True
+
+    def reject_username_change(self, request_id: int, approver_id: int, note: str = "") -> bool:
+        """Reject a username change request.
+
+        Returns True if rejected, False if not found or already resolved.
+        """
+        row = self._conn.execute(
+            "SELECT id FROM username_changes WHERE id = ? AND approved_at IS NULL AND rejected_at IS NULL",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        with self._conn:
+            self._conn.execute(
+                "UPDATE username_changes SET approved_by = ?, rejected_at = CURRENT_TIMESTAMP, rejection_note = ? WHERE id = ?",
+                (approver_id, note, request_id),
+            )
+        return True
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
     def bootstrap_admin(self) -> User | None:
