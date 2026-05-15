@@ -19,7 +19,9 @@ from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 from core_handler import CoreDeps, handle_message
 from cost_monitor import check_and_alert
+from db.migrations import run_migrations
 from drive_client import DriveNoteStore
+from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
 
 scheduler = AsyncIOScheduler()
@@ -43,6 +45,19 @@ deps = CoreDeps(llm=llm, notes=notes, wiki=wiki, channel=channel)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # DB: run migrations then bootstrap first admin user
+    try:
+        run_migrations()
+        user_store = SqliteUserStore()
+        admin = user_store.bootstrap_admin()
+        if admin:
+            print(f"[bot] DB ready — admin: {admin.name} (id={admin.id})")
+        else:
+            print("[bot] DB ready — no bootstrap (TELEGRAM_CHAT_ID not set or users exist)")
+    except Exception as e:
+        print(f"[bot] DB ERROR at startup: {e}")
+        traceback.print_exc()
+
     print("[bot] Testing Google Drive connection at startup...")
     try:
         result = notes.test_connection()

@@ -20,7 +20,6 @@ def _create_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(
         config.SQLITE_PATH,
         check_same_thread=False,
-        detect_types=sqlite3.PARSE_DECLTYPES,
     )
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

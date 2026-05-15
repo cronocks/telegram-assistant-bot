@@ -8,10 +8,35 @@ needs to change; the core stays untouched.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Protocol, runtime_checkable
 
 
 # ─── Domain types ─────────────────────────────────────────────────────────────
+
+@dataclass
+class User:
+    """A registered bot user backed by the SQLite users table."""
+    id: int
+    name: str
+    role: str                        # 'admin' | 'manager' | 'member' | 'readonly'
+    username: str | None = None      # login identifier; nullable until set by user
+    birthdate: date | None = None
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    deleted_at: datetime | None = None
+
+    @property
+    def is_active(self) -> bool:
+        return self.deleted_at is None
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+    @property
+    def is_manager(self) -> bool:
+        return self.role in ("admin", "manager")
+
 
 @dataclass
 class ChannelMessage:
@@ -232,3 +257,23 @@ class ChannelAdapter(Protocol):
     ) -> None:
         """Send a message to the given conversation."""
         ...
+
+
+# ─── User store ───────────────────────────────────────────────────────────────
+
+@runtime_checkable
+class UserStore(Protocol):
+    """Abstract user registry. Concrete impl: SqliteUserStore."""
+
+    def get_user_by_id(self, user_id: int) -> User | None: ...
+    def list_users(self, include_deleted: bool = False) -> list[User]: ...
+    def create_user(
+        self,
+        name: str,
+        role: str,
+        birthdate: date | None = None,
+        username: str | None = None,
+    ) -> User: ...
+    def soft_delete_user(self, user_id: int) -> None: ...
+    def update_user_role(self, user_id: int, role: str) -> None: ...
+    def bootstrap_admin(self) -> User | None: ...
