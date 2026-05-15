@@ -468,8 +468,8 @@ Trong branch `feature/FR2`, mỗi sub-deliverable một commit (hoặc gộp log
 | # | Commit message (English) | Files | Status |
 |---|--------------------------|-------|--------|
 | 1 | `feat(db): SQLite infrastructure + migration runner` | `db/*`, `db/migrations/001_initial.sql`, `config.py`, `.gitignore` | ✅ done |
-| 2 | `feat(users): users table + UserStore + bootstrap admin` | `db/migrations/002_users.sql`, `user_store.py` (partial), `interfaces.py` (partial), `main.py`, `tests/test_user_store.py` (partial) | ⬜ |
-| 3 | `feat(auth): channel bindings + invite-code registration` | `db/migrations/003_channel_bindings.sql`, `user_store.py`, `core_handler.py` (partial), `channel_telegram.py`, `tests/test_user_store.py` | ⬜ |
+| 2 | `feat(users): users table + UserStore + bootstrap admin` | `db/migrations/002_users.sql`, `user_store.py` (partial), `interfaces.py` (partial), `main.py`, `tests/test_user_store.py` (partial) | ✅ done |
+| 3 | `feat(auth): channel bindings + invite-code registration` | `db/migrations/003_channel_bindings.sql`, `user_store.py`, `core_handler.py` (partial), `channel_telegram.py`, `tests/test_user_store.py` | ✅ done |
 | 4 | `feat(text): normalize_vn helper + multi-prefix matcher` | `text_utils.py`, `core_handler.py` (dispatcher refactor), `tests/test_text_utils.py` | ⬜ |
 | 5 | `feat(perms): roles + permissions middleware` | `permissions.py`, `core_handler.py` (commands gated), `tests/test_permissions.py` | ⬜ |
 | 6 | `feat(birthdate): birthdate change flow with manager approval` | `db/migrations/004_birthdate_changes.sql`, `user_store.py`, `core_handler.py`, tests | ⬜ |

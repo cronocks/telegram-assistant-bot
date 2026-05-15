@@ -19,6 +19,7 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
+from text_utils import match_command, normalize_vn
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
 
@@ -977,22 +978,25 @@ async def _handle_general_question(
 # Main dispatcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Command prefixes — names map directly to Vietnamese user input, so they
-# stay Vietnamese per CLAUDE.md coding conventions exception.
-PREFIX_THEM_USER   = ["them user: ", "thêm user: "]
-PREFIX_GHI_NHO_VAO = ["ghi nhớ vào ", "ghi nho vao "]
-PREFIX_GHI_NHO     = ["ghi nhớ ", "ghi nho "]
-PREFIX_NHAT_KY     = ["nhật ký ", "nhat ky "]
-PREFIX_TIM         = ["tìm ", "tim "]
-PREFIX_XEM         = ["xem ", "xem "]   # must check "xem nhật ký" / "xem wiki" first
-EXACT_XEM_NHAT_KY  = {"xem nhật ký", "xem nhat ky"}
-EXACT_LIET_KE      = {"liệt kê", "liet ke"}
-
-# Wiki-specific commands (must be matched before generic "xem ").
-PREFIX_WIKI        = ["wiki "]
-PREFIX_HOI_WIKI    = ["hỏi wiki ", "hoi wiki "]
-EXACT_XEM_WIKI     = {"xem wiki"}
-PREFIX_XEM_WIKI    = ["xem wiki "]
+# Command table — {command_id: [prefix, ...]}
+# Longer prefixes must be listed before shorter ones within the same command
+# so longest-prefix-first in match_command resolves ambiguity correctly.
+# Names that map directly to Vietnamese user input stay Vietnamese per CLAUDE.md.
+_COMMAND_TABLE: dict[str, list[str]] = {
+    "THEM_USER":     ["thêm user: ", "them user: ", "add user: "],
+    "HOI_WIKI":      ["hỏi wiki ", "hoi wiki ", "ask wiki "],
+    "XEM_WIKI_PAGE": ["xem wiki "],
+    "XEM_WIKI":      ["xem wiki"],
+    "WIKI":          ["wiki "],
+    "GHI_NHO_VAO":   ["ghi nhớ vào ", "ghi nho vao "],
+    "GHI_NHO":       ["ghi nhớ ", "ghi nho "],
+    "NHAT_KY":       ["nhật ký ", "nhat ky "],
+    "XEM_NHAT_KY":   ["xem nhật ký", "xem nhat ky"],
+    "LIET_KE":       ["liệt kê", "liet ke"],
+    "TIM":           ["tìm ", "tim ", "search "],
+    "XEM":           ["xem "],
+    "TOM_TAT_TUAN":  ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
+}
 
 
 async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> None:
@@ -1006,9 +1010,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
     if await _try_resolve_pending(chat_id, text, deps):
         return
 
-    # ── Step 2: system commands ────────────────────────────────────────────
-    low = _norm(text)
-
+    # ── Step 2: slash commands (not normalized) ────────────────────────────
     if text == "/start":
         await _cmd_start(chat_id, deps); return
     if text == "/cost":
@@ -1018,65 +1020,37 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
     if text == "/security":
         await _cmd_security(chat_id, deps); return
 
-    # ── Step 3: exact-match commands ───────────────────────────────────────
-    if low in EXACT_XEM_NHAT_KY:
-        await _cmd_xem_nhat_ky(chat_id, deps); return
-    if low in EXACT_LIET_KE:
-        await _cmd_liet_ke(chat_id, deps); return
+    # ── Step 3: prefix-based dispatch (longest-prefix-first, diacritic-agnostic) ──
+    result = match_command(text, _COMMAND_TABLE)
+    if result:
+        cmd_id, remainder = result
 
-    # ── Step 4: wiki commands (checked before "xem" to avoid overlap) ──────
-    matched = _starts_with_any(text, PREFIX_HOI_WIKI)
-    if matched:
-        question = _strip_prefix(text, matched)
-        await _cmd_wiki_query(chat_id, question, deps); return
+        if cmd_id == "THEM_USER":
+            await _cmd_them_user(chat_id, remainder, user, deps); return
+        if cmd_id == "HOI_WIKI":
+            await _cmd_wiki_query(chat_id, remainder, deps); return
+        if cmd_id == "XEM_WIKI_PAGE":
+            await _cmd_xem_wiki_page(chat_id, remainder, deps); return
+        if cmd_id == "XEM_WIKI":
+            await _cmd_xem_wiki_list(chat_id, deps); return
+        if cmd_id == "WIKI":
+            await _cmd_wiki_ingest(chat_id, remainder, deps); return
+        if cmd_id == "GHI_NHO_VAO":
+            await _cmd_ghi_nho_vao(chat_id, remainder, deps); return
+        if cmd_id == "GHI_NHO":
+            await _cmd_ghi_nho(chat_id, remainder, deps); return
+        if cmd_id == "NHAT_KY":
+            await _cmd_nhat_ky(chat_id, remainder, deps); return
+        if cmd_id == "XEM_NHAT_KY":
+            await _cmd_xem_nhat_ky(chat_id, deps); return
+        if cmd_id == "LIET_KE":
+            await _cmd_liet_ke(chat_id, deps); return
+        if cmd_id == "TIM":
+            await _cmd_tim(chat_id, remainder, deps); return
+        if cmd_id == "XEM":
+            await _cmd_xem(chat_id, remainder, deps); return
+        if cmd_id == "TOM_TAT_TUAN":
+            await _cmd_tom_tat_tuan(chat_id, deps); return
 
-    matched = _starts_with_any(text, PREFIX_XEM_WIKI)
-    if matched:
-        topic_query = _strip_prefix(text, matched)
-        await _cmd_xem_wiki_page(chat_id, topic_query, deps); return
-
-    if low in EXACT_XEM_WIKI:
-        await _cmd_xem_wiki_list(chat_id, deps); return
-
-    matched = _starts_with_any(text, PREFIX_WIKI)
-    if matched:
-        content = _strip_prefix(text, matched)
-        await _cmd_wiki_ingest(chat_id, content, deps); return
-
-    # ── Step 5: admin commands ─────────────────────────────────────────────
-    matched = _starts_with_any(text, PREFIX_THEM_USER)
-    if matched:
-        body = _strip_prefix(text, matched)
-        await _cmd_them_user(chat_id, body, user, deps); return
-
-    # ── Step 6: general prefix commands (priority-ordered) ─────────────────
-    matched = _starts_with_any(text, PREFIX_GHI_NHO_VAO)
-    if matched:
-        body = _strip_prefix(text, matched)
-        await _cmd_ghi_nho_vao(chat_id, body, deps); return
-
-    matched = _starts_with_any(text, PREFIX_GHI_NHO)
-    if matched:
-        content = _strip_prefix(text, matched)
-        await _cmd_ghi_nho(chat_id, content, deps); return
-
-    matched = _starts_with_any(text, PREFIX_NHAT_KY)
-    if matched:
-        content = _strip_prefix(text, matched)
-        await _cmd_nhat_ky(chat_id, content, deps); return
-
-    matched = _starts_with_any(text, PREFIX_TIM)
-    if matched:
-        keyword = _strip_prefix(text, matched)
-        await _cmd_tim(chat_id, keyword, deps); return
-
-    matched = _starts_with_any(text, PREFIX_XEM)
-    if matched:
-        name_query = _strip_prefix(text, matched)
-        await _cmd_xem(chat_id, name_query, deps); return
-
-    if ("tóm tắt" in low or "tom tat" in low) and ("tuần" in low or "tuan" in low):
-        await _cmd_tom_tat_tuan(chat_id, deps); return
-
-    # ── Step 7: free-form question → wiki + smart search + Claude ──────────
+    # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps)
