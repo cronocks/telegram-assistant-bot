@@ -8,7 +8,7 @@ needs to change; the core stays untouched.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Protocol, runtime_checkable
 
 
@@ -22,7 +22,7 @@ class User:
     role: str                        # 'admin' | 'manager' | 'member' | 'readonly'
     username: str | None = None      # login identifier; nullable until set by user
     birthdate: date | None = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     deleted_at: datetime | None = None
 
     @property

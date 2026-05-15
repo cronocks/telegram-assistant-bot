@@ -19,6 +19,7 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
+from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
@@ -296,7 +297,7 @@ async def _cmd_them_user(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
     """them user: <name>, <role> — admin creates a new user and returns an invite code."""
-    if not user.is_admin:
+    if not has_role(user, "admin"):
         await deps.channel.send(chat_id, "Chỉ admin mới có thể thêm user.", use_markdown=False)
         return
 
@@ -339,6 +340,67 @@ async def _cmd_them_user(
         await deps.channel.send(
             chat_id, f"Lỗi khi tạo user: {str(e)[:400]}", use_markdown=False,
         )
+
+
+async def _cmd_xem_danh_sach_user(
+    chat_id: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem danh sach user — admin/manager lists all active users."""
+    if not can_manage(user):
+        await deps.channel.send(
+            chat_id, "Chỉ admin hoặc manager mới có thể xem danh sách user.",
+            use_markdown=False,
+        )
+        return
+    try:
+        users = deps.user_store.list_users()
+        if not users:
+            await deps.channel.send(chat_id, "Chưa có user nào.", use_markdown=False)
+            return
+        lines = [f"Danh sách user ({len(users)} người):"]
+        for u in users:
+            lines.append(f"• [{u.id}] {u.name} — {u.role}")
+        await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_xoa_user(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xoa user: <id> — admin soft-deletes a user."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể xóa user.", use_markdown=False)
+        return
+
+    if not body.strip().isdigit():
+        await deps.channel.send(
+            chat_id, "Cú pháp: xoa user: <id>\nVí dụ: xoa user: 3",
+            use_markdown=False,
+        )
+        return
+
+    target_id = int(body.strip())
+    if target_id == user.id:
+        await deps.channel.send(
+            chat_id, "Không thể tự xóa tài khoản của mình.", use_markdown=False,
+        )
+        return
+
+    try:
+        target = deps.user_store.get_user_by_id(target_id)
+        if target is None or not target.is_active:
+            await deps.channel.send(
+                chat_id, f"Không tìm thấy user id={target_id}.", use_markdown=False,
+            )
+            return
+        deps.user_store.soft_delete_user(target_id)
+        await deps.channel.send(
+            chat_id, f"Đã vô hiệu hóa user: {target.name} (id={target_id}).",
+            use_markdown=False,
+        )
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
 
 
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
@@ -983,8 +1045,10 @@ async def _handle_general_question(
 # so longest-prefix-first in match_command resolves ambiguity correctly.
 # Names that map directly to Vietnamese user input stay Vietnamese per CLAUDE.md.
 _COMMAND_TABLE: dict[str, list[str]] = {
-    "THEM_USER":     ["thêm user: ", "them user: ", "add user: "],
-    "HOI_WIKI":      ["hỏi wiki ", "hoi wiki ", "ask wiki "],
+    "THEM_USER":          ["thêm user: ", "them user: ", "add user: "],
+    "XEM_DANH_SACH_USER": ["xem danh sach user", "xem danh sách user", "list users"],
+    "XOA_USER":           ["xoa user: ", "xóa user: ", "delete user: "],
+    "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
     "XEM_WIKI_PAGE": ["xem wiki "],
     "XEM_WIKI":      ["xem wiki"],
     "WIKI":          ["wiki "],
@@ -1027,6 +1091,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
 
         if cmd_id == "THEM_USER":
             await _cmd_them_user(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_DANH_SACH_USER":
+            await _cmd_xem_danh_sach_user(chat_id, user, deps); return
+        if cmd_id == "XOA_USER":
+            await _cmd_xoa_user(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
