@@ -1,0 +1,62 @@
+# Render Blueprint - two Docker web services sharing one image.
+# Secrets (sync: false) must be set in the Render dashboard per service.
+#
+# Free-tier note: the 750 instance-hours/month pool is shared across all
+# services. Keep ONLY production awake (e.g. UptimeRobot). Do NOT attach an
+# uptime monitor to staging - let it sleep so it consumes almost no hours.
+services:
+  - type: web
+    name: telegram-bot-prod
+    runtime: docker
+    branch: main
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: SQLITE_PATH
+        value: /data/bot.db
+      - key: LITESTREAM_BUCKET
+        value: telegram-bot-db
+      - key: LITESTREAM_DB_NAME
+        value: production/bot.db
+      - key: LITESTREAM_ENDPOINT
+        sync: false
+      - key: LITESTREAM_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_SECRET_ACCESS_KEY
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+
+  - type: web
+    name: telegram-bot-staging
+    runtime: docker
+    branch: dev
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: APP_ENV
+        value: staging
+      - key: SQLITE_PATH
+        value: /data/bot.db
+      - key: LITESTREAM_BUCKET
+        value: telegram-bot-db
+      - key: LITESTREAM_DB_NAME
+        value: staging/bot.db
+      - key: LITESTREAM_ENDPOINT
+        sync: false
+      - key: LITESTREAM_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_SECRET_ACCESS_KEY
+        sync: false
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

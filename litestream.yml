@@ -1,0 +1,11 @@
+# Litestream replicates the SQLite WAL to Cloudflare R2 (S3-compatible).
+# Credentials are read automatically from the LITESTREAM_ACCESS_KEY_ID and
+# LITESTREAM_SECRET_ACCESS_KEY environment variables - never store them here.
+dbs:
+  - path: ${SQLITE_PATH}
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: ${LITESTREAM_DB_NAME}
+        endpoint: ${LITESTREAM_ENDPOINT}
+        region: auto
