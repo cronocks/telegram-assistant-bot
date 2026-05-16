@@ -48,5 +48,17 @@ MAX_WIKI_UPDATES        = int(os.getenv("MAX_WIKI_UPDATES", "3"))
 MAX_WIKI_PAGES_CONTEXT  = int(os.getenv("MAX_WIKI_PAGES_CONTEXT", "2"))
 MAX_WIKI_CONTEXT_CHARS  = int(os.getenv("MAX_WIKI_CONTEXT_CHARS", "400"))
 
-# ── SQLite ────────────────────────────────────────────────────────────────────
-SQLITE_PATH = os.getenv("SQLITE_PATH", "./bot.db")
+# ── Environment & SQLite ──────────────────────────────────────────────────────
+# APP_ENV selects the deployment environment: 'local' | 'staging' | 'production'.
+APP_ENV = os.getenv("APP_ENV", "local")
+
+if APP_ENV == "local":
+    SQLITE_PATH = os.getenv("SQLITE_PATH", "./bot.db")
+else:
+    # staging/production must set SQLITE_PATH explicitly so a misconfigured
+    # deploy fails fast instead of silently writing to the local dev database.
+    SQLITE_PATH = os.getenv("SQLITE_PATH")
+    if not SQLITE_PATH:
+        raise RuntimeError(
+            f"APP_ENV={APP_ENV} requires SQLITE_PATH to be set explicitly"
+        )
