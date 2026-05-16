@@ -1,5 +1,6 @@
 # Environment variables
 .env*
+!.env.example
 
 # Google credentials
 credentials.json
@@ -18,6 +19,7 @@ token_b64.txt
 # Python cache
 __pycache__/
 *.pyc
+.pytest_cache/
 .venv/
 venv/
 
