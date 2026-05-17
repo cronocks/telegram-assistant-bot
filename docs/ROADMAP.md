@@ -422,11 +422,25 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 **Scope:**
 - `task_store` (SQLite table)
 - Reminders ở mốc: **2h, 1h, 30m, 15m** trước deadline
+- **Reminder engine tổng quát:** offset cấu hình tùy ý + hỗ trợ recurring event — KHÔNG hardcode 4 mốc, để FR-8 plug vào dùng lại
 - Daily summary cuối ngày: việc đã hoàn thành / chưa hoàn thành
 - **Kids' study schedule** (gộp vào FR-7 như task category `study`, recurring weekly)
 - Mirror reminder real-time cho parent (theo 4.3 Tier 1)
 - Digest cho parent theo cấu hình ở 4.3 Tier 2
-**Note:** FR-8 (kids' study) **đã gộp vào FR-7** — cùng engine reminder, study chỉ là category đặc biệt.
+**Note:** Kids' study **đã gộp vào FR-7** — cùng engine reminder, study chỉ là category đặc biệt. Slot `FR-8` nay được tái dùng cho Anniversary Reminders (xem bên dưới).
+
+---
+
+### FR-8 — Anniversary / Memorial Reminders (Ngày kỷ niệm)
+**Status:** PENDING
+**Scope:**
+- Bảng `anniversaries`: `user_id`, `name`, `date_type` (`lunar` | `solar`), `month`, `day`, `category` (`giỗ` | `cưới` | `khác`)
+- Lịch âm → dương: dùng thư viện lunar calendar VN; **lưu nguyên ngày âm, recompute ngày dương mỗi năm tại runtime**
+- Nhắc trước nhiều mốc: **30 / 15 / 7 / 3 / 1 ngày** + thêm 1 lần vào đúng ngày kỷ niệm
+- Cấu hình per-anniversary: bật/tắt từng mốc hoặc đổi tần suất
+- Tái dùng reminder engine tổng quát của FR-7
+**Dependencies:** FR-7 (reminder engine); thư viện âm lịch (chọn lib ở giai đoạn implement)
+**Note:** Đây KHÔNG phải "kids' study" cũ — kids' study đã gộp vào FR-7 (Decision #30). Slot FR-8 được tái dùng (Decision #45).
 
 ---
 
@@ -535,6 +549,9 @@ INDEX (user_id, category_id, occurred_at)
 | 42 | argon2-cffi cho password | `argon2-cffi` wrapper (argon2id) thay vì bcrypt hay PBKDF2 | Argon2id là winner của Password Hashing Competition 2015; memory-hard → chống GPU brute-force; đã quyết định từ Decision #10 | 2026-05-15 |
 | 43 | Persist strategy production | SQLite + Litestream replicate WAL lên Cloudflare R2 (S3-compatible). Deploy qua Docker. | Render free tier không có Persistent Disk → DB ephemeral. Litestream stream WAL (~1s) lên object storage, restore lúc boot. R2 free tier rộng + egress miễn phí. Google Drive không phải S3-compatible nên không làm target Litestream được. | 2026-05-16 |
 | 44 | Tách môi trường qua APP_ENV | `config.py` thêm `APP_ENV` (`local`/`staging`/`production`); staging+production bắt buộc set `SQLITE_PATH` rõ ràng (fail-fast nếu thiếu); mỗi env dùng `LITESTREAM_DB_NAME` riêng trên R2 | Tránh deploy nhầm ghi vào DB local, và tránh staging/production đè data nhau trên R2. Unit test dùng SQLite `:memory:` nên đã cô lập sẵn. | 2026-05-16 |
+| 45 | FR-8 tái dùng = Anniversary/Memorial reminders | Slot `FR-8` (cũ = kids' study, đã gộp vào FR-7 theo #30) tái dùng cho tính năng nhắc ngày kỷ niệm (giỗ/cưới/dịp khác), đặt ngay sau FR-7. Là FR riêng, không gộp FR-7 | Nhắc giỗ/kỷ niệm là core value của family knowledge system; kéo theo dependency âm lịch + logic recompute hằng năm nên đủ lớn để đứng riêng; phụ thuộc reminder engine nên xếp sau FR-7 | 2026-05-17 |
+| 46 | Reminder engine tổng quát | FR-7 thiết kế reminder engine với offset cấu hình tùy ý + hỗ trợ recurring event, KHÔNG hardcode `2h/1h/30m/15m` | FR-8 cần offset thang ngày (30..1 ngày) và bật/tắt được; thiết kế tổng quát từ đầu tránh rework | 2026-05-17 |
+| 47 | Lưu ngày âm lịch nguyên dạng | Anniversary lịch âm lưu `month`/`day` âm; recompute ngày dương mỗi năm tại runtime, không lưu cứng ngày dương | Ánh xạ âm→dương đổi theo từng năm; single source of truth = ngày âm | 2026-05-17 |
 
 ---
 
@@ -546,7 +563,7 @@ INDEX (user_id, category_id, occurred_at)
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-15)
+### Right now (2026-05-17)
 - ✅ **FR-1** đã merge vào `main` (production)
 - ✅ **FR-2** hoàn thành trên branch `feature/FR2` — 11 commits, 148 tests passing
   - SQLite schema: users, channel_bindings, invite_codes, birthdate_changes, username_changes, parent_links, user_quotas, password_hash
@@ -560,7 +577,7 @@ INDEX (user_id, category_id, occurred_at)
 
 ### Immediate next steps
 1. ✅ Pre-FR-3 persist infra (Docker + Litestream → Cloudflare R2) thêm trên `feature/FR2` (2026-05-16)
-2. Tạo Cloudflare R2 bucket + API token; set env vars trên Render (2 service: prod + staging)
+2. ✅ Tạo Cloudflare R2 bucket + API token; set env vars trên Render (2 service: prod + staging) (2026-05-17)
 3. Merge `feature/FR2` → `dev`; test trên Render staging (Docker deploy + Litestream restore/replicate)
 4. Nếu staging OK → merge `feature/FR2` → `main` (production)
 5. Bắt đầu plan **FR-3** (SQLite + Scope + L1 Memory)

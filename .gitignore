@@ -1,5 +1,7 @@
 # Environment variables
 .env
+.env.staging
+.env.production
 
 # Google credentials
 credentials.json
