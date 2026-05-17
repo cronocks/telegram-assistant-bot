@@ -9,14 +9,14 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 
 # ── Anthropic ─────────────────────────────────────────────────────────────────
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-MODEL             = os.getenv("MODEL", "claude-haiku-4-5-20251001")
+MODEL             = os.getenv("MODEL")
 
 # ── Google Drive ──────────────────────────────────────────────────────────────
 GDRIVE_FOLDER_ID    = os.getenv("GDRIVE_FOLDER_ID", "")
 CLAUDE_NOTES_FOLDER = os.getenv("CLAUDE_NOTES_FOLDER", "Claude-Notes")
 
 # ── OAuth & Ownership Transfer ────────────────────────────────────────────────
-OWNER_EMAIL = os.getenv("OWNER_EMAIL", "thangnm.it@gmail.com")
+OWNER_EMAIL = os.getenv("OWNER_EMAIL")
 ENABLE_OWNERSHIP_TRANSFER = os.getenv("ENABLE_OWNERSHIP_TRANSFER", "true").lower() == "true"
 
 # ── Security ──────────────────────────────────────────────────────────────────
