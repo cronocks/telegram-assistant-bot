@@ -322,12 +322,14 @@ nêu bật những điểm quan trọng nhất:\n\n{notes_text}"""
 
         try:
             result = json.loads(json_match.group(0))
-            new_memory = result.get("memory", current_memory) or current_memory
-            new_user = result.get("user_profile", current_user_profile) or current_user_profile
+            new_memory = (result.get("memory") or "").strip()
+            new_user = (result.get("user_profile") or "").strip()
+            if not new_memory and not new_user:
+                raise ValueError(f"curate_memory: LLM returned empty content, raw={text[:200]}")
             return new_memory, new_user, total_tokens
         except (json.JSONDecodeError, ValueError) as e:
             print(f"[claude] curate_memory parse error: {e}, raw={text[:200]}")
-            return current_memory, current_user_profile, total_tokens
+            raise
 
     # ─── Wiki: Q&A from selected pages ───────────────────────────────────────
 
