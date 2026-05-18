@@ -805,7 +805,9 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "📝 *GHI CHU & NHAT KY*",
         "`ghi nho [noi dung]` — Tao file ghi chu moi (Claude tu dat ten)\n"
         "`ghi nho vao [ten]: [noi dung]` — Them vao file co san (fuzzy match)\n"
-        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)",
+        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)\n"
+        "`chia se [ten-file]` — Chia se file voi ca nha (scope = everyone)\n"
+        "`bo chia se [ten-file]` — Chuyen file ve rieng tu (scope = private)",
     ),
     "wiki": (
         "📚 *WIKI*",
@@ -1238,6 +1240,109 @@ def _update_index_after_create(
         print(f"[core] Wiki index update (non-fatal): {e}")
 
 
+async def _cmd_set_scope(
+    chat_id: str, name: str, new_scope: str, user: User, deps: CoreDeps
+) -> None:
+    """Shared logic for chia se / bo chia se — change scope of a note or wiki page."""
+    if not name:
+        verb = "chia se" if new_scope == "everyone" else "bo chia se"
+        await deps.channel.send(
+            chat_id, f"Cu phap: {verb} <ten-file>", use_markdown=False,
+        )
+        return
+
+    # 1. Search notes folder first.
+    try:
+        matches = deps.notes.find_files_fuzzy(name)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False)
+        return
+
+    if len(matches) > 1:
+        names = "\n".join(f"- {m['name']}" for m in matches[:5])
+        await deps.channel.send(
+            chat_id,
+            f"Tim thay {len(matches)} file khop voi '{name}':\n{names}\n\nVui long nhap ten cu the hon.",
+            use_markdown=False,
+        )
+        return
+
+    if len(matches) == 1:
+        file_id = matches[0]["id"]
+        meta = deps.note_index.get_note_meta(file_id)
+        if meta is None:
+            await deps.channel.send(
+                chat_id,
+                "File nay chua duoc index. Vui long lien he admin de backfill.",
+                use_markdown=False,
+            )
+            return
+        if meta["owner_user_id"] != user.id:
+            await deps.channel.send(
+                chat_id, "Ban khong phai chu file nay.", use_markdown=False,
+            )
+            return
+        ok = deps.note_index.set_note_scope(file_id, new_scope, user.id)
+        if ok:
+            label = "chia se voi moi nguoi" if new_scope == "everyone" else "rieng tu"
+            await deps.channel.send(
+                chat_id,
+                f"Da doi '{matches[0]['name']}' thanh {label}.",
+                use_markdown=False,
+            )
+        else:
+            await deps.channel.send(chat_id, "Khong the doi scope.", use_markdown=False)
+        return
+
+    # 2. No note match — try wiki.
+    try:
+        page = deps.wiki.find_page(name)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Loi khi tim wiki: {str(e)[:400]}", use_markdown=False)
+        return
+
+    if page:
+        file_id = page["id"]
+        meta = deps.note_index.get_wiki_meta(file_id)
+        if meta is None:
+            await deps.channel.send(
+                chat_id,
+                "Trang wiki nay chua duoc index. Vui long lien he admin de backfill.",
+                use_markdown=False,
+            )
+            return
+        if meta["owner_user_id"] != user.id:
+            await deps.channel.send(
+                chat_id, "Ban khong phai chu trang wiki nay.", use_markdown=False,
+            )
+            return
+        ok = deps.note_index.set_wiki_scope(file_id, new_scope, user.id)
+        if ok:
+            label = "chia se voi moi nguoi" if new_scope == "everyone" else "rieng tu"
+            await deps.channel.send(
+                chat_id,
+                f"Da doi wiki '{page['name'].removesuffix('.md')}' thanh {label}.",
+                use_markdown=False,
+            )
+        else:
+            await deps.channel.send(chat_id, "Khong the doi scope.", use_markdown=False)
+        return
+
+    await deps.channel.send(
+        chat_id, f"Khong tim thay file '{name}' trong ghi chu hoac wiki.", use_markdown=False,
+    )
+
+
+async def _cmd_chia_se(chat_id: str, name: str, user: User, deps: CoreDeps) -> None:
+    """chia se <ten-file> — set scope = everyone (share with all family members)."""
+    await _cmd_set_scope(chat_id, name, "everyone", user, deps)
+
+
+async def _cmd_bo_chia_se(chat_id: str, name: str, user: User, deps: CoreDeps) -> None:
+    """bo chia se <ten-file> — set scope = private (owner only)."""
+    await _cmd_set_scope(chat_id, name, "private", user, deps)
+
+
 async def _cmd_wiki_ingest(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """wiki <content> — ingest raw content into the wiki layer.
 
@@ -1574,6 +1679,8 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_QUOTA":          ["xem quota", "view quota"],
     "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
     "RESET_QUOTA":        ["reset quota: "],
+    "BO_CHIA_SE_FILE":    ["bỏ chia sẻ ", "bo chia se "],
+    "CHIA_SE_FILE":       ["chia sẻ ", "chia se "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
     "XEM_WIKI_PAGE": ["xem wiki "],
     "XEM_WIKI":      ["xem wiki"],
@@ -1621,6 +1728,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "DAT_USERNAME", "DUYET_USERNAME",
         "DAT_CHA", "XEM_CHA",
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
+        "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -1663,6 +1771,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_quota(chat_id, remainder, user, deps); return
         if cmd_id == "RESET_QUOTA":
             await _cmd_reset_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "CHIA_SE_FILE":
+            await _cmd_chia_se(chat_id, remainder, user, deps); return
+        if cmd_id == "BO_CHIA_SE_FILE":
+            await _cmd_bo_chia_se(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
