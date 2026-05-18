@@ -201,18 +201,24 @@ class DriveWikiStore:
     # ─── Retrieval (single entry point) ─────────────────────────────────────
 
     def retrieve_pages(
-        self, question: str, keywords: list[str]
+        self,
+        question: str,
+        keywords: list[str],
+        visible_slugs: set[str] | None = None,
     ) -> list[dict]:
         """Single retrieval entry point.
 
         Current implementation (text index):
           1. Read _index.md (1 Drive call)
-          2. LLM picks relevant pages from the index (1 LLM call, ~350 tokens)
-          3. Read the selected pages from Drive (1-2 Drive calls)
+          2. Filter index rows to visible_slugs (ACL pre-filter before LLM)
+          3. LLM picks relevant pages from the filtered index (1 LLM call, ~350 tokens)
+          4. Read the selected pages from Drive (1-2 Drive calls)
 
         Future (vector DB):
           1. embed(question) -> vector_search() -> top-k pages
           (caller signature unchanged)
+
+        visible_slugs: set of slugs the viewer may read; None = no filter.
         """
         # Stage 1: read the index.
         try:
@@ -224,6 +230,21 @@ class DriveWikiStore:
 
         if "| Topic |" not in index_content:
             return []  # index has no rows yet
+
+        # Stage 1b: pre-filter index rows by ACL if visible_slugs provided.
+        if visible_slugs is not None:
+            filtered_lines = []
+            for line in index_content.splitlines():
+                # Keep header lines (contain "Topic" or start with "|-") unchanged.
+                if "| Topic |" in line or line.startswith("|--") or line.startswith("| ---"):
+                    filtered_lines.append(line)
+                elif line.startswith("|"):
+                    # Check if any visible slug appears in this row.
+                    if any(slug in line for slug in visible_slugs):
+                        filtered_lines.append(line)
+            index_content = "\n".join(filtered_lines)
+            if "| Topic |" not in index_content or index_content.count("|") < 6:
+                return []  # no visible pages after filter
 
         # Stage 2: ask the LLM to pick filenames.
         try:

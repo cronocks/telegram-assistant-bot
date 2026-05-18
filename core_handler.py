@@ -18,6 +18,7 @@ from config import (
     PENDING_CHOICE_TIMEOUT_SEC,
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
+import acl as acl_mod
 from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteIndex, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
@@ -945,6 +946,21 @@ def _register_wiki_page(
         traceback.print_exc()
 
 
+def _acl_filter_notes(notes: list[dict], viewer: User, deps: CoreDeps) -> list[dict]:
+    """Filter a list of note search results to those the viewer may read.
+
+    Each note dict must contain an 'id' field (drive_file_id). Notes with no
+    SQLite row (orphans) are treated as invisible — safe default.
+    """
+    if not notes:
+        return []
+    file_ids = [n["id"] for n in notes if n.get("id")]
+    meta_rows = deps.note_index.note_meta_for_ids(file_ids)
+    visible = acl_mod.filter_visible(viewer, meta_rows)
+    visible_ids = {r["drive_file_id"] for r in visible}
+    return [n for n in notes if n.get("id") in visible_ids]
+
+
 async def _cmd_ghi_nho(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """ghi nhớ <content> → create a new file with a Claude-generated title."""
     if not content:
@@ -1177,7 +1193,7 @@ async def _cmd_liet_ke(chat_id: str, deps: CoreDeps) -> None:
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
-async def _cmd_tim(chat_id: str, keyword: str, deps: CoreDeps) -> None:
+async def _cmd_tim(chat_id: str, keyword: str, user: User, deps: CoreDeps) -> None:
     if not keyword:
         await deps.channel.send(chat_id, "Vui long nhap tu khoa.")
         return
@@ -1186,6 +1202,7 @@ async def _cmd_tim(chat_id: str, keyword: str, deps: CoreDeps) -> None:
     )
     try:
         notes = deps.notes.search_notes(keyword)
+        notes = _acl_filter_notes(notes, user, deps)
         if not notes:
             await deps.channel.send(
                 chat_id, "Khong tim thay ghi chu nao.", use_markdown=False,
@@ -1321,7 +1338,7 @@ async def _cmd_wiki_ingest(chat_id: str, content: str, user: User, deps: CoreDep
         )
 
 
-async def _cmd_wiki_query(chat_id: str, question: str, deps: CoreDeps) -> None:
+async def _cmd_wiki_query(chat_id: str, question: str, user: User, deps: CoreDeps) -> None:
     """hỏi wiki <question> — answer directly from the wiki layer."""
     if not question:
         await deps.channel.send(
@@ -1334,7 +1351,8 @@ async def _cmd_wiki_query(chat_id: str, question: str, deps: CoreDeps) -> None:
     )
     try:
         keywords = [w for w in question.lower().split() if len(w) > 2]
-        wiki_pages = deps.wiki.retrieve_pages(question, keywords)
+        visible_slugs = deps.note_index.visible_wiki_slugs(user.id)
+        wiki_pages = deps.wiki.retrieve_pages(question, keywords, visible_slugs=visible_slugs)
 
         if not wiki_pages:
             await deps.channel.send(
@@ -1415,7 +1433,7 @@ async def _cmd_xem_wiki_page(
         await deps.channel.send(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
 
 
-async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
+async def _cmd_tom_tat_tuan(chat_id: str, user: User, deps: CoreDeps) -> None:
     week_range = current_week_range_str()
     await deps.channel.send(
         chat_id,
@@ -1424,6 +1442,7 @@ async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
     )
     try:
         notes = deps.notes.get_current_week_notes(max_results=20)
+        notes = _acl_filter_notes(notes, user, deps)
         if not notes:
             await deps.channel.send(
                 chat_id,
@@ -1462,10 +1481,16 @@ async def _handle_general_question(
 
         context_parts: list[str] = []
 
-        # Step 2: wiki pages via index.
+        # Step 2: wiki pages via index (ACL-filtered).
         if intent.get("needs_search"):
             try:
-                wiki_pages = deps.wiki.retrieve_pages(text, intent.get("keywords", []))
+                visible_slugs = (
+                    deps.note_index.visible_wiki_slugs(user.id)
+                    if user is not None else None
+                )
+                wiki_pages = deps.wiki.retrieve_pages(
+                    text, intent.get("keywords", []), visible_slugs=visible_slugs,
+                )
                 if wiki_pages:
                     wiki_block = "\n\n".join(
                         f"[Wiki: {p['name'].replace('.md', '')}]\n{p['content']}"
@@ -1475,13 +1500,15 @@ async def _handle_general_question(
             except Exception as e:
                 print(f"[core] Wiki search error (non-fatal): {e}")
 
-        # Step 3: smart search raw notes.
+        # Step 3: smart search raw notes (ACL-filtered).
         if intent.get("needs_search") and intent.get("keywords"):
             try:
                 notes = deps.notes.smart_search(
                     keywords=intent["keywords"],
                     days_back=intent.get("days_back", 0) or 0,
                 )
+                if user is not None:
+                    notes = _acl_filter_notes(notes, user, deps)
                 if notes:
                     notes_block = "\n\n".join(
                         [f"[{n['name']}]\n{n['content']}" for n in notes[:5]]
@@ -1493,6 +1520,8 @@ async def _handle_general_question(
                     fallback_notes = deps.notes.search_notes(
                         intent["keywords"][0], max_results=2,
                     )
+                    if user is not None:
+                        fallback_notes = _acl_filter_notes(fallback_notes, user, deps)
                     if fallback_notes:
                         context_parts.append("\n\n".join(
                             [f"[{n['name']}]\n{n['content']}" for n in fallback_notes]
@@ -1635,7 +1664,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "RESET_QUOTA":
             await _cmd_reset_quota(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
-            await _cmd_wiki_query(chat_id, remainder, deps); return
+            await _cmd_wiki_query(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
             await _cmd_xem_wiki_page(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI":
@@ -1653,11 +1682,11 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "LIET_KE":
             await _cmd_liet_ke(chat_id, deps); return
         if cmd_id == "TIM":
-            await _cmd_tim(chat_id, remainder, deps); return
+            await _cmd_tim(chat_id, remainder, user, deps); return
         if cmd_id == "XEM":
             await _cmd_xem(chat_id, remainder, deps); return
         if cmd_id == "TOM_TAT_TUAN":
-            await _cmd_tom_tat_tuan(chat_id, deps); return
+            await _cmd_tom_tat_tuan(chat_id, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)

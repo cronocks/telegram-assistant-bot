@@ -112,11 +112,11 @@ class NoteStore(Protocol):
         ...
 
     def search_notes(self, keyword: str, max_results: int = 5) -> list[dict]:
-        """Full-text search. Returns [{name, modified, content}]."""
+        """Full-text search. Returns [{id, name, modified, content}]."""
         ...
 
     def get_recent_notes(self, days: int = 7, max_results: int = 5) -> list[dict]:
-        """Notes modified within the last N days. Legacy helper."""
+        """Notes modified within the last N days. Legacy helper. Returns [{id, name, modified, content}]."""
         ...
 
     def test_connection(self) -> dict:
@@ -154,11 +154,11 @@ class NoteStore(Protocol):
     def smart_search(
         self, keywords: list[str], days_back: int = 0, max_per_keyword: int = 3
     ) -> list[dict]:
-        """Multi-keyword search with an optional timeframe filter."""
+        """Multi-keyword search with an optional timeframe filter. Returns [{id, name, modified, content}]."""
         ...
 
     def get_current_week_notes(self, max_results: int = 20) -> list[dict]:
-        """All notes modified during the current local week (Mon..Sun)."""
+        """All notes modified during the current local week (Mon..Sun). Returns [{id, name, modified, content}]."""
         ...
 
 
@@ -203,12 +203,19 @@ class WikiStore(Protocol):
         ...
 
     def retrieve_pages(
-        self, question: str, keywords: list[str]
+        self,
+        question: str,
+        keywords: list[str],
+        visible_slugs: "set[str] | None" = None,
     ) -> list[dict]:
         """Single retrieval entry point.
 
-        Today: read index -> LLM picks filenames -> read pages.
+        Today: read index -> filter by visible_slugs -> LLM picks filenames -> read pages.
         Future (vector DB): embed(question) -> top-k. Caller signature unchanged.
+
+        visible_slugs: if provided, index rows are pre-filtered to slugs the viewer
+            may read before being passed to the LLM (prevents information leakage).
+            None means no filter (legacy / pre-ACL behaviour).
 
         Returns [{id, name, content}].
         """

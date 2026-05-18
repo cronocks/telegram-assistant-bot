@@ -516,6 +516,7 @@ source: telegram-bot
             try:
                 content = _read_file(service, f["id"])
                 notes.append({
+                    "id": f["id"],
                     "name": f["name"],
                     "modified": f["modifiedTime"][:10],
                     "content": content[:500],
@@ -580,6 +581,7 @@ source: telegram-bot
                 try:
                     content = _read_file(service, f["id"])
                     notes.append({
+                        "id": f["id"],
                         "name": f["name"],
                         "modified": f["modifiedTime"][:10],
                         "content": content[:800],
@@ -625,6 +627,7 @@ source: telegram-bot
             try:
                 content = _read_file(service, f["id"])
                 notes.append({
+                    "id": f["id"],
                     "name": f["name"],
                     "modified": f["modifiedTime"][:10],
                     "content": content,
@@ -662,6 +665,7 @@ source: telegram-bot
             try:
                 content = _read_file(service, f["id"])
                 notes.append({
+                    "id": f["id"],
                     "name": f["name"],
                     "modified": f["modifiedTime"][:10],
                     "content": content,
