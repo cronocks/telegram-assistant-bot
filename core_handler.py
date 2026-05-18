@@ -786,28 +786,92 @@ async def _cmd_reset_quota(
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
-        "*LENH GHI CHU:*\n"
-        "`ghi nho [noi dung]` — Tao file moi (Claude tu dat ten)\n"
+        "Chon nhom lenh de xem chi tiet:\n\n"
+        "📝 *Ghi chu & Nhat ky* — `/help ghi chu`\n"
+        "📚 *Wiki* — `/help wiki`\n"
+        "👥 *Nguoi dung* — `/help nguoi dung`\n"
+        "💰 *Quota* — `/help quota`\n"
+        "🔍 *Tim kiem & Xem* — `/help xem`\n"
+        "⚙️ *He thong* — `/help he thong`\n\n"
+        "💬 *Hoi dap tu do:* Gõ cau hoi bat ky — bot tim wiki + vault roi tra loi."
+    ))
+
+
+_HELP_PAGES: dict[str, tuple[str, str]] = {
+    "ghi chu": (
+        "📝 *GHI CHU & NHAT KY*",
+        "`ghi nho [noi dung]` — Tao file ghi chu moi (Claude tu dat ten)\n"
         "`ghi nho vao [ten]: [noi dung]` — Them vao file co san (fuzzy match)\n"
-        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)\n\n"
-        "*LENH WIKI (LLM Wiki):*\n"
+        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)",
+    ),
+    "wiki": (
+        "📚 *WIKI*",
         "`wiki [noi dung]` — Ingest vao wiki (Claude tu to chuc theo topic)\n"
         "`hoi wiki [cau hoi]` — Hoi truc tiep tu wiki\n"
         "`xem wiki` — Liet ke tat ca wiki pages\n"
-        "`xem wiki [topic]` — Doc 1 wiki page\n\n"
-        "*LENH XEM:*\n"
+        "`xem wiki [topic]` — Doc 1 wiki page",
+    ),
+    "nguoi dung": (
+        "👥 *NGUOI DUNG*",
+        "`them user [ten]` — Them user moi (admin)\n"
+        "`xem danh sach user` — Liet ke tat ca user (admin)\n"
+        "`xoa user [ten]` — Xoa user (admin)\n"
+        "`dat username [ten]` — Dat username cua ban\n"
+        "`duyet username` — Duyet yeu cau doi username (admin)\n"
+        "`dat birthdate [YYYY-MM-DD]` — Dat ngay sinh\n"
+        "`duyet birthdate` — Duyet yeu cau doi ngay sinh (admin/manager)\n"
+        "`dat cha [ten user]` — Gan quan he cha/me — con (admin)\n"
+        "`xem cha` — Xem quan he cha/me cua ban",
+    ),
+    "quota": (
+        "💰 *QUOTA*",
+        "`xem quota` — Xem muc su dung token cua ban\n"
+        "`xem quota [ten user]` — Xem quota cua user khac (admin)\n"
+        "`dat quota [ten user] [so token]` — Dat gioi han token (admin)\n"
+        "`reset quota [ten user]` — Reset so dung ve 0 (admin)",
+    ),
+    "xem": (
+        "🔍 *TIM KIEM & XEM*",
         "`xem nhat ky` — Doc nhat ky hom nay\n"
         "`xem [ten]` — Doc 1 file (fuzzy match)\n"
         "`liet ke` — Liet ke 10 file gan nhat\n"
         "`tim [tu khoa]` — Tim trong noi dung file\n"
-        "`tom tat tuan nay` — Tom tat ghi chu 7 ngay\n\n"
-        "*LENH HE THONG:*\n"
-        "`/cost` — Chi phi thang\n"
-        "`/test` — Kiem tra Drive\n"
-        "`/security` — Cau hinh bao mat\n\n"
-        "*HOI DAP:*\n"
-        "Cau hoi tu nhien — bot tim wiki + vault roi tra loi"
-    ))
+        "`tom tat tuan nay` — Tom tat ghi chu 7 ngay",
+    ),
+    "he thong": (
+        "⚙️ *HE THONG*",
+        "`/cost` — Chi phi su dung thang nay\n"
+        "`/test` — Kiem tra ket noi Drive\n"
+        "`/security` — Cau hinh bao mat",
+    ),
+}
+
+# Alias map: normalized input → canonical key in _HELP_PAGES
+_HELP_ALIASES: dict[str, str] = {
+    "ghi chu": "ghi chu",
+    "ghi chú": "ghi chu",
+    "wiki": "wiki",
+    "nguoi dung": "nguoi dung",
+    "người dùng": "nguoi dung",
+    "quota": "quota",
+    "xem": "xem",
+    "he thong": "he thong",
+    "hệ thống": "he thong",
+}
+
+
+async def _cmd_help(chat_id: str, group: str, deps: CoreDeps) -> None:
+    key = _HELP_ALIASES.get(_norm(group).strip())
+    if key is None:
+        groups = "  ".join(f"`/help {k}`" for k in _HELP_PAGES)
+        await deps.channel.send(
+            chat_id,
+            f"Nhom lenh '{group}' khong ton tai.\n\nCac nhom: {groups}",
+            use_markdown=False,
+        )
+        return
+    title, body = _HELP_PAGES[key]
+    await deps.channel.send(chat_id, f"{title}\n\n{body}")
 
 
 async def _cmd_cost(chat_id: str, deps: CoreDeps) -> None:
@@ -1478,6 +1542,9 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
     # ── Step 2: slash commands (not normalized) ────────────────────────────
     if text == "/start":
         await _cmd_start(chat_id, deps); return
+    if text.startswith("/help"):
+        group = text[len("/help"):].strip()
+        await _cmd_help(chat_id, group, deps); return
     if text == "/cost":
         await _cmd_cost(chat_id, deps); return
     if text == "/test":

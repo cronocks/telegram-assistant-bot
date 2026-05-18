@@ -362,7 +362,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-2 — Users + Roles + Auth + Quota + Birthdate + Parent Links
-**Status:** ✅ DONE — branch `feature/FR2`, 11 commits, 148 tests passing (2026-05-15)
+**Status:** ✅ DONE — merged to `main` (production) 2026-05-18; 11 commits, 148 tests passing
 **Scope:**
 - SQLite schema: `users`, `parent_links`, `channel_bindings`
 - Argon2id password hash (web auth — chưa expose qua Telegram)
@@ -376,7 +376,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-3 — SQLite + Scope + L1 Memory
-**Status:** PENDING
+**Status:** IN PROGRESS — branch `feature/FR3`, plan at `docs/FR-3-PLAN.md` (2026-05-18)
 **Scope:**
 - Litestream config (cloud backup)
 - Note/wiki thêm field `scope`: `private` | `group:<id>` | `everyone`
@@ -552,6 +552,14 @@ INDEX (user_id, category_id, occurred_at)
 | 45 | FR-8 tái dùng = Anniversary/Memorial reminders | Slot `FR-8` (cũ = kids' study, đã gộp vào FR-7 theo #30) tái dùng cho tính năng nhắc ngày kỷ niệm (giỗ/cưới/dịp khác), đặt ngay sau FR-7. Là FR riêng, không gộp FR-7 | Nhắc giỗ/kỷ niệm là core value của family knowledge system; kéo theo dependency âm lịch + logic recompute hằng năm nên đủ lớn để đứng riêng; phụ thuộc reminder engine nên xếp sau FR-7 | 2026-05-17 |
 | 46 | Reminder engine tổng quát | FR-7 thiết kế reminder engine với offset cấu hình tùy ý + hỗ trợ recurring event, KHÔNG hardcode `2h/1h/30m/15m` | FR-8 cần offset thang ngày (30..1 ngày) và bật/tắt được; thiết kế tổng quát từ đầu tránh rework | 2026-05-17 |
 | 47 | Lưu ngày âm lịch nguyên dạng | Anniversary lịch âm lưu `month`/`day` âm; recompute ngày dương mỗi năm tại runtime, không lưu cứng ngày dương | Ánh xạ âm→dương đổi theo từng năm; single source of truth = ngày âm | 2026-05-17 |
+| 48 | Scope storage | Option A — SQLite metadata tables (`notes`, `wiki_pages`) làm lớp ACL/index; Drive giữ nội dung | Tận dụng SQLite ACID + Litestream backup; Drive search không hỗ trợ owner/scope filter | 2026-05-18 |
+| 49 | Scope values | Chỉ `private` + `everyone`; không `group` | Quy mô gia đình ~10 người, `everyone` = cả nhà là đủ; giảm complexity | 2026-05-18 |
+| 50 | Default scope | note/journal → `private`; wiki → `everyone` | Note/journal là cá nhân theo bản chất; wiki là tri thức chung gia đình | 2026-05-18 |
+| 51 | L1 Memory storage | SQLite (`user_memory` table, kind: `memory`\|`user`), không lưu file Drive | Litestream đã backup sẵn; query/update đơn giản; không tốn Drive quota | 2026-05-18 |
+| 52 | Admin private read | FR-3 ACL strict — admin KHÔNG đọc note private của người khác | Stealth-read cần audit log đầy đủ → để FR-4 làm đúng, không làm nửa vời | 2026-05-18 |
+| 53 | Per-person sharing | Hoãn sang FR sau; `acl.py` thiết kế extensible để thêm `note_shares` không phá API | Gia đình hiện tại không cần share với từng người riêng lẻ | 2026-05-18 |
+| 54 | L1 curation trigger | FR-3 manual (`cap nhat tri nho`); cron tự động để FR sau | Đơn giản hóa FR-3 scope; tránh cron logic phức tạp trước khi có audit | 2026-05-18 |
+| 55 | /start + /help UX | `/start` hiển thị 6 nhóm lệnh tổng quan; `/help [nhom]` cho chi tiết từng nhóm | Số lệnh tăng nhiều sau FR-2 (user/quota/birthdate...); dump 1 block dài không đọc được; `/help` là pattern chuẩn Telegram bot | 2026-05-18 |
 
 ---
 
@@ -563,10 +571,11 @@ INDEX (user_id, category_id, occurred_at)
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-17)
-- ✅ **FR-1** đã merge vào `main` (production)
-- ✅ **FR-2** hoàn thành trên branch `feature/FR2` — 11 commits, 148 tests passing
+### Right now (2026-05-18)
+- ✅ **FR-1** merged to `main` (production)
+- ✅ **FR-2** merged to `main` (production) 2026-05-18 — 11 commits, 148 tests passing
   - SQLite schema: users, channel_bindings, invite_codes, birthdate_changes, username_changes, parent_links, user_quotas, password_hash
+  - Docker runtime + Litestream → Cloudflare R2 (production + staging)
   - Multi-user registry, roles (admin/manager/member/readonly), soft-delete
   - Invite code registration flow (Telegram)
   - Birthdate change flow (manager approval)
@@ -574,16 +583,23 @@ INDEX (user_id, category_id, occurred_at)
   - Parent-child links (soft history)
   - Per-user monthly token quota (lazy monthly reset)
   - Argon2id password infrastructure (not yet exposed via commands)
+- 🔄 **FR-3** IN PROGRESS — branch `feature/FR3`
+  - Plan: `docs/FR-3-PLAN.md` (created 2026-05-18, approved)
+  - UX: `/start` redesign + `/help [nhom]` added (2026-05-18, Decision #55)
+  - 9 commits planned; chưa bắt đầu code core FR-3
 
-### Immediate next steps
-1. ✅ Pre-FR-3 persist infra (Docker + Litestream → Cloudflare R2) thêm trên `feature/FR2` (2026-05-16)
-2. ✅ Tạo Cloudflare R2 bucket + API token; set env vars trên Render (2 service: prod + staging) (2026-05-17)
-3. Merge `feature/FR2` → `dev`; test trên Render staging (Docker deploy + Litestream restore/replicate)
-4. Nếu staging OK → merge `feature/FR2` → `main` (production)
-5. Bắt đầu plan **FR-3** (SQLite + Scope + L1 Memory)
+### Immediate next steps (FR-3)
+1. Commit 1: `feat(db): notes + wiki_pages + user_memory schema (009-011)`
+2. Commit 2: `feat(acl): scope ACL helpers`
+3. Commit 3: `feat(index): SqliteNoteIndex adapter + NoteIndex protocol`
+4. Commit 4: `feat(notes): dual-write note/wiki metadata on create`
+5. Commit 5: `feat(notes): ACL filter on all retrieval paths`
+6. Commit 6: `feat(scope): share / unshare commands`
+7. Commit 7: `feat(index): backfill existing Drive files`
+8. Commit 8: `feat(memory): L1 memory store + curation + commands`
+9. Commit 9: `docs: update ROADMAP Section 8 + decision log from FR-3`
 
 ### Pending FRs
-- FR-3 (next) — SQLite + Scope + L1 Memory
 - FR-4..FR-9 — sequential theo Section 5
 
 ---
