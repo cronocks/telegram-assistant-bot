@@ -21,6 +21,7 @@ from core_handler import CoreDeps, handle_message
 from cost_monitor import check_and_alert
 from db.migrations import run_migrations
 from drive_client import DriveNoteStore
+from note_index import SqliteNoteIndex
 from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
 
@@ -38,8 +39,16 @@ notes = DriveNoteStore()
 wiki = DriveWikiStore(llm=llm)
 channel = TelegramAdapter(token=TELEGRAM_TOKEN, allowed_chat_id=TELEGRAM_CHAT_ID)
 user_store = SqliteUserStore()
+note_index = SqliteNoteIndex()
 
-deps = CoreDeps(llm=llm, notes=notes, wiki=wiki, channel=channel, user_store=user_store)
+deps = CoreDeps(
+    llm=llm,
+    notes=notes,
+    wiki=wiki,
+    channel=channel,
+    user_store=user_store,
+    note_index=note_index,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -67,6 +76,21 @@ async def lifespan(app: FastAPI):
         print(f"[bot] Drive OK: {result}")
     except Exception as e:
         print(f"[bot] Drive ERROR at startup: {e}")
+        traceback.print_exc()
+
+    # Backfill: index existing Drive files that have no SQLite row yet.
+    try:
+        _user_store = SqliteUserStore()
+        admins = [u for u in _user_store.list_users() if u.role == "admin"]
+        if admins:
+            note_files = notes.list_recent_files(limit=None)
+            wiki_files = wiki.list_pages()
+            inserted = note_index.backfill(note_files, wiki_files, admins[0].id)
+            print(f"[bot] Note index backfill complete — {inserted} new rows inserted")
+        else:
+            print("[bot] Note index backfill skipped — no admin user found")
+    except Exception as e:
+        print(f"[bot] Note index backfill ERROR (non-fatal): {e}")
         traceback.print_exc()
 
     scheduler.add_job(check_and_alert, "interval", hours=6, id="cost_alert")
