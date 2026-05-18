@@ -1605,12 +1605,25 @@ async def _cmd_cap_nhat_tri_nho(chat_id: str, user: User, deps: CoreDeps) -> Non
         record_usage(tokens // 2, tokens // 2)
         deps.user_store.record_usage(user.id, tokens)
 
-        deps.memory_store.set(user.id, "memory", new_memory, mark_curated=True)
-        deps.memory_store.set(user.id, "user", new_profile, mark_curated=True)
+        saved: list[str] = []
+        if new_memory:
+            deps.memory_store.set(user.id, "memory", new_memory, mark_curated=True)
+            saved.append("bộ nhớ")
+        if new_profile:
+            deps.memory_store.set(user.id, "user", new_profile, mark_curated=True)
+            saved.append("hồ sơ")
+
+        if not saved:
+            await deps.channel.send(
+                chat_id,
+                "Curation không sinh ra nội dung nào. Thử lại sau hoặc thêm ghi chú trước.",
+                use_markdown=False,
+            )
+            return
 
         await deps.channel.send(
             chat_id,
-            f"Đã cập nhật bộ nhớ từ {len(recent)} ghi chú gần đây.\n"
+            f"Đã cập nhật {' và '.join(saved)} từ {len(recent)} ghi chú gần đây.\n"
             f"Dùng `xem tri nho` hoặc `xem ho so` để xem.",
             use_markdown=False,
         )
