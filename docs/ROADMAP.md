@@ -376,7 +376,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-3 — SQLite + Scope + L1 Memory
-**Status:** ✅ DONE — merged to `main` (production) 2026-05-18; 9 commits, branch `feature/FR3`
+**Status:** ✅ DONE (code complete) — 9 commits on `feature/FR3`; chờ merge → `dev` (staging test) → `main`
 **Scope delivered:**
 - SQLite schema: `notes`, `wiki_pages`, `user_memory` (migrations 009–011)
 - `acl.py` — `can_read()` + `filter_visible()` helpers
@@ -592,22 +592,21 @@ INDEX (user_id, category_id, occurred_at)
   - Parent-child links (soft history)
   - Per-user monthly token quota (lazy monthly reset)
   - Argon2id password infrastructure (not yet exposed via commands)
-- ✅ **FR-3** merged to `main` (production) 2026-05-18 — 9 commits, branch `feature/FR3`
+- 🔄 **FR-3** code complete — 9 commits on `feature/FR3` (2026-05-18)
   - SQLite schema: notes, wiki_pages, user_memory (migrations 009–011)
   - ACL layer: `acl.py` + `SqliteNoteIndex` + `NoteIndex` Protocol
   - Dual-write + ACL filter trên tất cả retrieval paths
   - `chia se` / `bo chia se` commands + startup backfill
   - L1 Memory: `SqliteMemoryStore`, `curate_memory()`, 3 lệnh tri nhớ, inject vào Q&A
   - `/start` redesign + `/help [nhom]`
+  - **Next:** merge → `dev` → test trên staging → merge → `main`
 
-### Immediate next steps (FR-4)
-- FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
-  - Audit log table (immutable, append-only) — ghi lại mọi thao tác nhạy cảm
-  - Under-18 stealth-read cho admin (silent to member), dựa trên birthdate
-  - Recycle bin: disclosed, 180 ngày retention, admin-only access
-  - Auto-purge data khi child tròn 18
-  - Notification framework (channel-agnostic, không hardcode Telegram)
-- **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định trên service mới
+### Immediate next steps
+1. Merge `feature/FR3` → `dev`, test trên staging
+2. Nếu OK → merge `feature/FR3` → `main`
+3. Xóa `feature/FR3` branch sau khi vào `main`
+4. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
+- **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định
 
 ### Pending FRs
 - FR-4..FR-9 — sequential theo Section 5
