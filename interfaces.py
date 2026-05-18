@@ -214,6 +214,87 @@ class WikiStore(Protocol):
         ...
 
 
+# ─── Note / Wiki index (SQLite ACL layer) ────────────────────────────────────
+
+@runtime_checkable
+class NoteIndex(Protocol):
+    """SQLite ACL/index layer that maps Drive file IDs to owner + scope.
+
+    Concrete impl: SqliteNoteIndex (note_index.py).
+    Drive holds content; this index controls who can see what.
+    """
+
+    # ── Write ─────────────────────────────────────────────────────────────────
+
+    def add_note(
+        self,
+        drive_file_id: str,
+        owner_user_id: int,
+        kind: str = "note",
+        title: str | None = None,
+        scope: str = "private",
+    ) -> int:
+        """Insert a new note row. Returns the SQLite row id."""
+        ...
+
+    def add_wiki_page(
+        self,
+        drive_file_id: str,
+        owner_user_id: int,
+        topic: str,
+        slug: str,
+        scope: str = "everyone",
+    ) -> int:
+        """Insert a new wiki_page row. Returns the SQLite row id."""
+        ...
+
+    def touch_note(self, drive_file_id: str) -> None:
+        """Bump updated_at for an existing note (called on append)."""
+        ...
+
+    def touch_wiki_page(self, drive_file_id: str) -> None:
+        """Bump updated_at for an existing wiki page (called on append)."""
+        ...
+
+    def set_note_scope(
+        self, drive_file_id: str, scope: str, requester_id: int
+    ) -> bool:
+        """Change note scope. Returns False if requester is not the owner."""
+        ...
+
+    def set_wiki_scope(
+        self, drive_file_id: str, scope: str, requester_id: int
+    ) -> bool:
+        """Change wiki page scope. Returns False if requester is not the owner."""
+        ...
+
+    # ── Read ──────────────────────────────────────────────────────────────────
+
+    def get_note_meta(self, drive_file_id: str) -> "dict | None":
+        """Return {id, drive_file_id, owner_user_id, scope, kind, title} or None."""
+        ...
+
+    def get_wiki_meta(self, drive_file_id: str) -> "dict | None":
+        """Return {id, drive_file_id, owner_user_id, scope, topic, slug} or None."""
+        ...
+
+    def note_meta_for_ids(self, drive_file_ids: "list[str]") -> "list[dict]":
+        """Return note metadata rows for a list of Drive file IDs.
+
+        Used by retrieval paths to ACL-filter Drive search results.
+        File IDs with no SQLite row (orphans) are omitted — safe default.
+        """
+        ...
+
+    def visible_wiki_slugs(self, viewer_id: int) -> "set[str]":
+        """Return slugs of wiki pages the viewer may read.
+
+        Used to pre-filter _index.md before LLM page selection so the LLM
+        never sees slugs of pages it should not access.
+        """
+        ...
+
+
 # ─── Embedding (placeholder for future vector layer) ─────────────────────────
 
 @runtime_checkable
