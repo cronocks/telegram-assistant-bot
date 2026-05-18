@@ -18,7 +18,7 @@ from config import (
     PENDING_CHOICE_TIMEOUT_SEC,
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
-from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
+from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteIndex, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
@@ -37,6 +37,7 @@ class CoreDeps:
     wiki: WikiStore
     channel: ChannelAdapter
     user_store: UserStore
+    note_index: NoteIndex
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +231,7 @@ async def _resolve_fuzzy_view(
 
 
 async def _resolve_create_new_confirm(
-    chat_id: str, pending: dict, text: str, deps: CoreDeps,
+    chat_id: str, pending: dict, text: str, user: User, deps: CoreDeps,
 ) -> bool:
     """Handle yes/no confirmation for creating a new file after fuzzy miss."""
     data = pending["data"]
@@ -244,11 +245,12 @@ async def _resolve_create_new_confirm(
             chat_id, f"Dang tao file: {filename}...", use_markdown=False,
         )
         try:
-            saved_name = deps.notes.save_note(
+            saved_name, file_id = deps.notes.save_note(
                 title=filename,
                 content=content,
                 custom_filename=_sanitize_filename(filename),
             )
+            _register_note(file_id, user.id, "note", saved_name, deps)
             await deps.channel.send(
                 chat_id, f"Da tao: {saved_name}", use_markdown=False,
             )
@@ -268,7 +270,7 @@ async def _resolve_create_new_confirm(
 
 
 async def _try_resolve_pending(
-    chat_id: str, text: str, deps: CoreDeps,
+    chat_id: str, text: str, user: User, deps: CoreDeps,
 ) -> bool:
     """If a pending state exists, attempt to resolve it. Returns True if handled."""
     pending = _get_pending(chat_id)
@@ -281,7 +283,7 @@ async def _try_resolve_pending(
     if ptype == "fuzzy_view":
         return await _resolve_fuzzy_view(chat_id, pending, text, deps)
     if ptype == "create_new_confirm":
-        return await _resolve_create_new_confirm(chat_id, pending, text, deps)
+        return await _resolve_create_new_confirm(chat_id, pending, text, user, deps)
 
     return False
 
@@ -923,7 +925,27 @@ async def _cmd_security(chat_id: str, deps: CoreDeps) -> None:
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
-async def _cmd_ghi_nho(chat_id: str, content: str, deps: CoreDeps) -> None:
+def _register_note(
+    file_id: str, owner_id: int, kind: str, title: str, deps: CoreDeps
+) -> None:
+    """Insert a note row into the SQLite index (best-effort; logs on failure)."""
+    try:
+        deps.note_index.add_note(file_id, owner_id, kind=kind, title=title, scope="private")
+    except Exception:
+        traceback.print_exc()
+
+
+def _register_wiki_page(
+    file_id: str, owner_id: int, topic: str, slug: str, deps: CoreDeps
+) -> None:
+    """Insert a wiki_page row into the SQLite index (best-effort; logs on failure)."""
+    try:
+        deps.note_index.add_wiki_page(file_id, owner_id, topic=topic, slug=slug, scope="everyone")
+    except Exception:
+        traceback.print_exc()
+
+
+async def _cmd_ghi_nho(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """ghi nhớ <content> → create a new file with a Claude-generated title."""
     if not content:
         await deps.channel.send(chat_id, "Vui long nhap noi dung can ghi nho.")
@@ -934,7 +956,8 @@ async def _cmd_ghi_nho(chat_id: str, content: str, deps: CoreDeps) -> None:
             f"Tao tieu de ngan (toi da 6 tu) cho ghi chu sau, chi tra ve tieu de: {content}"
         )
         record_usage(tokens // 2, tokens // 2)
-        filename = deps.notes.save_note(title.strip(), content)
+        filename, file_id = deps.notes.save_note(title.strip(), content)
+        _register_note(file_id, user.id, "note", filename, deps)
         await deps.channel.send(chat_id, f"Da luu: {filename}", use_markdown=False)
     except PermissionError as e:
         traceback.print_exc()
@@ -1031,7 +1054,7 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
     )
 
 
-async def _cmd_nhat_ky(chat_id: str, content: str, deps: CoreDeps) -> None:
+async def _cmd_nhat_ky(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """nhật ký <content> → append to today's journal."""
     if not content:
         await deps.channel.send(chat_id, "Vui long nhap noi dung.", use_markdown=False)
@@ -1039,7 +1062,11 @@ async def _cmd_nhat_ky(chat_id: str, content: str, deps: CoreDeps) -> None:
 
     await deps.channel.send(chat_id, "Dang ghi nhat ky...")
     try:
-        filename, action = deps.notes.add_to_daily_journal(content)
+        filename, action, file_id = deps.notes.add_to_daily_journal(content)
+        if action == "created":
+            _register_note(file_id, user.id, "journal", filename, deps)
+        else:
+            deps.note_index.touch_note(file_id)
         verb = "Da tao moi" if action == "created" else "Da them vao"
         await deps.channel.send(
             chat_id, f"{verb}: {filename}", use_markdown=False,
@@ -1194,7 +1221,7 @@ def _update_index_after_create(
         print(f"[core] Wiki index update (non-fatal): {e}")
 
 
-async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
+async def _cmd_wiki_ingest(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """wiki <content> — ingest raw content into the wiki layer.
 
     Flow: Claude analyzes → identifies topics → creates/appends wiki pages and
@@ -1244,13 +1271,16 @@ async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
                     if page:
                         section = deps.wiki.build_section(content_to_add)
                         filename = deps.wiki.append_to_page(page["id"], section)
+                        deps.note_index.touch_wiki_page(page["id"])
                         results.append(f"Cap nhat: {filename}")
                     else:
                         # Fall back to create + index update.
                         page_content = deps.wiki.build_new_page(
                             topic, topic_type, content_to_add,
                         )
-                        filename = deps.wiki.save_page(topic, page_content)
+                        filename, file_id = deps.wiki.save_page(topic, page_content)
+                        slug = filename.removesuffix(".md")
+                        _register_wiki_page(file_id, user.id, topic, slug, deps)
                         _update_index_after_create(
                             topic, filename, topic_type, content_to_add, deps,
                         )
@@ -1259,7 +1289,9 @@ async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
                     page_content = deps.wiki.build_new_page(
                         topic, topic_type, content_to_add,
                     )
-                    filename = deps.wiki.save_page(topic, page_content)
+                    filename, file_id = deps.wiki.save_page(topic, page_content)
+                    slug = filename.removesuffix(".md")
+                    _register_wiki_page(file_id, user.id, topic, slug, deps)
                     _update_index_after_create(
                         topic, filename, topic_type, content_to_add, deps,
                     )
@@ -1536,7 +1568,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         return
 
     # ── Step 1: try to resolve a pending state first ────────────────────────
-    if await _try_resolve_pending(chat_id, text, deps):
+    if await _try_resolve_pending(chat_id, text, user, deps):
         return
 
     # ── Step 2: slash commands (not normalized) ────────────────────────────
@@ -1609,13 +1641,13 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "XEM_WIKI":
             await _cmd_xem_wiki_list(chat_id, deps); return
         if cmd_id == "WIKI":
-            await _cmd_wiki_ingest(chat_id, remainder, deps); return
+            await _cmd_wiki_ingest(chat_id, remainder, user, deps); return
         if cmd_id == "GHI_NHO_VAO":
             await _cmd_ghi_nho_vao(chat_id, remainder, deps); return
         if cmd_id == "GHI_NHO":
-            await _cmd_ghi_nho(chat_id, remainder, deps); return
+            await _cmd_ghi_nho(chat_id, remainder, user, deps); return
         if cmd_id == "NHAT_KY":
-            await _cmd_nhat_ky(chat_id, remainder, deps); return
+            await _cmd_nhat_ky(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_NHAT_KY":
             await _cmd_xem_nhat_ky(chat_id, deps); return
         if cmd_id == "LIET_KE":

@@ -107,8 +107,8 @@ class NoteStore(Protocol):
 
     def save_note(
         self, title: str, content: str, custom_filename: str | None = None
-    ) -> str:
-        """Create a new note file. Returns the resulting filename."""
+    ) -> tuple[str, str]:
+        """Create a new note file. Returns (filename, drive_file_id)."""
         ...
 
     def search_notes(self, keyword: str, max_results: int = 5) -> list[dict]:
@@ -139,9 +139,10 @@ class NoteStore(Protocol):
         """List the N most recently modified files."""
         ...
 
-    def add_to_daily_journal(self, content: str) -> tuple[str, str]:
-        """Append (or create) today's journal entry. Returns (filename, action).
+    def add_to_daily_journal(self, content: str) -> tuple[str, str, str]:
+        """Append (or create) today's journal entry.
 
+        Returns (filename, action, drive_file_id).
         action is "created" or "appended".
         """
         ...
@@ -179,8 +180,8 @@ class WikiStore(Protocol):
         """Find a wiki page by topic (slug or partial match). Returns {id, name, content}."""
         ...
 
-    def save_page(self, topic: str, content: str, file_id: str | None = None) -> str:
-        """Create or overwrite a wiki page. Returns the filename."""
+    def save_page(self, topic: str, content: str, file_id: str | None = None) -> tuple[str, str]:
+        """Create or overwrite a wiki page. Returns (filename, drive_file_id)."""
         ...
 
     def append_to_page(self, file_id: str, new_section: str) -> str:

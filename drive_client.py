@@ -244,7 +244,7 @@ class DriveNoteStore:
 
     def save_note(
         self, title: str, content: str, custom_filename: str | None = None
-    ) -> str:
+    ) -> tuple[str, str]:
         """Save a new note as a markdown file.
 
         Args:
@@ -252,6 +252,8 @@ class DriveNoteStore:
             content: note body.
             custom_filename: if provided, use this name verbatim (already sanitized)
                 instead of prefixing a timestamp.
+
+        Returns (filename, drive_file_id).
         """
         check_rate_limit()
         folder_id = _get_or_create_notes_folder()
@@ -292,7 +294,7 @@ source: telegram-bot
         audit_log("create_file", file_id=file_id, filename=filename)
         _try_transfer_ownership(service, file_id)
 
-        return file.get("name")
+        return file.get("name"), file_id
 
     # ─── Fuzzy filename match ────────────────────────────────────────────────
 
@@ -403,8 +405,8 @@ source: telegram-bot
 
     # ─── Daily journal ───────────────────────────────────────────────────────
 
-    def add_to_daily_journal(self, content: str) -> tuple[str, str]:
-        """Append (or create) today's journal entry. Returns (filename, action)."""
+    def add_to_daily_journal(self, content: str) -> tuple[str, str, str]:
+        """Append (or create) today's journal entry. Returns (filename, action, drive_file_id)."""
         folder_id = _get_or_create_notes_folder()
         validate_folder(folder_id)
 
@@ -437,7 +439,7 @@ source: telegram-bot
             )
             service.files().update(fileId=file_id, media_body=media).execute()
             audit_log("daily_journal_append", file_id=file_id, filename=filename)
-            return filename, "appended"
+            return filename, "appended", file_id
 
         # Create branch.
         check_rate_limit()
@@ -461,7 +463,7 @@ source: telegram-bot
         file_id = file.get("id")
         audit_log("daily_journal_create", file_id=file_id, filename=filename)
         _try_transfer_ownership(service, file_id)
-        return filename, "created"
+        return filename, "created", file_id
 
     def get_today_journal(self) -> dict | None:
         """Return today's journal file content, or None if not created yet."""

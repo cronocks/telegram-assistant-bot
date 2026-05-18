@@ -321,8 +321,8 @@ class DriveWikiStore:
 
     def save_page(
         self, topic: str, content: str, file_id: str | None = None
-    ) -> str:
-        """Create or overwrite a wiki page. Returns the filename."""
+    ) -> tuple[str, str]:
+        """Create or overwrite a wiki page. Returns (filename, drive_file_id)."""
         wiki_folder_id = _get_wiki_folder_id()
         validate_folder(wiki_folder_id)
 
@@ -335,6 +335,7 @@ class DriveWikiStore:
         if file_id:
             service.files().update(fileId=file_id, media_body=media).execute()
             audit_log("wiki_page_updated", file_id=file_id, filename=filename)
+            return filename, file_id
         else:
             check_rate_limit()
             validate_file_creation(filename, MIME_MARKDOWN)
@@ -342,10 +343,10 @@ class DriveWikiStore:
             file = service.files().create(
                 body=file_meta, media_body=media, fields="id, name",
             ).execute()
+            new_file_id = file.get("id")
             filename = file.get("name")
-            audit_log("wiki_page_created", file_id=file.get("id"), filename=filename)
-
-        return filename
+            audit_log("wiki_page_created", file_id=new_file_id, filename=filename)
+            return filename, new_file_id
 
     def append_to_page(self, file_id: str, new_section: str) -> str:
         """Append a timestamped section to an existing wiki page."""
