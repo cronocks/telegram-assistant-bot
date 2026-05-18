@@ -95,6 +95,20 @@ class LLMClient(Protocol):
         """Pick relevant wiki page filenames from the index. Returns (filenames, tokens)."""
         ...
 
+    def curate_memory(
+        self,
+        recent_notes: list[dict],
+        current_memory: str,
+        current_user_profile: str,
+    ) -> tuple[str, str, int]:
+        """Refine L1 memory from recent notes.
+
+        Returns (new_memory_md, new_user_md, total_tokens).
+        new_memory_md  — updated rolling facts/preferences snapshot
+        new_user_md    — updated stable user profile snapshot
+        """
+        ...
+
 
 # ─── Note store (raw notes / journal) ────────────────────────────────────────
 
@@ -107,16 +121,16 @@ class NoteStore(Protocol):
 
     def save_note(
         self, title: str, content: str, custom_filename: str | None = None
-    ) -> str:
-        """Create a new note file. Returns the resulting filename."""
+    ) -> tuple[str, str]:
+        """Create a new note file. Returns (filename, drive_file_id)."""
         ...
 
     def search_notes(self, keyword: str, max_results: int = 5) -> list[dict]:
-        """Full-text search. Returns [{name, modified, content}]."""
+        """Full-text search. Returns [{id, name, modified, content}]."""
         ...
 
     def get_recent_notes(self, days: int = 7, max_results: int = 5) -> list[dict]:
-        """Notes modified within the last N days. Legacy helper."""
+        """Notes modified within the last N days. Legacy helper. Returns [{id, name, modified, content}]."""
         ...
 
     def test_connection(self) -> dict:
@@ -139,9 +153,10 @@ class NoteStore(Protocol):
         """List the N most recently modified files."""
         ...
 
-    def add_to_daily_journal(self, content: str) -> tuple[str, str]:
-        """Append (or create) today's journal entry. Returns (filename, action).
+    def add_to_daily_journal(self, content: str) -> tuple[str, str, str]:
+        """Append (or create) today's journal entry.
 
+        Returns (filename, action, drive_file_id).
         action is "created" or "appended".
         """
         ...
@@ -153,11 +168,11 @@ class NoteStore(Protocol):
     def smart_search(
         self, keywords: list[str], days_back: int = 0, max_per_keyword: int = 3
     ) -> list[dict]:
-        """Multi-keyword search with an optional timeframe filter."""
+        """Multi-keyword search with an optional timeframe filter. Returns [{id, name, modified, content}]."""
         ...
 
     def get_current_week_notes(self, max_results: int = 20) -> list[dict]:
-        """All notes modified during the current local week (Mon..Sun)."""
+        """All notes modified during the current local week (Mon..Sun). Returns [{id, name, modified, content}]."""
         ...
 
 
@@ -179,8 +194,8 @@ class WikiStore(Protocol):
         """Find a wiki page by topic (slug or partial match). Returns {id, name, content}."""
         ...
 
-    def save_page(self, topic: str, content: str, file_id: str | None = None) -> str:
-        """Create or overwrite a wiki page. Returns the filename."""
+    def save_page(self, topic: str, content: str, file_id: str | None = None) -> tuple[str, str]:
+        """Create or overwrite a wiki page. Returns (filename, drive_file_id)."""
         ...
 
     def append_to_page(self, file_id: str, new_section: str) -> str:
@@ -202,15 +217,126 @@ class WikiStore(Protocol):
         ...
 
     def retrieve_pages(
-        self, question: str, keywords: list[str]
+        self,
+        question: str,
+        keywords: list[str],
+        visible_slugs: "set[str] | None" = None,
     ) -> list[dict]:
         """Single retrieval entry point.
 
-        Today: read index -> LLM picks filenames -> read pages.
+        Today: read index -> filter by visible_slugs -> LLM picks filenames -> read pages.
         Future (vector DB): embed(question) -> top-k. Caller signature unchanged.
+
+        visible_slugs: if provided, index rows are pre-filtered to slugs the viewer
+            may read before being passed to the LLM (prevents information leakage).
+            None means no filter (legacy / pre-ACL behaviour).
 
         Returns [{id, name, content}].
         """
+        ...
+
+
+# ─── Note / Wiki index (SQLite ACL layer) ────────────────────────────────────
+
+@runtime_checkable
+class NoteIndex(Protocol):
+    """SQLite ACL/index layer that maps Drive file IDs to owner + scope.
+
+    Concrete impl: SqliteNoteIndex (note_index.py).
+    Drive holds content; this index controls who can see what.
+    """
+
+    # ── Write ─────────────────────────────────────────────────────────────────
+
+    def add_note(
+        self,
+        drive_file_id: str,
+        owner_user_id: int,
+        kind: str = "note",
+        title: str | None = None,
+        scope: str = "private",
+    ) -> int:
+        """Insert a new note row. Returns the SQLite row id."""
+        ...
+
+    def add_wiki_page(
+        self,
+        drive_file_id: str,
+        owner_user_id: int,
+        topic: str,
+        slug: str,
+        scope: str = "everyone",
+    ) -> int:
+        """Insert a new wiki_page row. Returns the SQLite row id."""
+        ...
+
+    def touch_note(self, drive_file_id: str) -> None:
+        """Bump updated_at for an existing note (called on append)."""
+        ...
+
+    def touch_wiki_page(self, drive_file_id: str) -> None:
+        """Bump updated_at for an existing wiki page (called on append)."""
+        ...
+
+    def set_note_scope(
+        self, drive_file_id: str, scope: str, requester_id: int
+    ) -> bool:
+        """Change note scope. Returns False if requester is not the owner."""
+        ...
+
+    def set_wiki_scope(
+        self, drive_file_id: str, scope: str, requester_id: int
+    ) -> bool:
+        """Change wiki page scope. Returns False if requester is not the owner."""
+        ...
+
+    # ── Read ──────────────────────────────────────────────────────────────────
+
+    def get_note_meta(self, drive_file_id: str) -> "dict | None":
+        """Return {id, drive_file_id, owner_user_id, scope, kind, title} or None."""
+        ...
+
+    def get_wiki_meta(self, drive_file_id: str) -> "dict | None":
+        """Return {id, drive_file_id, owner_user_id, scope, topic, slug} or None."""
+        ...
+
+    def note_meta_for_ids(self, drive_file_ids: "list[str]") -> "list[dict]":
+        """Return note metadata rows for a list of Drive file IDs.
+
+        Used by retrieval paths to ACL-filter Drive search results.
+        File IDs with no SQLite row (orphans) are omitted — safe default.
+        """
+        ...
+
+    def visible_wiki_slugs(self, viewer_id: int) -> "set[str]":
+        """Return slugs of wiki pages the viewer may read.
+
+        Used to pre-filter _index.md before LLM page selection so the LLM
+        never sees slugs of pages it should not access.
+        """
+        ...
+
+
+# ─── L1 Memory store (SQLite user_memory table) ──────────────────────────────
+
+@runtime_checkable
+class MemoryStore(Protocol):
+    """Abstract L1 memory store. Concrete impl: SqliteMemoryStore.
+
+    Each user has two named slots: 'memory' (rolling facts) and 'user' (profile).
+    Content starts empty and is populated by LLM curation on demand.
+    """
+
+    def get(self, user_id: int, kind: str) -> str:
+        """Return stored content for (user_id, kind), or '' if none yet."""
+        ...
+
+    def get_meta(self, user_id: int, kind: str) -> "dict | None":
+        """Return full metadata row {user_id, kind, content, updated_at, curated_at} or None."""
+        ...
+
+    def set(self, user_id: int, kind: str, content: str, mark_curated: bool = False) -> None:
+        """Upsert content for (user_id, kind). Pass mark_curated=True after LLM curation."""
         ...
 
 

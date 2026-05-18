@@ -274,6 +274,61 @@ nêu bật những điểm quan trọng nhất:\n\n{notes_text}"""
             print(f"[claude] Wiki ingest parse error: {e}, raw={text[:200]}")
             return [], total_tokens
 
+    # ─── L1 Memory: curation ─────────────────────────────────────────────────
+
+    def curate_memory(
+        self,
+        recent_notes: list[dict],
+        current_memory: str,
+        current_user_profile: str,
+    ) -> tuple[str, str, int]:
+        """Refine L1 memory from recent notes.
+
+        Returns (new_memory_md, new_user_md, total_tokens).
+        """
+        notes_text = "\n\n---\n\n".join(
+            f"**{n['name']}** ({n.get('modified', '')}):\n{n['content'][:600]}"
+            for n in recent_notes
+        ) if recent_notes else "(không có ghi chú gần đây)"
+
+        prompt = (
+            "Bạn là module curation bộ nhớ cá nhân. Dựa trên các ghi chú gần đây bên dưới, "
+            "hãy cập nhật 2 snapshot:\n\n"
+            "1. **MEMORY.md** — Sự kiện, thông tin thực tế quan trọng gần đây. "
+            "Ngắn gọn, bullet points, tối đa 400 từ.\n"
+            "2. **USER.md** — Hồ sơ người dùng: sở thích, thói quen, đặc điểm cá nhân. "
+            "Ngắn gọn, bullet points, tối đa 200 từ.\n\n"
+            f"MEMORY.md hiện tại:\n{current_memory or '(trống)'}\n\n"
+            f"USER.md hiện tại:\n{current_user_profile or '(trống)'}\n\n"
+            f"Ghi chú gần đây:\n{notes_text}\n\n"
+            "Trả về JSON (CHỈ JSON thuần, KHÔNG markdown):\n"
+            '{"memory": "<nội dung MEMORY.md mới>", "user_profile": "<nội dung USER.md mới>"}'
+        )
+
+        import json
+        response = self._client.messages.create(
+            model=self._model,
+            max_tokens=800,
+            system="Bạn là module curation bộ nhớ, chỉ trả về JSON thuần.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        total_tokens = response.usage.input_tokens + response.usage.output_tokens
+
+        json_match = re.search(r"\{.*\}", text, re.DOTALL)
+        if not json_match:
+            print(f"[claude] curate_memory: no JSON found, raw={text[:200]}")
+            return current_memory, current_user_profile, total_tokens
+
+        try:
+            result = json.loads(json_match.group(0))
+            new_memory = result.get("memory", current_memory) or current_memory
+            new_user = result.get("user_profile", current_user_profile) or current_user_profile
+            return new_memory, new_user, total_tokens
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"[claude] curate_memory parse error: {e}, raw={text[:200]}")
+            return current_memory, current_user_profile, total_tokens
+
     # ─── Wiki: Q&A from selected pages ───────────────────────────────────────
 
     def answer_from_wiki(

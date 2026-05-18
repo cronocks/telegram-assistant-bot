@@ -201,18 +201,24 @@ class DriveWikiStore:
     # ─── Retrieval (single entry point) ─────────────────────────────────────
 
     def retrieve_pages(
-        self, question: str, keywords: list[str]
+        self,
+        question: str,
+        keywords: list[str],
+        visible_slugs: set[str] | None = None,
     ) -> list[dict]:
         """Single retrieval entry point.
 
         Current implementation (text index):
           1. Read _index.md (1 Drive call)
-          2. LLM picks relevant pages from the index (1 LLM call, ~350 tokens)
-          3. Read the selected pages from Drive (1-2 Drive calls)
+          2. Filter index rows to visible_slugs (ACL pre-filter before LLM)
+          3. LLM picks relevant pages from the filtered index (1 LLM call, ~350 tokens)
+          4. Read the selected pages from Drive (1-2 Drive calls)
 
         Future (vector DB):
           1. embed(question) -> vector_search() -> top-k pages
           (caller signature unchanged)
+
+        visible_slugs: set of slugs the viewer may read; None = no filter.
         """
         # Stage 1: read the index.
         try:
@@ -224,6 +230,21 @@ class DriveWikiStore:
 
         if "| Topic |" not in index_content:
             return []  # index has no rows yet
+
+        # Stage 1b: pre-filter index rows by ACL if visible_slugs provided.
+        if visible_slugs is not None:
+            filtered_lines = []
+            for line in index_content.splitlines():
+                # Keep header lines (contain "Topic" or start with "|-") unchanged.
+                if "| Topic |" in line or line.startswith("|--") or line.startswith("| ---"):
+                    filtered_lines.append(line)
+                elif line.startswith("|"):
+                    # Check if any visible slug appears in this row.
+                    if any(slug in line for slug in visible_slugs):
+                        filtered_lines.append(line)
+            index_content = "\n".join(filtered_lines)
+            if "| Topic |" not in index_content or index_content.count("|") < 6:
+                return []  # no visible pages after filter
 
         # Stage 2: ask the LLM to pick filenames.
         try:
@@ -321,8 +342,8 @@ class DriveWikiStore:
 
     def save_page(
         self, topic: str, content: str, file_id: str | None = None
-    ) -> str:
-        """Create or overwrite a wiki page. Returns the filename."""
+    ) -> tuple[str, str]:
+        """Create or overwrite a wiki page. Returns (filename, drive_file_id)."""
         wiki_folder_id = _get_wiki_folder_id()
         validate_folder(wiki_folder_id)
 
@@ -335,6 +356,7 @@ class DriveWikiStore:
         if file_id:
             service.files().update(fileId=file_id, media_body=media).execute()
             audit_log("wiki_page_updated", file_id=file_id, filename=filename)
+            return filename, file_id
         else:
             check_rate_limit()
             validate_file_creation(filename, MIME_MARKDOWN)
@@ -342,10 +364,10 @@ class DriveWikiStore:
             file = service.files().create(
                 body=file_meta, media_body=media, fields="id, name",
             ).execute()
+            new_file_id = file.get("id")
             filename = file.get("name")
-            audit_log("wiki_page_created", file_id=file.get("id"), filename=filename)
-
-        return filename
+            audit_log("wiki_page_created", file_id=new_file_id, filename=filename)
+            return filename, new_file_id
 
     def append_to_page(self, file_id: str, new_section: str) -> str:
         """Append a timestamped section to an existing wiki page."""

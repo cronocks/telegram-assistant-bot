@@ -18,7 +18,8 @@ from config import (
     PENDING_CHOICE_TIMEOUT_SEC,
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
-from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteStore, User, UserStore, WikiStore
+import acl as acl_mod
+from interfaces import ChannelAdapter, ChannelMessage, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
@@ -37,6 +38,8 @@ class CoreDeps:
     wiki: WikiStore
     channel: ChannelAdapter
     user_store: UserStore
+    note_index: NoteIndex
+    memory_store: MemoryStore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -230,7 +233,7 @@ async def _resolve_fuzzy_view(
 
 
 async def _resolve_create_new_confirm(
-    chat_id: str, pending: dict, text: str, deps: CoreDeps,
+    chat_id: str, pending: dict, text: str, user: User, deps: CoreDeps,
 ) -> bool:
     """Handle yes/no confirmation for creating a new file after fuzzy miss."""
     data = pending["data"]
@@ -244,11 +247,12 @@ async def _resolve_create_new_confirm(
             chat_id, f"Dang tao file: {filename}...", use_markdown=False,
         )
         try:
-            saved_name = deps.notes.save_note(
+            saved_name, file_id = deps.notes.save_note(
                 title=filename,
                 content=content,
                 custom_filename=_sanitize_filename(filename),
             )
+            _register_note(file_id, user.id, "note", saved_name, deps)
             await deps.channel.send(
                 chat_id, f"Da tao: {saved_name}", use_markdown=False,
             )
@@ -268,7 +272,7 @@ async def _resolve_create_new_confirm(
 
 
 async def _try_resolve_pending(
-    chat_id: str, text: str, deps: CoreDeps,
+    chat_id: str, text: str, user: User, deps: CoreDeps,
 ) -> bool:
     """If a pending state exists, attempt to resolve it. Returns True if handled."""
     pending = _get_pending(chat_id)
@@ -281,7 +285,7 @@ async def _try_resolve_pending(
     if ptype == "fuzzy_view":
         return await _resolve_fuzzy_view(chat_id, pending, text, deps)
     if ptype == "create_new_confirm":
-        return await _resolve_create_new_confirm(chat_id, pending, text, deps)
+        return await _resolve_create_new_confirm(chat_id, pending, text, user, deps)
 
     return False
 
@@ -786,28 +790,103 @@ async def _cmd_reset_quota(
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
-        "*LENH GHI CHU:*\n"
-        "`ghi nho [noi dung]` — Tao file moi (Claude tu dat ten)\n"
+        "Chon nhom lenh de xem chi tiet:\n\n"
+        "📝 *Ghi chu & Nhat ky* — `/help ghi chu`\n"
+        "📚 *Wiki* — `/help wiki`\n"
+        "🧠 *Tri nho* — `/help tri nho`\n"
+        "👥 *Nguoi dung* — `/help nguoi dung`\n"
+        "💰 *Quota* — `/help quota`\n"
+        "🔍 *Tim kiem & Xem* — `/help xem`\n"
+        "⚙️ *He thong* — `/help he thong`\n\n"
+        "💬 *Hoi dap tu do:* Gõ cau hoi bat ky — bot tim wiki + vault roi tra loi."
+    ))
+
+
+_HELP_PAGES: dict[str, tuple[str, str]] = {
+    "ghi chu": (
+        "📝 *GHI CHU & NHAT KY*",
+        "`ghi nho [noi dung]` — Tao file ghi chu moi (Claude tu dat ten)\n"
         "`ghi nho vao [ten]: [noi dung]` — Them vao file co san (fuzzy match)\n"
-        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)\n\n"
-        "*LENH WIKI (LLM Wiki):*\n"
+        "`nhat ky [noi dung]` — Them vao file nhat ky hom nay (GMT+7)\n"
+        "`chia se [ten-file]` — Chia se file voi ca nha (scope = everyone)\n"
+        "`bo chia se [ten-file]` — Chuyen file ve rieng tu (scope = private)",
+    ),
+    "wiki": (
+        "📚 *WIKI*",
         "`wiki [noi dung]` — Ingest vao wiki (Claude tu to chuc theo topic)\n"
         "`hoi wiki [cau hoi]` — Hoi truc tiep tu wiki\n"
         "`xem wiki` — Liet ke tat ca wiki pages\n"
-        "`xem wiki [topic]` — Doc 1 wiki page\n\n"
-        "*LENH XEM:*\n"
+        "`xem wiki [topic]` — Doc 1 wiki page",
+    ),
+    "nguoi dung": (
+        "👥 *NGUOI DUNG*",
+        "`them user [ten]` — Them user moi (admin)\n"
+        "`xem danh sach user` — Liet ke tat ca user (admin)\n"
+        "`xoa user [ten]` — Xoa user (admin)\n"
+        "`dat username [ten]` — Dat username cua ban\n"
+        "`duyet username` — Duyet yeu cau doi username (admin)\n"
+        "`dat birthdate [YYYY-MM-DD]` — Dat ngay sinh\n"
+        "`duyet birthdate` — Duyet yeu cau doi ngay sinh (admin/manager)\n"
+        "`dat cha [ten user]` — Gan quan he cha/me — con (admin)\n"
+        "`xem cha` — Xem quan he cha/me cua ban",
+    ),
+    "quota": (
+        "💰 *QUOTA*",
+        "`xem quota` — Xem muc su dung token cua ban\n"
+        "`xem quota [ten user]` — Xem quota cua user khac (admin)\n"
+        "`dat quota [ten user] [so token]` — Dat gioi han token (admin)\n"
+        "`reset quota [ten user]` — Reset so dung ve 0 (admin)",
+    ),
+    "xem": (
+        "🔍 *TIM KIEM & XEM*",
         "`xem nhat ky` — Doc nhat ky hom nay\n"
         "`xem [ten]` — Doc 1 file (fuzzy match)\n"
         "`liet ke` — Liet ke 10 file gan nhat\n"
         "`tim [tu khoa]` — Tim trong noi dung file\n"
-        "`tom tat tuan nay` — Tom tat ghi chu 7 ngay\n\n"
-        "*LENH HE THONG:*\n"
-        "`/cost` — Chi phi thang\n"
-        "`/test` — Kiem tra Drive\n"
-        "`/security` — Cau hinh bao mat\n\n"
-        "*HOI DAP:*\n"
-        "Cau hoi tu nhien — bot tim wiki + vault roi tra loi"
-    ))
+        "`tom tat tuan nay` — Tom tat ghi chu 7 ngay",
+    ),
+    "tri nho": (
+        "🧠 *TRI NHO*",
+        "`xem tri nho` — Xem snapshot bo nho cua ban\n"
+        "`xem ho so` — Xem ho so ca nhan cua ban\n"
+        "`cap nhat tri nho` — Cap nhat bo nho tu ghi chu gan day (LLM curation)",
+    ),
+    "he thong": (
+        "⚙️ *HE THONG*",
+        "`/cost` — Chi phi su dung thang nay\n"
+        "`/test` — Kiem tra ket noi Drive\n"
+        "`/security` — Cau hinh bao mat",
+    ),
+}
+
+# Alias map: normalized input → canonical key in _HELP_PAGES
+_HELP_ALIASES: dict[str, str] = {
+    "ghi chu": "ghi chu",
+    "ghi chú": "ghi chu",
+    "wiki": "wiki",
+    "nguoi dung": "nguoi dung",
+    "người dùng": "nguoi dung",
+    "quota": "quota",
+    "xem": "xem",
+    "tri nho": "tri nho",
+    "trí nhớ": "tri nho",
+    "he thong": "he thong",
+    "hệ thống": "he thong",
+}
+
+
+async def _cmd_help(chat_id: str, group: str, deps: CoreDeps) -> None:
+    key = _HELP_ALIASES.get(_norm(group).strip())
+    if key is None:
+        groups = "  ".join(f"`/help {k}`" for k in _HELP_PAGES)
+        await deps.channel.send(
+            chat_id,
+            f"Nhom lenh '{group}' khong ton tai.\n\nCac nhom: {groups}",
+            use_markdown=False,
+        )
+        return
+    title, body = _HELP_PAGES[key]
+    await deps.channel.send(chat_id, f"{title}\n\n{body}")
 
 
 async def _cmd_cost(chat_id: str, deps: CoreDeps) -> None:
@@ -859,7 +938,42 @@ async def _cmd_security(chat_id: str, deps: CoreDeps) -> None:
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
-async def _cmd_ghi_nho(chat_id: str, content: str, deps: CoreDeps) -> None:
+def _register_note(
+    file_id: str, owner_id: int, kind: str, title: str, deps: CoreDeps
+) -> None:
+    """Insert a note row into the SQLite index (best-effort; logs on failure)."""
+    try:
+        deps.note_index.add_note(file_id, owner_id, kind=kind, title=title, scope="private")
+    except Exception:
+        traceback.print_exc()
+
+
+def _register_wiki_page(
+    file_id: str, owner_id: int, topic: str, slug: str, deps: CoreDeps
+) -> None:
+    """Insert a wiki_page row into the SQLite index (best-effort; logs on failure)."""
+    try:
+        deps.note_index.add_wiki_page(file_id, owner_id, topic=topic, slug=slug, scope="everyone")
+    except Exception:
+        traceback.print_exc()
+
+
+def _acl_filter_notes(notes: list[dict], viewer: User, deps: CoreDeps) -> list[dict]:
+    """Filter a list of note search results to those the viewer may read.
+
+    Each note dict must contain an 'id' field (drive_file_id). Notes with no
+    SQLite row (orphans) are treated as invisible — safe default.
+    """
+    if not notes:
+        return []
+    file_ids = [n["id"] for n in notes if n.get("id")]
+    meta_rows = deps.note_index.note_meta_for_ids(file_ids)
+    visible = acl_mod.filter_visible(viewer, meta_rows)
+    visible_ids = {r["drive_file_id"] for r in visible}
+    return [n for n in notes if n.get("id") in visible_ids]
+
+
+async def _cmd_ghi_nho(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """ghi nhớ <content> → create a new file with a Claude-generated title."""
     if not content:
         await deps.channel.send(chat_id, "Vui long nhap noi dung can ghi nho.")
@@ -870,7 +984,8 @@ async def _cmd_ghi_nho(chat_id: str, content: str, deps: CoreDeps) -> None:
             f"Tao tieu de ngan (toi da 6 tu) cho ghi chu sau, chi tra ve tieu de: {content}"
         )
         record_usage(tokens // 2, tokens // 2)
-        filename = deps.notes.save_note(title.strip(), content)
+        filename, file_id = deps.notes.save_note(title.strip(), content)
+        _register_note(file_id, user.id, "note", filename, deps)
         await deps.channel.send(chat_id, f"Da luu: {filename}", use_markdown=False)
     except PermissionError as e:
         traceback.print_exc()
@@ -967,7 +1082,7 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
     )
 
 
-async def _cmd_nhat_ky(chat_id: str, content: str, deps: CoreDeps) -> None:
+async def _cmd_nhat_ky(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """nhật ký <content> → append to today's journal."""
     if not content:
         await deps.channel.send(chat_id, "Vui long nhap noi dung.", use_markdown=False)
@@ -975,7 +1090,11 @@ async def _cmd_nhat_ky(chat_id: str, content: str, deps: CoreDeps) -> None:
 
     await deps.channel.send(chat_id, "Dang ghi nhat ky...")
     try:
-        filename, action = deps.notes.add_to_daily_journal(content)
+        filename, action, file_id = deps.notes.add_to_daily_journal(content)
+        if action == "created":
+            _register_note(file_id, user.id, "journal", filename, deps)
+        else:
+            deps.note_index.touch_note(file_id)
         verb = "Da tao moi" if action == "created" else "Da them vao"
         await deps.channel.send(
             chat_id, f"{verb}: {filename}", use_markdown=False,
@@ -1086,7 +1205,7 @@ async def _cmd_liet_ke(chat_id: str, deps: CoreDeps) -> None:
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
-async def _cmd_tim(chat_id: str, keyword: str, deps: CoreDeps) -> None:
+async def _cmd_tim(chat_id: str, keyword: str, user: User, deps: CoreDeps) -> None:
     if not keyword:
         await deps.channel.send(chat_id, "Vui long nhap tu khoa.")
         return
@@ -1095,6 +1214,7 @@ async def _cmd_tim(chat_id: str, keyword: str, deps: CoreDeps) -> None:
     )
     try:
         notes = deps.notes.search_notes(keyword)
+        notes = _acl_filter_notes(notes, user, deps)
         if not notes:
             await deps.channel.send(
                 chat_id, "Khong tim thay ghi chu nao.", use_markdown=False,
@@ -1130,7 +1250,110 @@ def _update_index_after_create(
         print(f"[core] Wiki index update (non-fatal): {e}")
 
 
-async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
+async def _cmd_set_scope(
+    chat_id: str, name: str, new_scope: str, user: User, deps: CoreDeps
+) -> None:
+    """Shared logic for chia se / bo chia se — change scope of a note or wiki page."""
+    if not name:
+        verb = "chia se" if new_scope == "everyone" else "bo chia se"
+        await deps.channel.send(
+            chat_id, f"Cu phap: {verb} <ten-file>", use_markdown=False,
+        )
+        return
+
+    # 1. Search notes folder first.
+    try:
+        matches = deps.notes.find_files_fuzzy(name)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False)
+        return
+
+    if len(matches) > 1:
+        names = "\n".join(f"- {m['name']}" for m in matches[:5])
+        await deps.channel.send(
+            chat_id,
+            f"Tim thay {len(matches)} file khop voi '{name}':\n{names}\n\nVui long nhap ten cu the hon.",
+            use_markdown=False,
+        )
+        return
+
+    if len(matches) == 1:
+        file_id = matches[0]["id"]
+        meta = deps.note_index.get_note_meta(file_id)
+        if meta is None:
+            await deps.channel.send(
+                chat_id,
+                "File nay chua duoc index. Vui long lien he admin de backfill.",
+                use_markdown=False,
+            )
+            return
+        if meta["owner_user_id"] != user.id:
+            await deps.channel.send(
+                chat_id, "Ban khong phai chu file nay.", use_markdown=False,
+            )
+            return
+        ok = deps.note_index.set_note_scope(file_id, new_scope, user.id)
+        if ok:
+            label = "chia se voi moi nguoi" if new_scope == "everyone" else "rieng tu"
+            await deps.channel.send(
+                chat_id,
+                f"Da doi '{matches[0]['name']}' thanh {label}.",
+                use_markdown=False,
+            )
+        else:
+            await deps.channel.send(chat_id, "Khong the doi scope.", use_markdown=False)
+        return
+
+    # 2. No note match — try wiki.
+    try:
+        page = deps.wiki.find_page(name)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Loi khi tim wiki: {str(e)[:400]}", use_markdown=False)
+        return
+
+    if page:
+        file_id = page["id"]
+        meta = deps.note_index.get_wiki_meta(file_id)
+        if meta is None:
+            await deps.channel.send(
+                chat_id,
+                "Trang wiki nay chua duoc index. Vui long lien he admin de backfill.",
+                use_markdown=False,
+            )
+            return
+        if meta["owner_user_id"] != user.id:
+            await deps.channel.send(
+                chat_id, "Ban khong phai chu trang wiki nay.", use_markdown=False,
+            )
+            return
+        ok = deps.note_index.set_wiki_scope(file_id, new_scope, user.id)
+        if ok:
+            label = "chia se voi moi nguoi" if new_scope == "everyone" else "rieng tu"
+            await deps.channel.send(
+                chat_id,
+                f"Da doi wiki '{page['name'].removesuffix('.md')}' thanh {label}.",
+                use_markdown=False,
+            )
+        else:
+            await deps.channel.send(chat_id, "Khong the doi scope.", use_markdown=False)
+        return
+
+    await deps.channel.send(
+        chat_id, f"Khong tim thay file '{name}' trong ghi chu hoac wiki.", use_markdown=False,
+    )
+
+
+async def _cmd_chia_se(chat_id: str, name: str, user: User, deps: CoreDeps) -> None:
+    """chia se <ten-file> — set scope = everyone (share with all family members)."""
+    await _cmd_set_scope(chat_id, name, "everyone", user, deps)
+
+
+async def _cmd_bo_chia_se(chat_id: str, name: str, user: User, deps: CoreDeps) -> None:
+    """bo chia se <ten-file> — set scope = private (owner only)."""
+    await _cmd_set_scope(chat_id, name, "private", user, deps)
+
+
+async def _cmd_wiki_ingest(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """wiki <content> — ingest raw content into the wiki layer.
 
     Flow: Claude analyzes → identifies topics → creates/appends wiki pages and
@@ -1180,13 +1403,16 @@ async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
                     if page:
                         section = deps.wiki.build_section(content_to_add)
                         filename = deps.wiki.append_to_page(page["id"], section)
+                        deps.note_index.touch_wiki_page(page["id"])
                         results.append(f"Cap nhat: {filename}")
                     else:
                         # Fall back to create + index update.
                         page_content = deps.wiki.build_new_page(
                             topic, topic_type, content_to_add,
                         )
-                        filename = deps.wiki.save_page(topic, page_content)
+                        filename, file_id = deps.wiki.save_page(topic, page_content)
+                        slug = filename.removesuffix(".md")
+                        _register_wiki_page(file_id, user.id, topic, slug, deps)
                         _update_index_after_create(
                             topic, filename, topic_type, content_to_add, deps,
                         )
@@ -1195,7 +1421,9 @@ async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
                     page_content = deps.wiki.build_new_page(
                         topic, topic_type, content_to_add,
                     )
-                    filename = deps.wiki.save_page(topic, page_content)
+                    filename, file_id = deps.wiki.save_page(topic, page_content)
+                    slug = filename.removesuffix(".md")
+                    _register_wiki_page(file_id, user.id, topic, slug, deps)
                     _update_index_after_create(
                         topic, filename, topic_type, content_to_add, deps,
                     )
@@ -1225,7 +1453,7 @@ async def _cmd_wiki_ingest(chat_id: str, content: str, deps: CoreDeps) -> None:
         )
 
 
-async def _cmd_wiki_query(chat_id: str, question: str, deps: CoreDeps) -> None:
+async def _cmd_wiki_query(chat_id: str, question: str, user: User, deps: CoreDeps) -> None:
     """hỏi wiki <question> — answer directly from the wiki layer."""
     if not question:
         await deps.channel.send(
@@ -1238,7 +1466,8 @@ async def _cmd_wiki_query(chat_id: str, question: str, deps: CoreDeps) -> None:
     )
     try:
         keywords = [w for w in question.lower().split() if len(w) > 2]
-        wiki_pages = deps.wiki.retrieve_pages(question, keywords)
+        visible_slugs = deps.note_index.visible_wiki_slugs(user.id)
+        wiki_pages = deps.wiki.retrieve_pages(question, keywords, visible_slugs=visible_slugs)
 
         if not wiki_pages:
             await deps.channel.send(
@@ -1319,7 +1548,78 @@ async def _cmd_xem_wiki_page(
         await deps.channel.send(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
 
 
-async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
+async def _cmd_xem_tri_nho(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem tri nho — display the user's rolling memory snapshot."""
+    content = deps.memory_store.get(user.id, "memory")
+    if not content:
+        await deps.channel.send(
+            chat_id,
+            "Bộ nhớ của bạn chưa có gì. Dùng lệnh `cap nhat tri nho` để tạo snapshot đầu tiên.",
+            use_markdown=False,
+        )
+        return
+    meta = deps.memory_store.get_meta(user.id, "memory")
+    curated = (meta or {}).get("curated_at", "chưa rõ")
+    await deps.channel.send(
+        chat_id,
+        f"=== Bộ nhớ của bạn (cập nhật: {curated}) ===\n\n{content}",
+        use_markdown=False,
+    )
+
+
+async def _cmd_xem_ho_so(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem ho so — display the user's profile snapshot."""
+    content = deps.memory_store.get(user.id, "user")
+    if not content:
+        await deps.channel.send(
+            chat_id,
+            "Hồ sơ của bạn chưa có gì. Dùng lệnh `cap nhat tri nho` để tạo snapshot đầu tiên.",
+            use_markdown=False,
+        )
+        return
+    meta = deps.memory_store.get_meta(user.id, "user")
+    curated = (meta or {}).get("curated_at", "chưa rõ")
+    await deps.channel.send(
+        chat_id,
+        f"=== Hồ sơ của bạn (cập nhật: {curated}) ===\n\n{content}",
+        use_markdown=False,
+    )
+
+
+async def _cmd_cap_nhat_tri_nho(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """cap nhat tri nho — trigger LLM curation to refresh memory + profile snapshots."""
+    await deps.channel.send(
+        chat_id, "Đang đọc ghi chú gần đây và cập nhật bộ nhớ...", use_markdown=False,
+    )
+    try:
+        # Read user's own recent notes (private to them + everyone-scoped they can see).
+        recent = deps.notes.get_recent_notes(days=30, max_results=20)
+        recent = _acl_filter_notes(recent, user, deps)
+
+        current_memory = deps.memory_store.get(user.id, "memory")
+        current_profile = deps.memory_store.get(user.id, "user")
+
+        new_memory, new_profile, tokens = deps.llm.curate_memory(
+            recent, current_memory, current_profile,
+        )
+        record_usage(tokens // 2, tokens // 2)
+        deps.user_store.record_usage(user.id, tokens)
+
+        deps.memory_store.set(user.id, "memory", new_memory, mark_curated=True)
+        deps.memory_store.set(user.id, "user", new_profile, mark_curated=True)
+
+        await deps.channel.send(
+            chat_id,
+            f"Đã cập nhật bộ nhớ từ {len(recent)} ghi chú gần đây.\n"
+            f"Dùng `xem tri nho` hoặc `xem ho so` để xem.",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Lỗi khi cập nhật bộ nhớ: {str(e)[:400]}", use_markdown=False)
+
+
+async def _cmd_tom_tat_tuan(chat_id: str, user: User, deps: CoreDeps) -> None:
     week_range = current_week_range_str()
     await deps.channel.send(
         chat_id,
@@ -1328,6 +1628,7 @@ async def _cmd_tom_tat_tuan(chat_id: str, deps: CoreDeps) -> None:
     )
     try:
         notes = deps.notes.get_current_week_notes(max_results=20)
+        notes = _acl_filter_notes(notes, user, deps)
         if not notes:
             await deps.channel.send(
                 chat_id,
@@ -1366,10 +1667,16 @@ async def _handle_general_question(
 
         context_parts: list[str] = []
 
-        # Step 2: wiki pages via index.
+        # Step 2: wiki pages via index (ACL-filtered).
         if intent.get("needs_search"):
             try:
-                wiki_pages = deps.wiki.retrieve_pages(text, intent.get("keywords", []))
+                visible_slugs = (
+                    deps.note_index.visible_wiki_slugs(user.id)
+                    if user is not None else None
+                )
+                wiki_pages = deps.wiki.retrieve_pages(
+                    text, intent.get("keywords", []), visible_slugs=visible_slugs,
+                )
                 if wiki_pages:
                     wiki_block = "\n\n".join(
                         f"[Wiki: {p['name'].replace('.md', '')}]\n{p['content']}"
@@ -1379,13 +1686,15 @@ async def _handle_general_question(
             except Exception as e:
                 print(f"[core] Wiki search error (non-fatal): {e}")
 
-        # Step 3: smart search raw notes.
+        # Step 3: smart search raw notes (ACL-filtered).
         if intent.get("needs_search") and intent.get("keywords"):
             try:
                 notes = deps.notes.smart_search(
                     keywords=intent["keywords"],
                     days_back=intent.get("days_back", 0) or 0,
                 )
+                if user is not None:
+                    notes = _acl_filter_notes(notes, user, deps)
                 if notes:
                     notes_block = "\n\n".join(
                         [f"[{n['name']}]\n{n['content']}" for n in notes[:5]]
@@ -1397,6 +1706,8 @@ async def _handle_general_question(
                     fallback_notes = deps.notes.search_notes(
                         intent["keywords"][0], max_results=2,
                     )
+                    if user is not None:
+                        fallback_notes = _acl_filter_notes(fallback_notes, user, deps)
                     if fallback_notes:
                         context_parts.append("\n\n".join(
                             [f"[{n['name']}]\n{n['content']}" for n in fallback_notes]
@@ -1406,7 +1717,16 @@ async def _handle_general_question(
 
         notes_context = "\n\n".join(context_parts)
 
-        # Step 4: ask Claude.
+        # Step 4: prepend L1 memory snapshot (if any) so Claude knows the user.
+        if user is not None:
+            memory_content = deps.memory_store.get(user.id, "memory")
+            if memory_content:
+                memory_block = f"[Bộ nhớ cá nhân]\n{memory_content}"
+                notes_context = (
+                    memory_block + ("\n\n" + notes_context if notes_context else "")
+                )
+
+        # Step 5: ask Claude.
         reply, tokens = deps.llm.ask(text, notes_context)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
@@ -1449,18 +1769,23 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_QUOTA":          ["xem quota", "view quota"],
     "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
     "RESET_QUOTA":        ["reset quota: "],
+    "BO_CHIA_SE_FILE":    ["bỏ chia sẻ ", "bo chia se "],
+    "CHIA_SE_FILE":       ["chia sẻ ", "chia se "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
-    "XEM_WIKI_PAGE": ["xem wiki "],
-    "XEM_WIKI":      ["xem wiki"],
-    "WIKI":          ["wiki "],
-    "GHI_NHO_VAO":   ["ghi nhớ vào ", "ghi nho vao "],
-    "GHI_NHO":       ["ghi nhớ ", "ghi nho "],
-    "NHAT_KY":       ["nhật ký ", "nhat ky "],
-    "XEM_NHAT_KY":   ["xem nhật ký", "xem nhat ky"],
-    "LIET_KE":       ["liệt kê", "liet ke"],
-    "TIM":           ["tìm ", "tim ", "search "],
-    "XEM":           ["xem "],
-    "TOM_TAT_TUAN":  ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
+    "XEM_WIKI_PAGE":      ["xem wiki "],
+    "XEM_WIKI":           ["xem wiki"],
+    "WIKI":               ["wiki "],
+    "GHI_NHO_VAO":        ["ghi nhớ vào ", "ghi nho vao "],
+    "GHI_NHO":            ["ghi nhớ ", "ghi nho "],
+    "NHAT_KY":            ["nhật ký ", "nhat ky "],
+    "XEM_NHAT_KY":        ["xem nhật ký", "xem nhat ky"],
+    "XEM_TRI_NHO":        ["xem trí nhớ", "xem tri nho"],
+    "XEM_HO_SO":          ["xem hồ sơ", "xem ho so"],
+    "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
+    "LIET_KE":            ["liệt kê", "liet ke"],
+    "TIM":                ["tìm ", "tim ", "search "],
+    "XEM":                ["xem "],
+    "TOM_TAT_TUAN":       ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
 }
 
 
@@ -1472,12 +1797,15 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         return
 
     # ── Step 1: try to resolve a pending state first ────────────────────────
-    if await _try_resolve_pending(chat_id, text, deps):
+    if await _try_resolve_pending(chat_id, text, user, deps):
         return
 
     # ── Step 2: slash commands (not normalized) ────────────────────────────
     if text == "/start":
         await _cmd_start(chat_id, deps); return
+    if text.startswith("/help"):
+        group = text[len("/help"):].strip()
+        await _cmd_help(chat_id, group, deps); return
     if text == "/cost":
         await _cmd_cost(chat_id, deps); return
     if text == "/test":
@@ -1493,6 +1821,8 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "DAT_USERNAME", "DUYET_USERNAME",
         "DAT_CHA", "XEM_CHA",
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
+        "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
+        "XEM_TRI_NHO", "XEM_HO_SO",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -1535,30 +1865,40 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_quota(chat_id, remainder, user, deps); return
         if cmd_id == "RESET_QUOTA":
             await _cmd_reset_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "CHIA_SE_FILE":
+            await _cmd_chia_se(chat_id, remainder, user, deps); return
+        if cmd_id == "BO_CHIA_SE_FILE":
+            await _cmd_bo_chia_se(chat_id, remainder, user, deps); return
         if cmd_id == "HOI_WIKI":
-            await _cmd_wiki_query(chat_id, remainder, deps); return
+            await _cmd_wiki_query(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
             await _cmd_xem_wiki_page(chat_id, remainder, deps); return
         if cmd_id == "XEM_WIKI":
             await _cmd_xem_wiki_list(chat_id, deps); return
         if cmd_id == "WIKI":
-            await _cmd_wiki_ingest(chat_id, remainder, deps); return
+            await _cmd_wiki_ingest(chat_id, remainder, user, deps); return
         if cmd_id == "GHI_NHO_VAO":
             await _cmd_ghi_nho_vao(chat_id, remainder, deps); return
         if cmd_id == "GHI_NHO":
-            await _cmd_ghi_nho(chat_id, remainder, deps); return
+            await _cmd_ghi_nho(chat_id, remainder, user, deps); return
         if cmd_id == "NHAT_KY":
-            await _cmd_nhat_ky(chat_id, remainder, deps); return
+            await _cmd_nhat_ky(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_NHAT_KY":
             await _cmd_xem_nhat_ky(chat_id, deps); return
         if cmd_id == "LIET_KE":
             await _cmd_liet_ke(chat_id, deps); return
         if cmd_id == "TIM":
-            await _cmd_tim(chat_id, remainder, deps); return
+            await _cmd_tim(chat_id, remainder, user, deps); return
         if cmd_id == "XEM":
             await _cmd_xem(chat_id, remainder, deps); return
+        if cmd_id == "XEM_TRI_NHO":
+            await _cmd_xem_tri_nho(chat_id, user, deps); return
+        if cmd_id == "XEM_HO_SO":
+            await _cmd_xem_ho_so(chat_id, user, deps); return
+        if cmd_id == "CAP_NHAT_TRI_NHO":
+            await _cmd_cap_nhat_tri_nho(chat_id, user, deps); return
         if cmd_id == "TOM_TAT_TUAN":
-            await _cmd_tom_tat_tuan(chat_id, deps); return
+            await _cmd_tom_tat_tuan(chat_id, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)
