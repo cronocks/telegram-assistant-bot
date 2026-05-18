@@ -376,13 +376,21 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-3 — SQLite + Scope + L1 Memory
-**Status:** IN PROGRESS — branch `feature/FR3`, plan at `docs/FR-3-PLAN.md` (2026-05-18)
-**Scope:**
-- Litestream config (cloud backup)
-- Note/wiki thêm field `scope`: `private` | `group:<id>` | `everyone`
-- ACL filter trong retrieval
-- L1 memory: `MEMORY.md`, `USER.md` per user (frozen snapshot pattern)
-- Agentic curation cho L1
+**Status:** ✅ DONE — merged to `main` (production) 2026-05-18; 9 commits, branch `feature/FR3`
+**Scope delivered:**
+- SQLite schema: `notes`, `wiki_pages`, `user_memory` (migrations 009–011)
+- `acl.py` — `can_read()` + `filter_visible()` helpers
+- `note_index.py` — `SqliteNoteIndex` ACL/index layer + `NoteIndex` Protocol
+- Dual-write on note/wiki/journal create (Drive first → SQLite second, rollback on fail)
+- ACL filter on all retrieval paths (`smart_search`, `get_recent_notes`, `get_current_week_notes`, wiki `retrieve_pages`)
+- `chia se` / `bo chia se` scope commands (owner-only)
+- Backfill at startup: existing Drive files get SQLite rows (owner = bootstrap admin, default scope)
+- `memory_store.py` — `SqliteMemoryStore` + `MemoryStore` Protocol
+- `curate_memory()` trên `LLMClient` / `AnthropicLLM`
+- 3 lệnh: `xem tri nho`, `xem ho so`, `cap nhat tri nho`
+- L1 memory inject vào free-form Q&A (`notes_context` prepend)
+- `/start` redesign + `/help [nhom]` (Decision #55)
+**Dependencies:** FR-2
 
 ---
 
@@ -560,6 +568,7 @@ INDEX (user_id, category_id, occurred_at)
 | 53 | Per-person sharing | Hoãn sang FR sau; `acl.py` thiết kế extensible để thêm `note_shares` không phá API | Gia đình hiện tại không cần share với từng người riêng lẻ | 2026-05-18 |
 | 54 | L1 curation trigger | FR-3 manual (`cap nhat tri nho`); cron tự động để FR sau | Đơn giản hóa FR-3 scope; tránh cron logic phức tạp trước khi có audit | 2026-05-18 |
 | 55 | /start + /help UX | `/start` hiển thị 6 nhóm lệnh tổng quan; `/help [nhom]` cho chi tiết từng nhóm | Số lệnh tăng nhiều sau FR-2 (user/quota/birthdate...); dump 1 block dài không đọc được; `/help` là pattern chuẩn Telegram bot | 2026-05-18 |
+| 56 | L1 memory inject | Prepend `memory` snapshot của user vào `notes_context` trước khi gọi `LLMClient.ask()` trong `_handle_general_question` | Cách đơn giản nhất để Claude "biết" người dùng là ai mà không thay đổi signature của `ask()`; notes_context vốn đã là free-form string nên prepend không phá API | 2026-05-18 |
 
 ---
 
@@ -583,21 +592,22 @@ INDEX (user_id, category_id, occurred_at)
   - Parent-child links (soft history)
   - Per-user monthly token quota (lazy monthly reset)
   - Argon2id password infrastructure (not yet exposed via commands)
-- 🔄 **FR-3** IN PROGRESS — branch `feature/FR3`
-  - Plan: `docs/FR-3-PLAN.md` (created 2026-05-18, approved)
-  - UX: `/start` redesign + `/help [nhom]` added (2026-05-18, Decision #55)
-  - 9 commits planned; chưa bắt đầu code core FR-3
+- ✅ **FR-3** merged to `main` (production) 2026-05-18 — 9 commits, branch `feature/FR3`
+  - SQLite schema: notes, wiki_pages, user_memory (migrations 009–011)
+  - ACL layer: `acl.py` + `SqliteNoteIndex` + `NoteIndex` Protocol
+  - Dual-write + ACL filter trên tất cả retrieval paths
+  - `chia se` / `bo chia se` commands + startup backfill
+  - L1 Memory: `SqliteMemoryStore`, `curate_memory()`, 3 lệnh tri nhớ, inject vào Q&A
+  - `/start` redesign + `/help [nhom]`
 
-### Immediate next steps (FR-3)
-1. Commit 1: `feat(db): notes + wiki_pages + user_memory schema (009-011)`
-2. Commit 2: `feat(acl): scope ACL helpers`
-3. Commit 3: `feat(index): SqliteNoteIndex adapter + NoteIndex protocol`
-4. Commit 4: `feat(notes): dual-write note/wiki metadata on create`
-5. Commit 5: `feat(notes): ACL filter on all retrieval paths`
-6. Commit 6: `feat(scope): share / unshare commands`
-7. Commit 7: `feat(index): backfill existing Drive files`
-8. Commit 8: `feat(memory): L1 memory store + curation + commands`
-9. Commit 9: `docs: update ROADMAP Section 8 + decision log from FR-3`
+### Immediate next steps (FR-4)
+- FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
+  - Audit log table (immutable, append-only) — ghi lại mọi thao tác nhạy cảm
+  - Under-18 stealth-read cho admin (silent to member), dựa trên birthdate
+  - Recycle bin: disclosed, 180 ngày retention, admin-only access
+  - Auto-purge data khi child tròn 18
+  - Notification framework (channel-agnostic, không hardcode Telegram)
+- **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định trên service mới
 
 ### Pending FRs
 - FR-4..FR-9 — sequential theo Section 5
