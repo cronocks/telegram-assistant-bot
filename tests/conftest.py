@@ -4,6 +4,8 @@ import sqlite3
 import pytest
 
 from db.migrations import run_migrations
+from memory_store import SqliteMemoryStore
+from note_index import SqliteNoteIndex
 from user_store import SqliteUserStore
 
 
@@ -34,3 +36,27 @@ def store(db_conn):
 def sample_admin(store):
     """A pre-created admin user."""
     return store.create_user(name="Admin User", role="admin")
+
+
+@pytest.fixture()
+def member_user(store):
+    """A pre-created member user."""
+    return store.create_user(name="Member User", role="member")
+
+
+@pytest.fixture()
+def another_user(store):
+    """A second member user — used to test cross-user access."""
+    return store.create_user(name="Another User", role="member")
+
+
+@pytest.fixture()
+def note_index(db_conn):
+    """SqliteNoteIndex wired to the in-memory connection."""
+    return SqliteNoteIndex(conn=db_conn)
+
+
+@pytest.fixture()
+def memory_store(db_conn):
+    """SqliteMemoryStore wired to the in-memory connection."""
+    return SqliteMemoryStore(conn=db_conn)
