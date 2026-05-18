@@ -95,6 +95,20 @@ class LLMClient(Protocol):
         """Pick relevant wiki page filenames from the index. Returns (filenames, tokens)."""
         ...
 
+    def curate_memory(
+        self,
+        recent_notes: list[dict],
+        current_memory: str,
+        current_user_profile: str,
+    ) -> tuple[str, str, int]:
+        """Refine L1 memory from recent notes.
+
+        Returns (new_memory_md, new_user_md, total_tokens).
+        new_memory_md  — updated rolling facts/preferences snapshot
+        new_user_md    — updated stable user profile snapshot
+        """
+        ...
+
 
 # ─── Note store (raw notes / journal) ────────────────────────────────────────
 
@@ -300,6 +314,29 @@ class NoteIndex(Protocol):
         Used to pre-filter _index.md before LLM page selection so the LLM
         never sees slugs of pages it should not access.
         """
+        ...
+
+
+# ─── L1 Memory store (SQLite user_memory table) ──────────────────────────────
+
+@runtime_checkable
+class MemoryStore(Protocol):
+    """Abstract L1 memory store. Concrete impl: SqliteMemoryStore.
+
+    Each user has two named slots: 'memory' (rolling facts) and 'user' (profile).
+    Content starts empty and is populated by LLM curation on demand.
+    """
+
+    def get(self, user_id: int, kind: str) -> str:
+        """Return stored content for (user_id, kind), or '' if none yet."""
+        ...
+
+    def get_meta(self, user_id: int, kind: str) -> "dict | None":
+        """Return full metadata row {user_id, kind, content, updated_at, curated_at} or None."""
+        ...
+
+    def set(self, user_id: int, kind: str, content: str, mark_curated: bool = False) -> None:
+        """Upsert content for (user_id, kind). Pass mark_curated=True after LLM curation."""
         ...
 
 

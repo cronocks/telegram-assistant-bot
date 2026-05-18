@@ -21,6 +21,7 @@ from core_handler import CoreDeps, handle_message
 from cost_monitor import check_and_alert
 from db.migrations import run_migrations
 from drive_client import DriveNoteStore
+from memory_store import SqliteMemoryStore
 from note_index import SqliteNoteIndex
 from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
@@ -40,6 +41,7 @@ wiki = DriveWikiStore(llm=llm)
 channel = TelegramAdapter(token=TELEGRAM_TOKEN, allowed_chat_id=TELEGRAM_CHAT_ID)
 user_store = SqliteUserStore()
 note_index = SqliteNoteIndex()
+memory_store = SqliteMemoryStore()
 
 deps = CoreDeps(
     llm=llm,
@@ -48,6 +50,7 @@ deps = CoreDeps(
     channel=channel,
     user_store=user_store,
     note_index=note_index,
+    memory_store=memory_store,
 )
 
 

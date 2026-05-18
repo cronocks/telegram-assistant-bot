@@ -19,7 +19,7 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 import acl as acl_mod
-from interfaces import ChannelAdapter, ChannelMessage, LLMClient, NoteIndex, NoteStore, User, UserStore, WikiStore
+from interfaces import ChannelAdapter, ChannelMessage, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
@@ -39,6 +39,7 @@ class CoreDeps:
     channel: ChannelAdapter
     user_store: UserStore
     note_index: NoteIndex
+    memory_store: MemoryStore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -792,6 +793,7 @@ async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
         "Chon nhom lenh de xem chi tiet:\n\n"
         "📝 *Ghi chu & Nhat ky* — `/help ghi chu`\n"
         "📚 *Wiki* — `/help wiki`\n"
+        "🧠 *Tri nho* — `/help tri nho`\n"
         "👥 *Nguoi dung* — `/help nguoi dung`\n"
         "💰 *Quota* — `/help quota`\n"
         "🔍 *Tim kiem & Xem* — `/help xem`\n"
@@ -843,6 +845,12 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`tim [tu khoa]` — Tim trong noi dung file\n"
         "`tom tat tuan nay` — Tom tat ghi chu 7 ngay",
     ),
+    "tri nho": (
+        "🧠 *TRI NHO*",
+        "`xem tri nho` — Xem snapshot bo nho cua ban\n"
+        "`xem ho so` — Xem ho so ca nhan cua ban\n"
+        "`cap nhat tri nho` — Cap nhat bo nho tu ghi chu gan day (LLM curation)",
+    ),
     "he thong": (
         "⚙️ *HE THONG*",
         "`/cost` — Chi phi su dung thang nay\n"
@@ -860,6 +868,8 @@ _HELP_ALIASES: dict[str, str] = {
     "người dùng": "nguoi dung",
     "quota": "quota",
     "xem": "xem",
+    "tri nho": "tri nho",
+    "trí nhớ": "tri nho",
     "he thong": "he thong",
     "hệ thống": "he thong",
 }
@@ -1538,6 +1548,77 @@ async def _cmd_xem_wiki_page(
         await deps.channel.send(chat_id, f"Loi: {str(e)[:400]}", use_markdown=False)
 
 
+async def _cmd_xem_tri_nho(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem tri nho — display the user's rolling memory snapshot."""
+    content = deps.memory_store.get(user.id, "memory")
+    if not content:
+        await deps.channel.send(
+            chat_id,
+            "Bộ nhớ của bạn chưa có gì. Dùng lệnh `cap nhat tri nho` để tạo snapshot đầu tiên.",
+            use_markdown=False,
+        )
+        return
+    meta = deps.memory_store.get_meta(user.id, "memory")
+    curated = (meta or {}).get("curated_at", "chưa rõ")
+    await deps.channel.send(
+        chat_id,
+        f"=== Bộ nhớ của bạn (cập nhật: {curated}) ===\n\n{content}",
+        use_markdown=False,
+    )
+
+
+async def _cmd_xem_ho_so(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem ho so — display the user's profile snapshot."""
+    content = deps.memory_store.get(user.id, "user")
+    if not content:
+        await deps.channel.send(
+            chat_id,
+            "Hồ sơ của bạn chưa có gì. Dùng lệnh `cap nhat tri nho` để tạo snapshot đầu tiên.",
+            use_markdown=False,
+        )
+        return
+    meta = deps.memory_store.get_meta(user.id, "user")
+    curated = (meta or {}).get("curated_at", "chưa rõ")
+    await deps.channel.send(
+        chat_id,
+        f"=== Hồ sơ của bạn (cập nhật: {curated}) ===\n\n{content}",
+        use_markdown=False,
+    )
+
+
+async def _cmd_cap_nhat_tri_nho(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """cap nhat tri nho — trigger LLM curation to refresh memory + profile snapshots."""
+    await deps.channel.send(
+        chat_id, "Đang đọc ghi chú gần đây và cập nhật bộ nhớ...", use_markdown=False,
+    )
+    try:
+        # Read user's own recent notes (private to them + everyone-scoped they can see).
+        recent = deps.notes.get_recent_notes(days=30, max_results=20)
+        recent = _acl_filter_notes(recent, user, deps)
+
+        current_memory = deps.memory_store.get(user.id, "memory")
+        current_profile = deps.memory_store.get(user.id, "user")
+
+        new_memory, new_profile, tokens = deps.llm.curate_memory(
+            recent, current_memory, current_profile,
+        )
+        record_usage(tokens // 2, tokens // 2)
+        deps.user_store.record_usage(user.id, tokens)
+
+        deps.memory_store.set(user.id, "memory", new_memory, mark_curated=True)
+        deps.memory_store.set(user.id, "user", new_profile, mark_curated=True)
+
+        await deps.channel.send(
+            chat_id,
+            f"Đã cập nhật bộ nhớ từ {len(recent)} ghi chú gần đây.\n"
+            f"Dùng `xem tri nho` hoặc `xem ho so` để xem.",
+            use_markdown=False,
+        )
+    except Exception as e:
+        traceback.print_exc()
+        await deps.channel.send(chat_id, f"Lỗi khi cập nhật bộ nhớ: {str(e)[:400]}", use_markdown=False)
+
+
 async def _cmd_tom_tat_tuan(chat_id: str, user: User, deps: CoreDeps) -> None:
     week_range = current_week_range_str()
     await deps.channel.send(
@@ -1636,7 +1717,16 @@ async def _handle_general_question(
 
         notes_context = "\n\n".join(context_parts)
 
-        # Step 4: ask Claude.
+        # Step 4: prepend L1 memory snapshot (if any) so Claude knows the user.
+        if user is not None:
+            memory_content = deps.memory_store.get(user.id, "memory")
+            if memory_content:
+                memory_block = f"[Bộ nhớ cá nhân]\n{memory_content}"
+                notes_context = (
+                    memory_block + ("\n\n" + notes_context if notes_context else "")
+                )
+
+        # Step 5: ask Claude.
         reply, tokens = deps.llm.ask(text, notes_context)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
@@ -1682,17 +1772,20 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "BO_CHIA_SE_FILE":    ["bỏ chia sẻ ", "bo chia se "],
     "CHIA_SE_FILE":       ["chia sẻ ", "chia se "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
-    "XEM_WIKI_PAGE": ["xem wiki "],
-    "XEM_WIKI":      ["xem wiki"],
-    "WIKI":          ["wiki "],
-    "GHI_NHO_VAO":   ["ghi nhớ vào ", "ghi nho vao "],
-    "GHI_NHO":       ["ghi nhớ ", "ghi nho "],
-    "NHAT_KY":       ["nhật ký ", "nhat ky "],
-    "XEM_NHAT_KY":   ["xem nhật ký", "xem nhat ky"],
-    "LIET_KE":       ["liệt kê", "liet ke"],
-    "TIM":           ["tìm ", "tim ", "search "],
-    "XEM":           ["xem "],
-    "TOM_TAT_TUAN":  ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
+    "XEM_WIKI_PAGE":      ["xem wiki "],
+    "XEM_WIKI":           ["xem wiki"],
+    "WIKI":               ["wiki "],
+    "GHI_NHO_VAO":        ["ghi nhớ vào ", "ghi nho vao "],
+    "GHI_NHO":            ["ghi nhớ ", "ghi nho "],
+    "NHAT_KY":            ["nhật ký ", "nhat ky "],
+    "XEM_NHAT_KY":        ["xem nhật ký", "xem nhat ky"],
+    "XEM_TRI_NHO":        ["xem trí nhớ", "xem tri nho"],
+    "XEM_HO_SO":          ["xem hồ sơ", "xem ho so"],
+    "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
+    "LIET_KE":            ["liệt kê", "liet ke"],
+    "TIM":                ["tìm ", "tim ", "search "],
+    "XEM":                ["xem "],
+    "TOM_TAT_TUAN":       ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
 }
 
 
@@ -1729,6 +1822,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "DAT_CHA", "XEM_CHA",
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
+        "XEM_TRI_NHO", "XEM_HO_SO",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -1797,6 +1891,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_tim(chat_id, remainder, user, deps); return
         if cmd_id == "XEM":
             await _cmd_xem(chat_id, remainder, deps); return
+        if cmd_id == "XEM_TRI_NHO":
+            await _cmd_xem_tri_nho(chat_id, user, deps); return
+        if cmd_id == "XEM_HO_SO":
+            await _cmd_xem_ho_so(chat_id, user, deps); return
+        if cmd_id == "CAP_NHAT_TRI_NHO":
+            await _cmd_cap_nhat_tri_nho(chat_id, user, deps); return
         if cmd_id == "TOM_TAT_TUAN":
             await _cmd_tom_tat_tuan(chat_id, user, deps); return
 
