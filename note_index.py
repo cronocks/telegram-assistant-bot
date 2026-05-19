@@ -115,24 +115,30 @@ class SqliteNoteIndex:
     def get_note_meta(self, drive_file_id: str) -> dict | None:
         """Return note metadata dict or None if not found / deleted."""
         row = self._conn.execute(
-            "SELECT id, drive_file_id, owner_user_id, scope, kind, title"
+            "SELECT id, drive_file_id, owner_user_id, scope, kind, title, created_at"
             " FROM notes WHERE drive_file_id = ? AND deleted_at IS NULL",
             (drive_file_id,),
         ).fetchone()
         if row is None:
             return None
-        return dict(zip(["id", "drive_file_id", "owner_user_id", "scope", "kind", "title"], row))
+        return dict(zip(
+            ["id", "drive_file_id", "owner_user_id", "scope", "kind", "title", "created_at"],
+            row,
+        ))
 
     def get_wiki_meta(self, drive_file_id: str) -> dict | None:
         """Return wiki_page metadata dict or None if not found / deleted."""
         row = self._conn.execute(
-            "SELECT id, drive_file_id, owner_user_id, scope, topic, slug"
+            "SELECT id, drive_file_id, owner_user_id, scope, topic, slug, created_at"
             " FROM wiki_pages WHERE drive_file_id = ? AND deleted_at IS NULL",
             (drive_file_id,),
         ).fetchone()
         if row is None:
             return None
-        return dict(zip(["id", "drive_file_id", "owner_user_id", "scope", "topic", "slug"], row))
+        return dict(zip(
+            ["id", "drive_file_id", "owner_user_id", "scope", "topic", "slug", "created_at"],
+            row,
+        ))
 
     def note_meta_for_ids(self, drive_file_ids: list[str]) -> list[dict]:
         """Return note metadata rows for the given Drive file IDs.

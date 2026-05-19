@@ -394,6 +394,20 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 
 ---
 
+### FR-3.5 — Privilege Elevation (sudo)
+**Status:** PENDING — chi tiết tại `docs/FR-3.5-PLAN.md`
+**Lý do:** Production sẽ KHÔNG dùng admin làm tài khoản mặc định. Tài khoản Telegram chính chạy role `manager`; cần cơ chế nâng quyền tạm thời lên `admin` khi cần thao tác quản trị.
+**Scope:**
+- Bảng `elevation_sessions` — phiên nâng quyền theo `(channel, chat_id)`, TTL 15 phút
+- Nâng quyền = override `role` thành `admin` tạm thời (KHÔNG đổi danh tính) — audit ghi đúng người thật
+- `dat mat khau` — đặt/đổi mật khẩu admin (chỉ từ tài khoản natively-admin; cũng là cơ chế recovery)
+- `sudo: <mật khẩu>` — nâng quyền (gated role `manager` + verify Argon2id); `thoat sudo` — hạ quyền
+- Rate-limit sudo sai; bot tự xóa message chứa mật khẩu; audit mọi lần elevate/drop/fail
+- `delete_message` thêm vào `ChannelAdapter`
+**Dependencies:** FR-2 (hạ tầng Argon2id), FR-3
+
+---
+
 ### FR-4 — Audit + Under-18 + Recycle Bin + Notifications
 **Status:** PENDING
 **Scope:**
@@ -569,6 +583,10 @@ INDEX (user_id, category_id, occurred_at)
 | 54 | L1 curation trigger | FR-3 manual (`cap nhat tri nho`); cron tự động để FR sau | Đơn giản hóa FR-3 scope; tránh cron logic phức tạp trước khi có audit | 2026-05-18 |
 | 55 | /start + /help UX | `/start` hiển thị 6 nhóm lệnh tổng quan; `/help [nhom]` cho chi tiết từng nhóm | Số lệnh tăng nhiều sau FR-2 (user/quota/birthdate...); dump 1 block dài không đọc được; `/help` là pattern chuẩn Telegram bot | 2026-05-18 |
 | 56 | L1 memory inject | Prepend `memory` snapshot của user vào `notes_context` trước khi gọi `LLMClient.ask()` trong `_handle_general_question` | Cách đơn giản nhất để Claude "biết" người dùng là ai mà không thay đổi signature của `ask()`; notes_context vốn đã là free-form string nên prepend không phá API | 2026-05-18 |
+| 57 | sudo = nâng role, không đổi danh tính | FR-3.5 elevation override `role`→`admin` tạm thời; user vẫn là chính mình (id/name giữ nguyên) | Audit ghi đúng người thật thực hiện; `created_by` chính xác; không cần re-bind channel | 2026-05-19 |
+| 58 | sudo TTL + gating | Phiên elevation hết hạn sau 15 phút (lazy expiry); lệnh `sudo` chỉ role `manager` dùng được, cổng chính là mật khẩu admin | 15p đủ cho thao tác quản trị gia đình; gating role + password + rate-limit là phòng thủ nhiều tầng | 2026-05-19 |
+| 59 | Recovery mật khẩu admin | KHÔNG làm tính năng quên mật khẩu riêng; `dat mat khau` chỉ chạy từ tài khoản natively-admin (admin qua channel binding) → vừa đặt lần đầu vừa là recovery | Tài khoản bootstrap admin vốn đã là admin nhờ binding, không cần mật khẩu để chứng minh → là đường recovery sẵn có | 2026-05-19 |
+| 60 | `liet ke` sort theo createdTime | Danh sách file sắp xếp `createdTime desc` (không phải `modifiedTime`) | Đúng nghĩa "file mới tạo lên trên"; journal cũ append hằng ngày không nhảy lên đầu | 2026-05-19 |
 
 ---
 
@@ -580,7 +598,7 @@ INDEX (user_id, category_id, occurred_at)
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-18)
+### Right now (2026-05-19)
 - ✅ **FR-1** merged to `main` (production)
 - ✅ **FR-2** merged to `main` (production) 2026-05-18 — 11 commits, 148 tests passing
   - SQLite schema: users, channel_bindings, invite_codes, birthdate_changes, username_changes, parent_links, user_quotas, password_hash
@@ -599,7 +617,10 @@ INDEX (user_id, category_id, occurred_at)
   - `chia se` / `bo chia se` commands + startup backfill
   - L1 Memory: `SqliteMemoryStore`, `curate_memory()`, 3 lệnh tri nhớ, inject vào Q&A
   - `/start` redesign + `/help [nhom]`
-  - **Next:** merge → `dev` → test trên staging → merge → `main`
+  - 🔄 **Staging test đang chạy** (2026-05-19) — 3.1/3.2/3.6 pass; phát hiện + đã fix: help text mismatch command prefix, invite code không gửi (Telegram Markdown v1 + tên có `_`), duplicate user name (thêm unique index migration 012), ACL bypass trên `xem`/`xem wiki`/`liet ke`
+  - Bổ sung trong lúc test: lệnh `xem scope`, `toi la ai`; `liet ke` phân trang theo `createdTime`
+  - **Next:** hoàn tất checklist 3.3–3.5 + 3.7 → merge → `main`
+- ⏳ **FR-3.5** PENDING — Privilege Elevation (sudo); plan chi tiết tại `docs/FR-3.5-PLAN.md`
 
 ### Staging test checklist (feature/FR3 → dev, 2026-05-18)
 
@@ -636,18 +657,27 @@ INDEX (user_id, category_id, occurred_at)
 - [x] `xem nhat ky` → đọc được journal hôm nay
 - [x] `tom tat tuan nay` → tóm tắt được
 
+#### 3.7 ACL fix + lệnh mới (bổ sung 2026-05-19)
+- [ ] (2 user) `xem <file-private-cua-A>` từ user B → "Khong tim thay" (ACL chặn)
+- [ ] `xem wiki <topic-private>` từ user không phải owner → "Khong tim thay"
+- [ ] `xem wiki` (liệt kê) → không hiện wiki page private của người khác
+- [ ] `xem scope <file>` → hiện đúng scope/owner/loại/ngày
+- [ ] `liet ke` → phân trang đúng, icon 🔒/🌐 đúng scope; `liet ke 2` → trang sau
+- [ ] `toi la ai` → hiện đúng tên/username/role/id
+- [ ] `them user: <ten>, <role>` → nhận được invite code (regression sau fix)
+
 ---
 
 ### Immediate next steps
-1. Re-test `cap nhat tri nho` trên staging sau bugfix
-2. Hoàn thành các mục chưa test trong checklist trên
-3. Nếu tất cả OK → merge `feature/FR3` → `main`
-4. Xóa `feature/FR3` branch sau khi vào `main`
+1. Hoàn thành các mục chưa test trong checklist (3.3–3.5, 3.7)
+2. Nếu tất cả OK → merge `feature/FR3` → `main`
+3. Xóa `feature/FR3` branch sau khi vào `main`
+4. Làm FR-3.5: Privilege Elevation (sudo) — review `docs/FR-3.5-PLAN.md` trước khi execute
 5. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
 - **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định
 
 ### Pending FRs
-- FR-4..FR-9 — sequential theo Section 5
+- FR-3.5 (sudo), FR-4..FR-9 — sequential theo Section 5
 
 ---
 

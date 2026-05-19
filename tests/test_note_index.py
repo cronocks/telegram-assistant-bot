@@ -70,12 +70,12 @@ class TestGetMeta:
     def test_note_meta_fields(self, note_index, sample_admin):
         note_index.add_note("drive-001", sample_admin.id, kind="note", title="T")
         meta = note_index.get_note_meta("drive-001")
-        assert set(meta.keys()) == {"id", "drive_file_id", "owner_user_id", "scope", "kind", "title"}
+        assert set(meta.keys()) == {"id", "drive_file_id", "owner_user_id", "scope", "kind", "title", "created_at"}
 
     def test_wiki_meta_fields(self, note_index, sample_admin):
         note_index.add_wiki_page("wiki-001", sample_admin.id, "Topic", "topic")
         meta = note_index.get_wiki_meta("wiki-001")
-        assert set(meta.keys()) == {"id", "drive_file_id", "owner_user_id", "scope", "topic", "slug"}
+        assert set(meta.keys()) == {"id", "drive_file_id", "owner_user_id", "scope", "topic", "slug", "created_at"}
 
 
 # ── touch_note / touch_wiki_page ──────────────────────────────────────────────
