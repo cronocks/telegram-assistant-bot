@@ -369,6 +369,23 @@ source: telegram-bot
         audit_log("list_recent", details=f"limit={limit}, found={len(files)}")
         return files
 
+    def list_all_notes(self) -> list[dict]:
+        """List all files in the notes folder, newest-created first."""
+        folder_id = _get_or_create_notes_folder()
+        validate_folder(folder_id)
+
+        service = _get_service()
+        results = service.files().list(
+            q=f"'{folder_id}' in parents and trashed=false and mimeType='{MIME_MARKDOWN}'",
+            fields="files(id, name, createdTime)",
+            orderBy="createdTime desc",
+            pageSize=1000,
+        ).execute()
+
+        files = results.get("files", [])
+        audit_log("list_all", details=f"found={len(files)}")
+        return files
+
     # ─── Append ──────────────────────────────────────────────────────────────
 
     def append_to_file(self, file_id: str, append_content: str) -> str:

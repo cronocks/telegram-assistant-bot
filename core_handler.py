@@ -717,7 +717,7 @@ async def _cmd_xem_cha(
 
     lines = [f"Quan hệ của {target.name} (#{target.id}):"]
 
-    parent = deps.user_store.get_parent(target_id)
+    parent = deps.user_store.get_parent(target.id)
     if parent:
         lines.append(f"• Cha: {parent.name} (#{parent.id})")
     else:
@@ -864,7 +864,8 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`dat birthdate: [YYYY-MM-DD]` — Dat ngay sinh\n"
         "`duyet birthdate` — Duyet yeu cau doi ngay sinh (admin/manager)\n"
         "`dat cha: [ten/id-con] [ten/id-cha]` — Gan quan he cha/me — con (admin)\n"
-        "`xem cha: [ten/id]` — Xem quan he cha/me cua user (admin)",
+        "`xem cha: [ten/id]` — Xem quan he cha/me cua user (admin)\n"
+        "`toi la ai` — Xem tai khoan ban dang dung",
     ),
     "quota": (
         "💰 *QUOTA*",
@@ -877,7 +878,9 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "🔍 *TIM KIEM & XEM*",
         "`xem nhat ky` — Doc nhat ky hom nay\n"
         "`xem [ten]` — Doc 1 file (fuzzy match)\n"
-        "`liet ke` — Liet ke 10 file gan nhat\n"
+        "`xem scope [ten]` — Xem scope/owner cua 1 file\n"
+        "`liet ke` — Liet ke tat ca file (phan trang, moi nhat truoc)\n"
+        "`liet ke [trang]` — Xem trang cu the\n"
         "`tim [tu khoa]` — Tim trong noi dung file\n"
         "`tom tat tuan nay` — Tom tat ghi chu 7 ngay",
     ),
@@ -1168,8 +1171,30 @@ async def _cmd_xem_nhat_ky(chat_id: str, deps: CoreDeps) -> None:
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
 
 
-async def _cmd_xem(chat_id: str, name_query: str, deps: CoreDeps) -> None:
-    """xem <name> → read a file (fuzzy match)."""
+def _visible_notes_with_meta(
+    files: list[dict], user: User, deps: CoreDeps
+) -> tuple[list[dict], dict]:
+    """ACL-filter Drive files against the note index.
+
+    Returns (visible files, {drive_file_id: meta}). Orphans (files with no
+    index row) are dropped — safe default per FR-3.
+    """
+    if not files:
+        return [], {}
+    metas = {
+        m["drive_file_id"]: m
+        for m in deps.note_index.note_meta_for_ids([f["id"] for f in files])
+    }
+    visible = [
+        f for f in files
+        if (m := metas.get(f["id"])) is not None
+        and acl_mod.can_read(user, m["scope"], m["owner_user_id"])
+    ]
+    return visible, metas
+
+
+async def _cmd_xem(chat_id: str, name_query: str, user: User, deps: CoreDeps) -> None:
+    """xem <name> → read a file (fuzzy match, ACL-filtered)."""
     if not name_query:
         await deps.channel.send(chat_id, "Cu phap: xem <ten-file>", use_markdown=False)
         return
@@ -1182,6 +1207,8 @@ async def _cmd_xem(chat_id: str, name_query: str, deps: CoreDeps) -> None:
             chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False,
         )
         return
+
+    matches, _ = _visible_notes_with_meta(matches, user, deps)
 
     if not matches:
         await deps.channel.send(
@@ -1222,23 +1249,49 @@ async def _cmd_xem(chat_id: str, name_query: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, "\n".join(msg_lines), use_markdown=False)
 
 
-async def _cmd_liet_ke(chat_id: str, deps: CoreDeps) -> None:
-    """liệt kê → list 10 most recent files."""
+_LIET_KE_PAGE_SIZE = 20
+
+
+async def _cmd_liet_ke(
+    chat_id: str, page_arg: str, user: User, deps: CoreDeps
+) -> None:
+    """liet ke [trang] → list all visible files, newest-created first, paginated."""
+    page = 1
+    if page_arg.strip().isdigit():
+        page = max(1, int(page_arg.strip()))
+
     try:
-        files = deps.notes.list_recent_files()
-        if not files:
-            await deps.channel.send(
-                chat_id, "Vault trong, chua co ghi chu nao.", use_markdown=False,
-            )
-            return
-        msg_lines = ["10 file gan nhat:"]
-        for i, f in enumerate(files, 1):
-            modified = f.get("modifiedTime", "")[:10]
-            msg_lines.append(f"{i}. {f['name']}  ({modified})")
-        await deps.channel.send(chat_id, "\n".join(msg_lines), use_markdown=False)
+        files = deps.notes.list_all_notes()
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+        return
+
+    visible, metas = _visible_notes_with_meta(files, user, deps)
+    if not visible:
+        await deps.channel.send(
+            chat_id, "Vault trong, chua co ghi chu nao.", use_markdown=False,
+        )
+        return
+
+    total = len(visible)
+    total_pages = (total + _LIET_KE_PAGE_SIZE - 1) // _LIET_KE_PAGE_SIZE
+    page = min(page, total_pages)
+    start = (page - 1) * _LIET_KE_PAGE_SIZE
+    chunk = visible[start:start + _LIET_KE_PAGE_SIZE]
+
+    lines = [f"Tat ca file ({total} file) - Trang {page}/{total_pages}", ""]
+    for i, f in enumerate(chunk, start + 1):
+        meta = metas.get(f["id"])
+        icon = "🌐" if (meta and meta["scope"] == "everyone") else "🔒"
+        created = (f.get("createdTime") or "")[:10]
+        lines.append(f"{i:>2}. {icon} {f['name']}  ({created})")
+
+    if page < total_pages:
+        lines.append("")
+        lines.append(f"Trang sau: liet ke {page + 1}")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
 
 async def _cmd_tim(chat_id: str, keyword: str, user: User, deps: CoreDeps) -> None:
@@ -1389,6 +1442,116 @@ async def _cmd_bo_chia_se(chat_id: str, name: str, user: User, deps: CoreDeps) -
     await _cmd_set_scope(chat_id, name, "private", user, deps)
 
 
+async def _send_scope_info(
+    chat_id: str, filename: str, meta: dict, deps: CoreDeps, is_wiki: bool = False
+) -> None:
+    """Send a formatted scope/owner/kind summary for one note or wiki page."""
+    owner = deps.user_store.get_user_by_id(meta["owner_user_id"])
+    owner_str = f"{owner.name} (#{owner.id})" if owner else f"#{meta['owner_user_id']}"
+    if meta["scope"] == "everyone":
+        scope_str = "🌐 chia se voi moi nguoi"
+    else:
+        scope_str = "🔒 rieng tu"
+    kind = "wiki" if is_wiki else meta.get("kind", "note")
+    created = (meta.get("created_at") or "")[:10]
+    lines = [
+        f"📄 {filename}",
+        f"   Scope: {scope_str}",
+        f"   Owner: {owner_str}",
+        f"   Loai:  {kind}",
+        f"   Ngay:  {created}",
+    ]
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_xem_scope(
+    chat_id: str, name: str, user: User, deps: CoreDeps
+) -> None:
+    """xem scope <ten-file> — show scope/owner/kind of a note or wiki page."""
+    if not name:
+        await deps.channel.send(
+            chat_id, "Cu phap: xem scope <ten-file>", use_markdown=False,
+        )
+        return
+
+    # 1. Search notes folder first.
+    try:
+        matches = deps.notes.find_files_fuzzy(name)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False)
+        return
+
+    if len(matches) > 1:
+        names = "\n".join(f"- {m['name']}" for m in matches[:FUZZY_SHOW_LIMIT])
+        await deps.channel.send(
+            chat_id,
+            f"Tim thay {len(matches)} file khop voi '{name}':\n{names}\n\n"
+            f"Vui long nhap ten cu the hon.",
+            use_markdown=False,
+        )
+        return
+
+    if len(matches) == 1:
+        meta = deps.note_index.get_note_meta(matches[0]["id"])
+        if meta is None:
+            await deps.channel.send(
+                chat_id, "File nay chua duoc index.", use_markdown=False,
+            )
+            return
+        if not acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+            await deps.channel.send(
+                chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
+            )
+            return
+        await _send_scope_info(chat_id, matches[0]["name"], meta, deps)
+        return
+
+    # 2. No note match — try wiki.
+    try:
+        page = deps.wiki.find_page(name)
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Loi khi tim wiki: {str(e)[:400]}", use_markdown=False)
+        return
+
+    if page:
+        meta = deps.note_index.get_wiki_meta(page["id"])
+        if meta is None:
+            await deps.channel.send(
+                chat_id, "Trang wiki nay chua duoc index.", use_markdown=False,
+            )
+            return
+        if not acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+            await deps.channel.send(
+                chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
+            )
+            return
+        await _send_scope_info(chat_id, page["name"], meta, deps, is_wiki=True)
+        return
+
+    await deps.channel.send(
+        chat_id, f"Khong tim thay file '{name}' trong ghi chu hoac wiki.", use_markdown=False,
+    )
+
+
+async def _cmd_whoami(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """toi la ai — show the user currently bound to this chat."""
+    role_labels = {
+        "admin": "Quan tri vien",
+        "manager": "Nguoi quan ly",
+        "member": "Thanh vien",
+        "readonly": "Chi doc",
+    }
+    username = user.username or "(chua dat)"
+    lines = [
+        "👤 Tai khoan hien tai:",
+        f"   Ten:      {user.name}",
+        f"   Username: {username}",
+        f"   Vai tro:  {role_labels.get(user.role, user.role)}",
+        f"   User ID:  #{user.id}",
+    ]
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
 async def _cmd_wiki_ingest(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """wiki <content> — ingest raw content into the wiki layer.
 
@@ -1531,19 +1694,27 @@ async def _cmd_wiki_query(chat_id: str, question: str, user: User, deps: CoreDep
         )
 
 
-async def _cmd_xem_wiki_list(chat_id: str, deps: CoreDeps) -> None:
-    """xem wiki — list all wiki pages."""
+async def _cmd_xem_wiki_list(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem wiki — list all wiki pages visible to the user."""
     try:
         pages = deps.wiki.list_pages()
-        if not pages:
+        # ACL: keep only pages the user may read; orphans (no index row) dropped.
+        visible = []
+        for p in pages:
+            meta = deps.note_index.get_wiki_meta(p["id"])
+            if meta is None:
+                continue
+            if acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+                visible.append(p)
+        if not visible:
             await deps.channel.send(
                 chat_id,
                 "Wiki chua co trang nao. Hay ingest bang lenh: wiki <noi dung>",
                 use_markdown=False,
             )
             return
-        lines = [f"Wiki ({len(pages)} trang):"]
-        for i, p in enumerate(pages, 1):
+        lines = [f"Wiki ({len(visible)} trang):"]
+        for i, p in enumerate(visible, 1):
             modified = p.get("modifiedTime", "")[:10]
             topic = p["name"].replace(".md", "").replace("_", " ")
             lines.append(f"{i}. {topic}  ({modified})")
@@ -1554,21 +1725,28 @@ async def _cmd_xem_wiki_list(chat_id: str, deps: CoreDeps) -> None:
 
 
 async def _cmd_xem_wiki_page(
-    chat_id: str, topic_query: str, deps: CoreDeps,
+    chat_id: str, topic_query: str, user: User, deps: CoreDeps,
 ) -> None:
-    """xem wiki <topic> — read one wiki page."""
+    """xem wiki <topic> — read one wiki page (ACL-checked)."""
     if not topic_query:
-        await _cmd_xem_wiki_list(chat_id, deps)
+        await _cmd_xem_wiki_list(chat_id, user, deps)
         return
+    not_found_msg = (
+        f"Khong tim thay wiki page cho '{topic_query}'.\n"
+        f"Xem danh sach: xem wiki"
+    )
     try:
         page = deps.wiki.find_page(topic_query)
         if not page:
-            await deps.channel.send(
-                chat_id,
-                f"Khong tim thay wiki page cho '{topic_query}'.\n"
-                f"Xem danh sach: xem wiki",
-                use_markdown=False,
-            )
+            await deps.channel.send(chat_id, not_found_msg, use_markdown=False)
+            return
+        # ACL: an unindexed or unauthorized page returns the same "not found"
+        # message so a private page's existence is never leaked.
+        meta = deps.note_index.get_wiki_meta(page["id"])
+        if meta is None or not acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"]
+        ):
+            await deps.channel.send(chat_id, not_found_msg, use_markdown=False)
             return
         content = page["content"]
         if len(content) > 3500:
@@ -1830,6 +2008,8 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_NHAT_KY":        ["xem nhật ký", "xem nhat ky"],
     "XEM_TRI_NHO":        ["xem trí nhớ", "xem tri nho"],
     "XEM_HO_SO":          ["xem hồ sơ", "xem ho so"],
+    "XEM_SCOPE":          ["xem scope "],
+    "TOI_LA_AI":          ["toi la ai", "tôi là ai", "tai khoan", "tài khoản"],
     "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
     "LIET_KE":            ["liệt kê", "liet ke"],
     "TIM":                ["tìm ", "tim ", "search "],
@@ -1921,9 +2101,9 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "HOI_WIKI":
             await _cmd_wiki_query(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_WIKI_PAGE":
-            await _cmd_xem_wiki_page(chat_id, remainder, deps); return
+            await _cmd_xem_wiki_page(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_WIKI":
-            await _cmd_xem_wiki_list(chat_id, deps); return
+            await _cmd_xem_wiki_list(chat_id, user, deps); return
         if cmd_id == "WIKI":
             await _cmd_wiki_ingest(chat_id, remainder, user, deps); return
         if cmd_id == "GHI_NHO_VAO":
@@ -1935,11 +2115,15 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "XEM_NHAT_KY":
             await _cmd_xem_nhat_ky(chat_id, deps); return
         if cmd_id == "LIET_KE":
-            await _cmd_liet_ke(chat_id, deps); return
+            await _cmd_liet_ke(chat_id, remainder, user, deps); return
         if cmd_id == "TIM":
             await _cmd_tim(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_SCOPE":
+            await _cmd_xem_scope(chat_id, remainder, user, deps); return
         if cmd_id == "XEM":
-            await _cmd_xem(chat_id, remainder, deps); return
+            await _cmd_xem(chat_id, remainder, user, deps); return
+        if cmd_id == "TOI_LA_AI":
+            await _cmd_whoami(chat_id, user, deps); return
         if cmd_id == "XEM_TRI_NHO":
             await _cmd_xem_tri_nho(chat_id, user, deps); return
         if cmd_id == "XEM_HO_SO":

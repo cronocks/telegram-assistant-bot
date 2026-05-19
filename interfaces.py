@@ -153,6 +153,13 @@ class NoteStore(Protocol):
         """List the N most recently modified files."""
         ...
 
+    def list_all_notes(self) -> list[dict]:
+        """List all files in the notes folder, newest-created first.
+
+        Returns [{id, name, createdTime}].
+        """
+        ...
+
     def add_to_daily_journal(self, content: str) -> tuple[str, str, str]:
         """Append (or create) today's journal entry.
 
