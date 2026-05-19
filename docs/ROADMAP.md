@@ -376,7 +376,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-3 — SQLite + Scope + L1 Memory
-**Status:** ✅ DONE (code complete) — 9 commits on `feature/FR3`; chờ merge → `dev` (staging test) → `main`
+**Status:** ✅ DONE — code + staging test pass (checklist 3.1–3.7, 2026-05-19); sẵn sàng merge → `main`
 **Scope delivered:**
 - SQLite schema: `notes`, `wiki_pages`, `user_memory` (migrations 009–011)
 - `acl.py` — `can_read()` + `filter_visible()` helpers
@@ -610,16 +610,16 @@ INDEX (user_id, category_id, occurred_at)
   - Parent-child links (soft history)
   - Per-user monthly token quota (lazy monthly reset)
   - Argon2id password infrastructure (not yet exposed via commands)
-- 🔄 **FR-3** code complete — 9 commits on `feature/FR3` (2026-05-18)
+- ✅ **FR-3** code + staging test hoàn tất (2026-05-19) — chờ merge → `main`
   - SQLite schema: notes, wiki_pages, user_memory (migrations 009–011)
   - ACL layer: `acl.py` + `SqliteNoteIndex` + `NoteIndex` Protocol
   - Dual-write + ACL filter trên tất cả retrieval paths
   - `chia se` / `bo chia se` commands + startup backfill
   - L1 Memory: `SqliteMemoryStore`, `curate_memory()`, 3 lệnh tri nhớ, inject vào Q&A
   - `/start` redesign + `/help [nhom]`
-  - 🔄 **Staging test đang chạy** (2026-05-19) — 3.1/3.2/3.6 pass; phát hiện + đã fix: help text mismatch command prefix, invite code không gửi (Telegram Markdown v1 + tên có `_`), duplicate user name (thêm unique index migration 012), ACL bypass trên `xem`/`xem wiki`/`liet ke`
+  - ✅ **Staging test hoàn tất** (2026-05-19) — checklist 3.1–3.7 pass toàn bộ; phát hiện + đã fix: help text mismatch command prefix, invite code không gửi (Telegram Markdown v1 + tên có `_`), duplicate user name (thêm unique index migration 012), ACL bypass trên `xem`/`xem wiki`/`liet ke`
   - Bổ sung trong lúc test: lệnh `xem scope`, `toi la ai`; `liet ke` phân trang theo `createdTime`
-  - **Next:** hoàn tất checklist 3.3–3.5 + 3.7 → merge → `main`
+  - **Next:** merge `feature/FR3` → `main`
 - ⏳ **FR-3.5** PENDING — Privilege Elevation (sudo); plan chi tiết tại `docs/FR-3.5-PLAN.md`
 
 ### Staging test checklist (feature/FR3 → dev, 2026-05-18)
@@ -639,17 +639,17 @@ INDEX (user_id, category_id, occurred_at)
 - [x] Hỏi tự do → bot dùng context memory trong câu trả lời
 
 #### 3.3 Scope — note private
-- [ ] `ghi nho <nội dung>` → tạo file, scope mặc định = `private`
-- [ ] (2 user) User B hỏi tự do → không thấy note private của User A
+- [x] `ghi nho <nội dung>` → tạo file, scope mặc định = `private`
+- [x] (2 user) User B hỏi tự do → không thấy note private của User A
 
 #### 3.4 Scope — chia sẻ / bỏ chia sẻ
-- [ ] `chia se <tên-file>` → bot xác nhận scope = `everyone`
-- [ ] `bo chia se <tên-file>` → bot xác nhận scope = `private`
-- [ ] `chia se` file của người khác → "Bạn không phải chủ file này"
+- [x] `chia se <tên-file>` → bot xác nhận scope = `everyone`
+- [x] `bo chia se <tên-file>` → bot xác nhận scope = `private`
+- [x] `chia se` file của người khác → "Bạn không phải chủ file này"
 
 #### 3.5 Wiki scope
-- [ ] `wiki <nội dung>` → ingest thành công, scope mặc định = `everyone`
-- [ ] `hoi wiki <câu hỏi>` → trả lời được từ wiki
+- [x] `wiki <nội dung>` → ingest thành công, scope mặc định = `everyone`
+- [x] `hoi wiki <câu hỏi>` → trả lời được từ wiki
 
 #### 3.6 Regression — luồng cũ
 - [x] `ghi nho vao <file>: <nội dung>` → append OK
@@ -658,22 +658,21 @@ INDEX (user_id, category_id, occurred_at)
 - [x] `tom tat tuan nay` → tóm tắt được
 
 #### 3.7 ACL fix + lệnh mới (bổ sung 2026-05-19)
-- [ ] (2 user) `xem <file-private-cua-A>` từ user B → "Khong tim thay" (ACL chặn)
-- [ ] `xem wiki <topic-private>` từ user không phải owner → "Khong tim thay"
-- [ ] `xem wiki` (liệt kê) → không hiện wiki page private của người khác
-- [ ] `xem scope <file>` → hiện đúng scope/owner/loại/ngày
-- [ ] `liet ke` → phân trang đúng, icon 🔒/🌐 đúng scope; `liet ke 2` → trang sau
-- [ ] `toi la ai` → hiện đúng tên/username/role/id
-- [ ] `them user: <ten>, <role>` → nhận được invite code (regression sau fix)
+- [x] (2 user) `xem <file-private-cua-A>` từ user B → "Khong tim thay" (ACL chặn)
+- [x] `xem wiki <topic-private>` từ user không phải owner → "Khong tim thay"
+- [x] `xem wiki` (liệt kê) → không hiện wiki page private của người khác
+- [x] `xem scope <file>` → hiện đúng scope/owner/loại/ngày
+- [x] `liet ke` → phân trang đúng, icon 🔒/🌐 đúng scope; `liet ke 2` → trang sau
+- [x] `toi la ai` → hiện đúng tên/username/role/id
+- [x] `them user: <ten>, <role>` → nhận được invite code (regression sau fix)
 
 ---
 
 ### Immediate next steps
-1. Hoàn thành các mục chưa test trong checklist (3.3–3.5, 3.7)
-2. Nếu tất cả OK → merge `feature/FR3` → `main`
-3. Xóa `feature/FR3` branch sau khi vào `main`
-4. Làm FR-3.5: Privilege Elevation (sudo) — review `docs/FR-3.5-PLAN.md` trước khi execute
-5. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
+1. Merge `feature/FR3` → `main`
+2. Xóa `feature/FR3` branch sau khi vào `main`
+3. Làm FR-3.5: Privilege Elevation (sudo) — review `docs/FR-3.5-PLAN.md` trước khi execute
+4. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
 - **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định
 
 ### Pending FRs
