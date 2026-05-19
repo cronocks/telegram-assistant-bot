@@ -606,16 +606,16 @@ INDEX (user_id, category_id, occurred_at)
 #### 3.1 Startup & backfill
 - [x] Bot phản hồi `/start` → menu mới có nhóm **Tri nho**
 - [x] `/help tri nho` → hiện `xem tri nho`, `xem ho so`, `cap nhat tri nho`
-- [ ] Render log xác nhận: `Note index backfill complete — N rows inserted`
+- [x] Render log xác nhận: `Note index backfill complete — N rows inserted`
 
 #### 3.2 L1 Memory
 - [x] `xem tri nho` khi chưa có data → "Bộ nhớ của bạn chưa có gì" ✅
 - [x] `xem ho so` khi chưa có data → "Hồ sơ của bạn chưa có gì" ✅
 - [x] `cap nhat tri nho` → bug phát hiện (lưu content rỗng mà báo thành công) → **đã fix**
-- [ ] `cap nhat tri nho` → **re-test sau khi fix** (chưa test lại trên staging)
-- [ ] `xem tri nho` sau curation → hiện nội dung snapshot
-- [ ] `xem ho so` sau curation → hiện nội dung hồ sơ
-- [ ] Hỏi tự do → bot dùng context memory trong câu trả lời
+- [x] `cap nhat tri nho` → **re-test sau khi fix** (chưa test lại trên staging)
+- [x] `xem tri nho` sau curation → hiện nội dung snapshot
+- [x] `xem ho so` sau curation → hiện nội dung hồ sơ
+- [x] Hỏi tự do → bot dùng context memory trong câu trả lời
 
 #### 3.3 Scope — note private
 - [ ] `ghi nho <nội dung>` → tạo file, scope mặc định = `private`
@@ -631,10 +631,10 @@ INDEX (user_id, category_id, occurred_at)
 - [ ] `hoi wiki <câu hỏi>` → trả lời được từ wiki
 
 #### 3.6 Regression — luồng cũ
-- [ ] `ghi nho vao <file>: <nội dung>` → append OK
-- [ ] `nhat ky <nội dung>` → journal OK
-- [ ] `xem nhat ky` → đọc được journal hôm nay
-- [ ] `tom tat tuan nay` → tóm tắt được
+- [x] `ghi nho vao <file>: <nội dung>` → append OK
+- [x] `nhat ky <nội dung>` → journal OK
+- [x] `xem nhat ky` → đọc được journal hôm nay
+- [x] `tom tat tuan nay` → tóm tắt được
 
 ---
 
