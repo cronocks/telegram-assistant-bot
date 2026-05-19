@@ -336,9 +336,11 @@ async def _cmd_them_user(
         )
         await deps.channel.send(
             chat_id,
-            f"Đã tạo user *{name}* (role: {role}, id: {new_user.id}).\n\n"
-            f"Mã mời (hết hạn sau 7 ngày):\n`{code}`\n\n"
-            f"Gửi mã này cho {name}, họ dùng lệnh:\n`dang ky: {code}`",
+            f"Da tao user {name} (role: {role}, id: {new_user.id}).\n\n"
+            f"Ma moi (het han sau 7 ngay): {code}\n\n"
+            f"Gui ma nay cho {name}, ho dung lenh:\n"
+            f"dang ky: {code}",
+            use_markdown=False,
         )
     except Exception as e:
         await deps.channel.send(

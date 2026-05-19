@@ -56,14 +56,17 @@ class SqliteUserStore:
         birthdate: date | None = None,
         username: str | None = None,
     ) -> User:
-        with self._conn:
-            cur = self._conn.execute(
-                """
-                INSERT INTO users (name, role, birthdate, username)
-                VALUES (?, ?, ?, ?)
-                """,
-                (name, role, birthdate.isoformat() if birthdate else None, username),
-            )
+        try:
+            with self._conn:
+                cur = self._conn.execute(
+                    """
+                    INSERT INTO users (name, role, birthdate, username)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (name, role, birthdate.isoformat() if birthdate else None, username),
+                )
+        except sqlite3.IntegrityError:
+            raise ValueError(f"User ten '{name}' da ton tai.")
         user = self.get_user_by_id(cur.lastrowid)
         assert user is not None
         return user
