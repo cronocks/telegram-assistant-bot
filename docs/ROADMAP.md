@@ -601,11 +601,49 @@ INDEX (user_id, category_id, occurred_at)
   - `/start` redesign + `/help [nhom]`
   - **Next:** merge → `dev` → test trên staging → merge → `main`
 
+### Staging test checklist (feature/FR3 → dev, 2026-05-18)
+
+#### 3.1 Startup & backfill
+- [x] Bot phản hồi `/start` → menu mới có nhóm **Tri nho**
+- [x] `/help tri nho` → hiện `xem tri nho`, `xem ho so`, `cap nhat tri nho`
+- [x] Render log xác nhận: `Note index backfill complete — N rows inserted`
+
+#### 3.2 L1 Memory
+- [x] `xem tri nho` khi chưa có data → "Bộ nhớ của bạn chưa có gì" ✅
+- [x] `xem ho so` khi chưa có data → "Hồ sơ của bạn chưa có gì" ✅
+- [x] `cap nhat tri nho` → bug phát hiện (lưu content rỗng mà báo thành công) → **đã fix**
+- [x] `cap nhat tri nho` → **re-test sau khi fix** (chưa test lại trên staging)
+- [x] `xem tri nho` sau curation → hiện nội dung snapshot
+- [x] `xem ho so` sau curation → hiện nội dung hồ sơ
+- [x] Hỏi tự do → bot dùng context memory trong câu trả lời
+
+#### 3.3 Scope — note private
+- [ ] `ghi nho <nội dung>` → tạo file, scope mặc định = `private`
+- [ ] (2 user) User B hỏi tự do → không thấy note private của User A
+
+#### 3.4 Scope — chia sẻ / bỏ chia sẻ
+- [ ] `chia se <tên-file>` → bot xác nhận scope = `everyone`
+- [ ] `bo chia se <tên-file>` → bot xác nhận scope = `private`
+- [ ] `chia se` file của người khác → "Bạn không phải chủ file này"
+
+#### 3.5 Wiki scope
+- [ ] `wiki <nội dung>` → ingest thành công, scope mặc định = `everyone`
+- [ ] `hoi wiki <câu hỏi>` → trả lời được từ wiki
+
+#### 3.6 Regression — luồng cũ
+- [x] `ghi nho vao <file>: <nội dung>` → append OK
+- [x] `nhat ky <nội dung>` → journal OK
+- [x] `xem nhat ky` → đọc được journal hôm nay
+- [x] `tom tat tuan nay` → tóm tắt được
+
+---
+
 ### Immediate next steps
-1. Merge `feature/FR3` → `dev`, test trên staging
-2. Nếu OK → merge `feature/FR3` → `main`
-3. Xóa `feature/FR3` branch sau khi vào `main`
-4. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
+1. Re-test `cap nhat tri nho` trên staging sau bugfix
+2. Hoàn thành các mục chưa test trong checklist trên
+3. Nếu tất cả OK → merge `feature/FR3` → `main`
+4. Xóa `feature/FR3` branch sau khi vào `main`
+5. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
 - **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định
 
 ### Pending FRs

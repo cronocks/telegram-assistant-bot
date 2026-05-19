@@ -369,38 +369,74 @@ async def _cmd_xem_danh_sach_user(
         await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
 
 
+async def _resolve_user_or_reply(
+    token: str, chat_id: str, deps: CoreDeps,
+) -> "User | None":
+    """Resolve a name-or-id token to a User, or send an error and return None.
+
+    If token is numeric, look up by ID.
+    If token is a name/username string, search all active users case-insensitively.
+    Returns None (after sending an error message) when not found or ambiguous.
+    """
+    token = token.strip()
+    if token.isdigit():
+        u = deps.user_store.get_user_by_id(int(token))
+        if u is None or not u.is_active:
+            await deps.channel.send(chat_id, f"Không tìm thấy user #{token}.", use_markdown=False)
+            return None
+        return u
+
+    needle = token.lower()
+    matches = [
+        u for u in deps.user_store.list_users()
+        if u.is_active and (
+            u.name.lower() == needle
+            or (u.username is not None and u.username.lower() == needle)
+        )
+    ]
+    if not matches:
+        await deps.channel.send(chat_id, f"Không tìm thấy user '{token}'.", use_markdown=False)
+        return None
+    if len(matches) > 1:
+        ids = ", ".join(f"#{u.id} ({u.name})" for u in matches)
+        await deps.channel.send(
+            chat_id,
+            f"Nhiều user trùng tên '{token}': {ids}.\nDùng ID để chỉ định chính xác.",
+            use_markdown=False,
+        )
+        return None
+    return matches[0]
+
+
 async def _cmd_xoa_user(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
-    """xoa user: <id> — admin soft-deletes a user."""
+    """xoa user: <tên/id> — admin soft-deletes a user."""
     if not has_role(user, "admin"):
         await deps.channel.send(chat_id, "Chỉ admin mới có thể xóa user.", use_markdown=False)
         return
 
-    if not body.strip().isdigit():
+    if not body.strip():
         await deps.channel.send(
-            chat_id, "Cú pháp: xoa user: <id>\nVí dụ: xoa user: 3",
+            chat_id, "Cú pháp: xoa user: <tên/id>\nVí dụ: xoa user: 3",
             use_markdown=False,
         )
         return
 
-    target_id = int(body.strip())
-    if target_id == user.id:
+    target = await _resolve_user_or_reply(body.strip(), chat_id, deps)
+    if target is None:
+        return
+
+    if target.id == user.id:
         await deps.channel.send(
             chat_id, "Không thể tự xóa tài khoản của mình.", use_markdown=False,
         )
         return
 
     try:
-        target = deps.user_store.get_user_by_id(target_id)
-        if target is None or not target.is_active:
-            await deps.channel.send(
-                chat_id, f"Không tìm thấy user id={target_id}.", use_markdown=False,
-            )
-            return
-        deps.user_store.soft_delete_user(target_id)
+        deps.user_store.soft_delete_user(target.id)
         await deps.channel.send(
-            chat_id, f"Đã vô hiệu hóa user: {target.name} (id={target_id}).",
+            chat_id, f"Đã vô hiệu hóa user: {target.name} (id={target.id}).",
             use_markdown=False,
         )
     except Exception as e:
@@ -610,43 +646,51 @@ async def _cmd_duyet_username(
 async def _cmd_dat_cha(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
-    """dat cha: <user_id> <parent_id> — admin/manager sets a parent for a user."""
+    """dat cha: <tên/id-con> <tên/id-cha> — admin/manager sets a parent for a user."""
     if not has_role(user, "admin", "manager"):
         await deps.channel.send(chat_id, "Chỉ admin/manager mới có thể đặt quan hệ cha-con.", use_markdown=False)
         return
 
-    parts = body.strip().split()
-    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+    parts = body.strip().split(None, 1)
+    if len(parts) != 2:
         await deps.channel.send(
             chat_id,
-            "Cú pháp: dat cha: <user_id> <parent_id>\n"
-            "Ví dụ: dat cha: 3 1 (user 3 có cha là user 1)\n"
-            "Dùng: dat cha: <user_id> 0 để xóa quan hệ cha-con.",
+            "Cú pháp: dat cha: <tên/id-con> <tên/id-cha>\n"
+            "Ví dụ: dat cha: an 1 (user 'an' có cha là user #1)\n"
+            "Dùng: dat cha: <tên/id-con> 0 để xóa quan hệ cha-con.",
             use_markdown=False,
         )
         return
 
-    user_id = int(parts[0])
-    parent_id = int(parts[1])
+    child_token, parent_token = parts[0].strip(), parts[1].strip()
+
+    child = await _resolve_user_or_reply(child_token, chat_id, deps)
+    if child is None:
+        return
+
+    # parent_token == "0" means remove relationship
+    if parent_token == "0":
+        try:
+            removed = deps.user_store.remove_parent(child.id, user.id)
+            if removed:
+                await deps.channel.send(chat_id, f"Đã xóa quan hệ cha-con của {child.name} (#{child.id}).", use_markdown=False)
+            else:
+                await deps.channel.send(chat_id, f"{child.name} (#{child.id}) không có quan hệ cha-con nào đang hoạt động.", use_markdown=False)
+        except ValueError as e:
+            await deps.channel.send(chat_id, str(e), use_markdown=False)
+        return
+
+    parent = await _resolve_user_or_reply(parent_token, chat_id, deps)
+    if parent is None:
+        return
 
     try:
-        if parent_id == 0:
-            removed = deps.user_store.remove_parent(user_id, user.id)
-            if removed:
-                await deps.channel.send(chat_id, f"Đã xóa quan hệ cha-con của user #{user_id}.", use_markdown=False)
-            else:
-                await deps.channel.send(chat_id, f"User #{user_id} không có quan hệ cha-con nào đang hoạt động.", use_markdown=False)
-        else:
-            deps.user_store.set_parent(user_id, parent_id, user.id)
-            child = deps.user_store.get_user_by_id(user_id)
-            parent = deps.user_store.get_user_by_id(parent_id)
-            child_name = child.name if child else f"#{user_id}"
-            parent_name = parent.name if parent else f"#{parent_id}"
-            await deps.channel.send(
-                chat_id,
-                f"Đã đặt {child_name} (#{user_id}) có cha là {parent_name} (#{parent_id}).",
-                use_markdown=False,
-            )
+        deps.user_store.set_parent(child.id, parent.id, user.id)
+        await deps.channel.send(
+            chat_id,
+            f"Đã đặt {child.name} (#{child.id}) có cha là {parent.name} (#{parent.id}).",
+            use_markdown=False,
+        )
     except ValueError as e:
         await deps.channel.send(chat_id, str(e), use_markdown=False)
 
@@ -654,25 +698,22 @@ async def _cmd_dat_cha(
 async def _cmd_xem_cha(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
-    """xem cha: <user_id> — show parent and children of a user."""
+    """xem cha: <tên/id> — show parent and children of a user."""
     if not has_role(user, "admin", "manager"):
         await deps.channel.send(chat_id, "Chỉ admin/manager mới có thể xem quan hệ cha-con.", use_markdown=False)
         return
 
-    parts = body.strip().split()
-    if not parts or not parts[0].isdigit():
+    if not body.strip():
         await deps.channel.send(
-            chat_id, "Cú pháp: xem cha: <user_id>", use_markdown=False,
+            chat_id, "Cú pháp: xem cha: <tên/id>", use_markdown=False,
         )
         return
 
-    target_id = int(parts[0])
-    target = deps.user_store.get_user_by_id(target_id)
+    target = await _resolve_user_or_reply(body.strip(), chat_id, deps)
     if target is None:
-        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
         return
 
-    lines = [f"Quan hệ của {target.name} (#{target_id}):"]
+    lines = [f"Quan hệ của {target.name} (#{target.id}):"]
 
     parent = deps.user_store.get_parent(target_id)
     if parent:
@@ -680,7 +721,7 @@ async def _cmd_xem_cha(
     else:
         lines.append("• Cha: (chưa có)")
 
-    children = deps.user_store.get_children(target_id)
+    children = deps.user_store.get_children(target.id)
     if children:
         child_list = ", ".join(f"{c.name} (#{c.id})" for c in children)
         lines.append(f"• Con: {child_list}")
@@ -693,19 +734,18 @@ async def _cmd_xem_cha(
 async def _cmd_xem_quota(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
-    """xem quota [user_id] — show token quota. Admin can view any user; others see own."""
-    target_id = user.id
+    """xem quota [tên/id] — show token quota. Admin can view any user; others see own."""
     if body.strip() and has_role(user, "admin", "manager"):
-        parts = body.strip().split()
-        if parts[0].isdigit():
-            target_id = int(parts[0])
+        target = await _resolve_user_or_reply(body.strip(), chat_id, deps)
+        if target is None:
+            return
+    else:
+        target = deps.user_store.get_user_by_id(user.id)
+        if target is None:
+            await deps.channel.send(chat_id, "Không tìm thấy thông tin user của bạn.", use_markdown=False)
+            return
 
-    target = deps.user_store.get_user_by_id(target_id)
-    if target is None:
-        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
-        return
-
-    quota = deps.user_store.get_quota(target_id)
+    quota = deps.user_store.get_quota(target.id)
     if quota is None or quota["monthly_token_limit"] == 0:
         limit_str = "không giới hạn"
     else:
@@ -715,7 +755,7 @@ async def _cmd_xem_quota(
     month = quota["month"] if quota else "N/A"
 
     lines = [
-        f"Quota của {target.name} (#{target_id}):",
+        f"Quota của {target.name} (#{target.id}):",
         f"• Giới hạn: {limit_str}",
         f"• Đã dùng tháng {month}: {used:,} tokens",
     ]
@@ -729,37 +769,34 @@ async def _cmd_xem_quota(
 async def _cmd_dat_quota(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
-    """dat quota: <user_id> <tokens> — admin sets monthly token limit (0 = unlimited)."""
+    """dat quota: <tên/id> <tokens> — admin sets monthly token limit (0 = unlimited)."""
     if not has_role(user, "admin"):
         await deps.channel.send(chat_id, "Chỉ admin mới có thể đặt quota.", use_markdown=False)
         return
 
-    parts = body.strip().split()
-    if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+    parts = body.strip().split(None, 1)
+    if len(parts) != 2 or not parts[1].strip().isdigit():
         await deps.channel.send(
             chat_id,
-            "Cú pháp: dat quota: <user_id> <tokens>\n"
-            "Ví dụ: dat quota: 3 100000 (100k tokens/tháng)\n"
+            "Cú pháp: dat quota: <tên/id> <tokens>\n"
+            "Ví dụ: dat quota: an 100000 (100k tokens/tháng)\n"
             "Dùng 0 để bỏ giới hạn.",
             use_markdown=False,
         )
         return
 
-    target_id = int(parts[0])
-    limit = int(parts[1])
-
-    target = deps.user_store.get_user_by_id(target_id)
+    target = await _resolve_user_or_reply(parts[0].strip(), chat_id, deps)
     if target is None:
-        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
         return
 
-    deps.user_store.set_quota(target_id, limit)
+    limit = int(parts[1].strip())
+    deps.user_store.set_quota(target.id, limit)
     if limit == 0:
-        await deps.channel.send(chat_id, f"Đã bỏ giới hạn quota cho {target.name} (#{target_id}).", use_markdown=False)
+        await deps.channel.send(chat_id, f"Đã bỏ giới hạn quota cho {target.name} (#{target.id}).", use_markdown=False)
     else:
         await deps.channel.send(
             chat_id,
-            f"Đã đặt quota cho {target.name} (#{target_id}): {limit:,} tokens/tháng.",
+            f"Đã đặt quota cho {target.name} (#{target.id}): {limit:,} tokens/tháng.",
             use_markdown=False,
         )
 
@@ -767,24 +804,21 @@ async def _cmd_dat_quota(
 async def _cmd_reset_quota(
     chat_id: str, body: str, user: User, deps: CoreDeps,
 ) -> None:
-    """reset quota: <user_id> — admin resets a user's current-month usage to 0."""
+    """reset quota: <tên/id> — admin resets a user's current-month usage to 0."""
     if not has_role(user, "admin"):
         await deps.channel.send(chat_id, "Chỉ admin mới có thể reset quota.", use_markdown=False)
         return
 
-    parts = body.strip().split()
-    if not parts or not parts[0].isdigit():
-        await deps.channel.send(chat_id, "Cú pháp: reset quota: <user_id>", use_markdown=False)
+    if not body.strip():
+        await deps.channel.send(chat_id, "Cú pháp: reset quota: <tên/id>", use_markdown=False)
         return
 
-    target_id = int(parts[0])
-    target = deps.user_store.get_user_by_id(target_id)
+    target = await _resolve_user_or_reply(body.strip(), chat_id, deps)
     if target is None:
-        await deps.channel.send(chat_id, f"Không tìm thấy user #{target_id}.", use_markdown=False)
         return
 
-    deps.user_store.reset_usage(target_id)
-    await deps.channel.send(chat_id, f"Đã reset usage của {target.name} (#{target_id}).", use_markdown=False)
+    deps.user_store.reset_usage(target.id)
+    await deps.channel.send(chat_id, f"Đã reset usage của {target.name} (#{target.id}).", use_markdown=False)
 
 
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
@@ -820,22 +854,22 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
     ),
     "nguoi dung": (
         "👥 *NGUOI DUNG*",
-        "`them user [ten]` — Them user moi (admin)\n"
+        "`them user: [ten], [role]` — Them user moi (admin)\n"
         "`xem danh sach user` — Liet ke tat ca user (admin)\n"
-        "`xoa user [ten]` — Xoa user (admin)\n"
-        "`dat username [ten]` — Dat username cua ban\n"
+        "`xoa user: [ten/id]` — Xoa user (admin)\n"
+        "`dat username: [ten]` — Dat username cua ban\n"
         "`duyet username` — Duyet yeu cau doi username (admin)\n"
-        "`dat birthdate [YYYY-MM-DD]` — Dat ngay sinh\n"
+        "`dat birthdate: [YYYY-MM-DD]` — Dat ngay sinh\n"
         "`duyet birthdate` — Duyet yeu cau doi ngay sinh (admin/manager)\n"
-        "`dat cha [ten user]` — Gan quan he cha/me — con (admin)\n"
-        "`xem cha` — Xem quan he cha/me cua ban",
+        "`dat cha: [ten/id-con] [ten/id-cha]` — Gan quan he cha/me — con (admin)\n"
+        "`xem cha: [ten/id]` — Xem quan he cha/me cua user (admin)",
     ),
     "quota": (
         "💰 *QUOTA*",
         "`xem quota` — Xem muc su dung token cua ban\n"
-        "`xem quota [ten user]` — Xem quota cua user khac (admin)\n"
-        "`dat quota [ten user] [so token]` — Dat gioi han token (admin)\n"
-        "`reset quota [ten user]` — Reset so dung ve 0 (admin)",
+        "`xem quota [ten/id]` — Xem quota cua user khac (admin)\n"
+        "`dat quota: [ten/id] [so-token]` — Dat gioi han token (admin)\n"
+        "`reset quota: [ten/id]` — Reset so dung ve 0 (admin)",
     ),
     "xem": (
         "🔍 *TIM KIEM & XEM*",
