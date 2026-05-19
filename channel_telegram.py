@@ -59,6 +59,8 @@ class TelegramAdapter:
             payload["parse_mode"] = "Markdown"
         async with httpx.AsyncClient() as client:
             try:
-                await client.post(url, json=payload, timeout=15)
+                resp = await client.post(url, json=payload, timeout=15)
+                if resp.status_code != 200:
+                    print(f"[telegram] Send failed {resp.status_code}: {resp.text[:300]}")
             except Exception as e:
                 print(f"[telegram] Send error: {e}")
