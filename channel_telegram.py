@@ -64,3 +64,26 @@ class TelegramAdapter:
                     print(f"[telegram] Send failed {resp.status_code}: {resp.text[:300]}")
             except Exception as e:
                 print(f"[telegram] Send error: {e}")
+
+    async def delete_message(self, chat_id: str, message_id: int) -> bool:
+        """Delete a message via Telegram deleteMessage API. Returns True on success.
+
+        Used for password hygiene — erasing `sudo:` and `dat mat khau:` messages
+        after the bot has processed them. Failures are logged but never raised
+        (the bot's primary flow must not abort if cleanup fails).
+        """
+        url = f"https://api.telegram.org/bot{self._token}/deleteMessage"
+        payload = {"chat_id": chat_id, "message_id": message_id}
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, json=payload, timeout=15)
+                if resp.status_code != 200:
+                    print(
+                        f"[telegram] deleteMessage failed {resp.status_code}: "
+                        f"{resp.text[:300]}"
+                    )
+                    return False
+                return True
+            except Exception as e:
+                print(f"[telegram] deleteMessage error: {e}")
+                return False

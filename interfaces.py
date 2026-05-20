@@ -391,6 +391,46 @@ class ChannelAdapter(Protocol):
         """Send a message to the given conversation."""
         ...
 
+    async def delete_message(self, chat_id: str, message_id: int) -> bool:
+        """Best-effort delete of a previously-sent message. Returns True on success.
+
+        Used for password hygiene (erasing plaintext password messages after
+        processing). Adapters that don't support deletion should return False.
+        """
+        ...
+
+
+# ─── Elevation store (FR-3.5 — sudo) ─────────────────────────────────────────
+
+@runtime_checkable
+class ElevationStore(Protocol):
+    """Abstract privilege-elevation store. Concrete impl: SqliteElevationStore.
+
+    Each (channel, chat_id) pair can hold at most one active session that
+    overrides the bound user's role to 'admin' for a fixed TTL. Failed sudo
+    attempts are rate-limited.
+    """
+
+    def get_active_session(self, channel: str, chat_id: str) -> "dict | None": ...
+    def elevate(
+        self,
+        channel: str,
+        chat_id: str,
+        base_user_id: int,
+        ttl_minutes: int | None = None,
+    ) -> str: ...
+    def drop_session(self, channel: str, chat_id: str) -> bool: ...
+    def get_attempts(self, channel: str, chat_id: str) -> dict: ...
+    def is_locked(self, channel: str, chat_id: str) -> "tuple[bool, str | None]": ...
+    def record_failure(
+        self,
+        channel: str,
+        chat_id: str,
+        max_fails: int | None = None,
+        lockout_minutes: int | None = None,
+    ) -> dict: ...
+    def reset_failures(self, channel: str, chat_id: str) -> None: ...
+
 
 # ─── User store ───────────────────────────────────────────────────────────────
 
