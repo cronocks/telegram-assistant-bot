@@ -7,6 +7,7 @@ channel-agnostic core handler.
 All business logic lives in core_handler.py. Adapter selection (e.g. swapping
 Drive → local FS or Anthropic → Ollama) happens here without touching the core.
 """
+import dataclasses
 import traceback
 from contextlib import asynccontextmanager
 
@@ -21,6 +22,7 @@ from core_handler import CoreDeps, handle_message
 from cost_monitor import check_and_alert
 from db.migrations import run_migrations
 from drive_client import DriveNoteStore
+from elevation_store import SqliteElevationStore
 from memory_store import SqliteMemoryStore
 from note_index import SqliteNoteIndex
 from user_store import SqliteUserStore
@@ -42,6 +44,7 @@ channel = TelegramAdapter(token=TELEGRAM_TOKEN, allowed_chat_id=TELEGRAM_CHAT_ID
 user_store = SqliteUserStore()
 note_index = SqliteNoteIndex()
 memory_store = SqliteMemoryStore()
+elevation_store = SqliteElevationStore()
 
 deps = CoreDeps(
     llm=llm,
@@ -51,6 +54,7 @@ deps = CoreDeps(
     user_store=user_store,
     note_index=note_index,
     memory_store=memory_store,
+    elevation_store=elevation_store,
 )
 
 
@@ -158,6 +162,13 @@ async def webhook(request: Request):
                 msg.chat_id, "Tài khoản của bạn đã bị vô hiệu hóa.", use_markdown=False,
             )
             return {"ok": True}
+
+        # Apply active sudo elevation, if any, by overriding role to admin.
+        # Base identity (id, name) stays the same; audit and ownership remain
+        # attached to the real user.
+        session = elevation_store.get_active_session(msg.channel, msg.chat_id)
+        if session is not None and user.role != "admin":
+            user = dataclasses.replace(user, role="admin")
 
         await handle_message(msg, user, deps)
     except Exception as e:

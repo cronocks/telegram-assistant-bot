@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-2** (Users + Roles + Auth + Quota).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-3** (SQLite scope + L1 Memory).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -64,7 +64,10 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `claude_client.py` | `AnthropicLLM` — wraps Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — Google Drive notes storage |
 | `wiki_client.py` | `DriveWikiStore` — Google Drive wiki, uses LLM via DI |
-| `user_store.py` | `UserStore` — SQLite user registry, quota, parent links |
+| `user_store.py` | `UserStore` — SQLite user registry, quota, parent links, password |
+| `note_index.py` | `SqliteNoteIndex` — SQLite ACL/index layer mapping Drive file IDs to owner + scope |
+| `memory_store.py` | `SqliteMemoryStore` — L1 memory (`memory` and `user` slots per user) |
+| `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (web auth infrastructure, not yet exposed) |
 | `permissions.py` | Role-based permission helpers |
 | `text_utils.py` | Vietnamese diacritic normalization, multi-prefix command matcher |
@@ -74,7 +77,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–008) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–012) |
 
 ---
 
@@ -105,18 +108,18 @@ All user data is stored in SQLite. Migrations run automatically on startup via `
 ### Tables
 
 #### `users`
-Core identity table. One row per registered user.
+Core identity table. One row per registered user. Soft-deleted users have `deleted_at` set; a unique index on `name` excludes soft-deleted rows so names can be reused.
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `id` | INTEGER PK | Auto-increment |
-| `name` | TEXT | Display name |
-| `username` | TEXT UNIQUE | Optional handle |
-| `role` | TEXT | `admin` \| `manager` \| `member` \| `readonly` |
-| `birthdate` | TEXT | ISO date, nullable |
-| `monthly_token_limit` | INTEGER | Per-user LLM quota |
-| `is_active` | BOOLEAN | Soft-delete flag |
-| `created_at` | DATETIME | |
+| `name` | TEXT NOT NULL | Display name; unique among active users |
+| `username` | TEXT UNIQUE NOCASE | Optional handle; CHECK regex `[A-Za-z0-9_.-]{3,32}` |
+| `role` | TEXT NOT NULL | `admin` \| `manager` \| `member` \| `readonly` |
+| `birthdate` | DATE | ISO date, nullable |
+| `password_hash` | TEXT | Argon2id hash; NULL until set (web auth — not yet exposed via Telegram) |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+| `deleted_at` | DATETIME | Soft-delete marker; NULL = active |
 
 #### `channel_bindings`
 Maps a Telegram `chat_id` (or other channel identifier) to a user.
@@ -125,8 +128,8 @@ Maps a Telegram `chat_id` (or other channel identifier) to a user.
 |--------|------|-------|
 | `user_id` | INTEGER FK → users | |
 | `channel` | TEXT | `telegram` \| `web` \| … |
-| `channel_user_id` | TEXT | Telegram `chat_id` |
-| PRIMARY KEY | `(channel, channel_user_id)` | |
+| `chat_id` | TEXT | Channel-side conversation id (e.g. Telegram `chat_id`) |
+| PRIMARY KEY | `(channel, chat_id)` | |
 
 #### `invite_codes`
 One-time codes issued by admin for new user registration.
@@ -171,22 +174,57 @@ Many-to-many parent-child relationships. Supports multi-parent families, divorce
 | PRIMARY KEY | `(parent_user_id, child_user_id)` | |
 
 #### `user_quotas`
-Monthly token usage per user. Auto-resets lazily on first write of a new month.
+Per-user monthly LLM token quota. One row per user; `month` resets lazily on first write of a new month. `monthly_token_limit = 0` means unlimited.
 
 | Column | Type | Notes |
 |--------|------|-------|
-| `user_id` | INTEGER FK → users | |
-| `month` | TEXT | `YYYY-MM` |
+| `user_id` | INTEGER PK FK → users | One row per user |
+| `monthly_token_limit` | INTEGER | 0 = unlimited |
 | `used_tokens` | INTEGER | Accumulated this month |
+| `month` | TEXT | `YYYY-MM` — used for lazy auto-reset |
+| `updated_at` | TEXT | ISO timestamp |
 
-#### `password_hash`
-Argon2id password hash for web auth (infrastructure in place; not yet exposed via commands).
+#### `notes` *(FR-3)*
+SQLite ACL/index layer for notes and journal files stored on Google Drive. Drive holds content; this table tracks owner + scope for access control.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `drive_file_id` | TEXT UNIQUE NOT NULL | Google Drive file ID |
+| `owner_user_id` | INTEGER FK → users | |
+| `scope` | TEXT NOT NULL | `private` \| `everyone` — default `private` |
+| `kind` | TEXT NOT NULL | `note` \| `journal` — default `note` |
+| `title` | TEXT | Optional |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Indexes: `(owner_user_id)`, `(scope)`.
+
+#### `wiki_pages` *(FR-3)*
+SQLite ACL/index layer for wiki pages stored on Google Drive. Default scope `everyone` — wiki is shared family knowledge by default.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `drive_file_id` | TEXT UNIQUE NOT NULL | Google Drive file ID |
+| `owner_user_id` | INTEGER FK → users | |
+| `scope` | TEXT NOT NULL | `private` \| `everyone` — default `everyone` |
+| `topic` | TEXT NOT NULL | Human-readable topic name |
+| `slug` | TEXT NOT NULL | Filesystem-safe identifier |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Indexes: `(owner_user_id)`, `(scope)`, `(slug)`.
+
+#### `user_memory` *(FR-3)*
+L1 memory store. Two named slots per user, populated by LLM curation on demand.
 
 | Column | Type | Notes |
 |--------|------|-------|
 | `user_id` | INTEGER FK → users | |
-| `hash` | TEXT | Argon2id hash string |
-| `created_at` | DATETIME | |
+| `kind` | TEXT NOT NULL | `memory` (rolling facts) \| `user` (stable profile) |
+| `content` | TEXT NOT NULL | Default empty string |
+| `updated_at` | TEXT | ISO timestamp |
+| `curated_at` | TEXT | Timestamp of last LLM curation; NULL = never curated |
+| PRIMARY KEY | `(user_id, kind)` | |
 
 ---
 
@@ -208,6 +246,26 @@ Configured via `parent_links` table. Supports:
 - Auto privacy cutoff at age 18 (enforced at runtime, DB not mutated)
 - Adult opt-in: child ≥ 18 can voluntarily re-enable sharing (`chia sẻ với cha mẹ: bật`)
 
+### Scope model *(FR-3)*
+
+Every note and wiki page has a `scope` column in the SQLite ACL layer (`notes`, `wiki_pages`). Drive holds the content; the SQLite row decides who can read it.
+
+| Scope | Visible to |
+|-------|-----------|
+| `private` | Owner only |
+| `everyone` | All active users |
+
+**Defaults on create:**
+- `ghi nhớ <text>` / `ghi nhớ vào <file>` → `private`
+- `nhật ký <text>` → `private`
+- `wiki <text>` → `everyone`
+
+**Ownership change:** `chia sẻ <file>` / `bỏ chia sẻ <file>` (owner only). Non-owners get *"Bạn không phải chủ file này"*.
+
+**ACL enforcement points:** all retrieval paths filter through `acl.can_read` / `acl.filter_visible` — `smart_search`, `get_recent_notes`, `get_current_week_notes`, wiki `retrieve_pages`, and the direct `xem` / `xem wiki` / `liệt kê` commands.
+
+**Admin and private data:** in FR-3, admin **does not** read other users' private notes (Decision #52). Stealth-read with audit logging is deferred to FR-4.
+
 ### Command access by role
 
 | Command | admin | manager | member | readonly |
@@ -228,7 +286,8 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 ### Slash commands
 | Command | Description |
 |---------|-------------|
-| `/start` | Show available commands |
+| `/start` | Overview of command groups |
+| `/help [nhóm]` | Detail for a group (e.g. `/help tri nho`, `/help wiki`) |
 | `/cost` | Show current LLM spend |
 | `/test` | Connectivity test |
 | `/security` | Show Drive security status |
@@ -252,6 +311,7 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | `duyệt birthdate` | Approve pending birthdate change (admin/manager) |
 | `xem cha: <name>` | View parent links for a user |
 | `xem quota` | View own quota usage |
+| `tôi là ai` | Show own identity (name, username, role, id) |
 
 ### Notes & journal
 | Command | Description |
@@ -272,6 +332,20 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | `xem wiki` | List wiki pages |
 | `xem wiki <page>` | Read a specific wiki page |
 
+### Scope & sharing *(FR-3)*
+| Command | Description |
+|---------|-------------|
+| `chia sẻ <file>` | Set scope to `everyone` (owner only) |
+| `bỏ chia sẻ <file>` | Set scope back to `private` (owner only) |
+| `xem scope <file>` | Show scope, owner, kind, timestamps for a file |
+
+### L1 Memory *(FR-3)*
+| Command | Description |
+|---------|-------------|
+| `xem trí nhớ` | Read own `memory` snapshot (rolling facts) |
+| `xem hồ sơ` | Read own `user` snapshot (stable profile) |
+| `cập nhật trí nhớ` | Trigger LLM curation pass over recent notes |
+
 ### Registration (pre-auth)
 | Command | Description |
 |---------|-------------|
@@ -291,7 +365,7 @@ Inspired by NousResearch Hermes Agent. Three tiers, built progressively across F
 
 | Tier | Storage | Description | Status |
 |------|---------|-------------|--------|
-| L1 | Text files (`MEMORY.md`, `USER.md` per user) | Frozen snapshot; agentic curation | FR-3 |
+| L1 | SQLite (`user_memory` table, kinds: `memory` \| `user`) | Frozen snapshot; LLM curation on demand (`cập nhật trí nhớ`); injected into Q&A context | FR-3 ✅ |
 | L2 | Graph DB (Memgraph/Neo4j embedded) | Entity relationships; passive | Future |
 | L3 | Vector store (sqlite-vss or Qdrant) | Semantic search via Voyage AI embeddings | Future |
 

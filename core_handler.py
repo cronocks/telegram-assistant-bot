@@ -12,6 +12,7 @@ import time
 import traceback
 from dataclasses import dataclass
 
+import config
 from config import (
     FUZZY_SHOW_LIMIT,
     MAX_WIKI_UPDATES,
@@ -19,7 +20,7 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 import acl as acl_mod
-from interfaces import ChannelAdapter, ChannelMessage, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
+from interfaces import ChannelAdapter, ChannelMessage, ElevationStore, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
@@ -40,6 +41,7 @@ class CoreDeps:
     user_store: UserStore
     note_index: NoteIndex
     memory_store: MemoryStore
+    elevation_store: ElevationStore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -833,6 +835,7 @@ async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
         "👥 *Nguoi dung* — `/help nguoi dung`\n"
         "💰 *Quota* — `/help quota`\n"
         "🔍 *Tim kiem & Xem* — `/help xem`\n"
+        "🔐 *Quan tri (sudo)* — `/help sudo`\n"
         "⚙️ *He thong* — `/help he thong`\n\n"
         "💬 *Hoi dap tu do:* Gõ cau hoi bat ky — bot tim wiki + vault roi tra loi."
     ))
@@ -890,6 +893,13 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`xem ho so` — Xem ho so ca nhan cua ban\n"
         "`cap nhat tri nho` — Cap nhat bo nho tu ghi chu gan day (LLM curation)",
     ),
+    "sudo": (
+        "🔐 *QUAN TRI (SUDO)*",
+        "`sudo: [mat khau]` — Nang quyen len admin trong 15 phut (chi role manager)\n"
+        "`thoat sudo` — Ha quyen admin ngay lap tuc\n"
+        "`dat mat khau: [mat khau]` — Dat/doi mat khau admin (chi tu tai khoan admin goc)\n"
+        "Luu y: tin nhan chua mat khau se duoc bot tu dong xoa khoi chat.",
+    ),
     "he thong": (
         "⚙️ *HE THONG*",
         "`/cost` — Chi phi su dung thang nay\n"
@@ -911,6 +921,9 @@ _HELP_ALIASES: dict[str, str] = {
     "trí nhớ": "tri nho",
     "he thong": "he thong",
     "hệ thống": "he thong",
+    "sudo": "sudo",
+    "quan tri": "sudo",
+    "quản trị": "sudo",
 }
 
 
@@ -1534,22 +1547,225 @@ async def _cmd_xem_scope(
 
 
 async def _cmd_whoami(chat_id: str, user: User, deps: CoreDeps) -> None:
-    """toi la ai — show the user currently bound to this chat."""
+    """toi la ai — show the user bound to this chat, plus any active elevation."""
     role_labels = {
         "admin": "Quan tri vien",
         "manager": "Nguoi quan ly",
         "member": "Thanh vien",
         "readonly": "Chi doc",
     }
-    username = user.username or "(chua dat)"
+    # Resolve base role from DB so elevation override doesn't mask it.
+    base = deps.user_store.get_user_by_id(user.id) or user
+    session = deps.elevation_store.get_active_session("telegram", chat_id)
+
+    username = base.username or "(chua dat)"
     lines = [
         "👤 Tai khoan hien tai:",
-        f"   Ten:      {user.name}",
+        f"   Ten:      {base.name}",
         f"   Username: {username}",
-        f"   Vai tro:  {role_labels.get(user.role, user.role)}",
-        f"   User ID:  #{user.id}",
+        f"   Vai tro:  {role_labels.get(base.role, base.role)}",
+        f"   User ID:  #{base.id}",
     ]
+    if session is not None:
+        remaining = _elevation_remaining_minutes(session["expires_at"])
+        if remaining > 0:
+            lines.append(f"   Sudo:     dang nang quyen admin (con ~{remaining} phut)")
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+# ── FR-3.5 — sudo / dat mat khau ────────────────────────────────────────────
+
+def _elevation_remaining_minutes(expires_at_iso: str) -> int:
+    """Return whole minutes left until expires_at (ISO UTC). 0 if past or unparseable."""
+    from datetime import datetime, timezone
+    try:
+        # Stored format: "%Y-%m-%dT%H:%M:%SZ"
+        expires = datetime.strptime(expires_at_iso, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        )
+    except ValueError:
+        return 0
+    delta = expires - datetime.now(timezone.utc)
+    return max(0, int(delta.total_seconds() // 60))
+
+
+async def _try_delete_message(
+    chat_id: str, message_id: int | None, deps: CoreDeps
+) -> None:
+    """Best-effort delete of a message containing a password. Never raises."""
+    if message_id is None:
+        return
+    try:
+        await deps.channel.delete_message(chat_id, message_id)
+    except Exception as e:
+        print(f"[sudo] delete_message error (non-fatal): {e}")
+
+
+async def _cmd_dat_mat_khau(
+    chat_id: str,
+    password: str,
+    user: User,
+    message_id: int | None,
+    deps: CoreDeps,
+) -> None:
+    """dat mat khau: <mat khau> — set/replace the admin password.
+
+    Allowed only for a natively-admin (role='admin' in DB and no active
+    elevation session for this chat). This is both the initial-set path and
+    the recovery path; there is no separate "forgot password" flow.
+    """
+    # Always try to delete the message first — even on validation errors —
+    # because it contains plaintext.
+    await _try_delete_message(chat_id, message_id, deps)
+
+    base = deps.user_store.get_user_by_id(user.id)
+    if base is None or base.role != "admin":
+        await deps.channel.send(
+            chat_id,
+            "Chi tai khoan admin (khong qua sudo) moi co the dat mat khau.",
+            use_markdown=False,
+        )
+        return
+
+    # Reject if the caller is only admin via elevation — they're not natively-admin.
+    if deps.elevation_store.get_active_session("telegram", chat_id) is not None:
+        await deps.channel.send(
+            chat_id,
+            "Lenh nay khong dung khi dang sudo. Hay dung tu tai khoan admin goc.",
+            use_markdown=False,
+        )
+        return
+
+    password = password.strip()
+    if len(password) < 8:
+        await deps.channel.send(
+            chat_id, "Mat khau phai dai it nhat 8 ky tu.", use_markdown=False,
+        )
+        return
+
+    try:
+        deps.user_store.set_password(base.id, password)
+    except Exception as e:
+        await deps.channel.send(
+            chat_id, f"Loi khi dat mat khau: {str(e)[:200]}", use_markdown=False,
+        )
+        return
+
+    print(f"[audit] password_set user_id={base.id} name={base.name!r}")
+    await deps.channel.send(
+        chat_id,
+        "Da dat mat khau admin. Tin nhan chua mat khau da bi xoa khoi chat.",
+        use_markdown=False,
+    )
+
+
+async def _cmd_sudo(
+    chat_id: str,
+    password: str,
+    user: User,
+    message_id: int | None,
+    deps: CoreDeps,
+) -> None:
+    """sudo: <mat khau> — elevate role to admin for SUDO_TTL_MINUTES."""
+    # Delete the password message immediately, before any validation reply.
+    await _try_delete_message(chat_id, message_id, deps)
+
+    base = deps.user_store.get_user_by_id(user.id)
+    if base is None:
+        return  # Should not happen; webhook layer guarantees registration.
+
+    # Already admin natively — no need to elevate.
+    if base.role == "admin":
+        await deps.channel.send(
+            chat_id,
+            "Ban da la admin, khong can sudo.",
+            use_markdown=False,
+        )
+        return
+
+    if base.role != "manager":
+        await deps.channel.send(
+            chat_id,
+            "Chi role manager moi duoc dung sudo.",
+            use_markdown=False,
+        )
+        print(f"[audit] sudo_fail reason=role_not_manager user_id={base.id} role={base.role}")
+        return
+
+    locked, locked_until = deps.elevation_store.is_locked("telegram", chat_id)
+    if locked:
+        await deps.channel.send(
+            chat_id,
+            f"Da bi khoa do nhap sai qua nhieu. Thu lai sau (mo khoa luc {locked_until} UTC).",
+            use_markdown=False,
+        )
+        print(f"[audit] sudo_locked user_id={base.id} until={locked_until}")
+        return
+
+    password = password.strip()
+    if not password:
+        await deps.channel.send(
+            chat_id, "Cu phap: sudo: <mat khau>", use_markdown=False,
+        )
+        return
+
+    # Verify against any active admin's stored hash.
+    admins = [u for u in deps.user_store.list_users() if u.role == "admin"]
+    matched_admin = None
+    for adm in admins:
+        if deps.user_store.check_password(adm.id, password):
+            matched_admin = adm
+            break
+
+    if matched_admin is None:
+        state = deps.elevation_store.record_failure("telegram", chat_id)
+        print(
+            f"[audit] sudo_fail user_id={base.id} failed_count={state['failed_count']} "
+            f"locked_until={state['locked_until']}"
+        )
+        if state["locked_until"]:
+            await deps.channel.send(
+                chat_id,
+                f"Mat khau sai. Da bi khoa den {state['locked_until']} UTC.",
+                use_markdown=False,
+            )
+        else:
+            remaining = config.SUDO_MAX_FAILS - state["failed_count"]
+            await deps.channel.send(
+                chat_id,
+                f"Mat khau sai. Con {remaining} lan thu truoc khi bi khoa.",
+                use_markdown=False,
+            )
+        return
+
+    deps.elevation_store.reset_failures("telegram", chat_id)
+    expires_iso = deps.elevation_store.elevate(
+        "telegram", chat_id, base_user_id=base.id
+    )
+    print(
+        f"[audit] sudo_elevate user_id={base.id} matched_admin={matched_admin.id} "
+        f"expires_at={expires_iso}"
+    )
+    await deps.channel.send(
+        chat_id,
+        f"Da nang quyen admin trong {config.SUDO_TTL_MINUTES} phut. "
+        f"Dung 'thoat sudo' de ha quyen som.",
+        use_markdown=False,
+    )
+
+
+async def _cmd_thoat_sudo(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """thoat sudo — drop the active elevation session, if any."""
+    dropped = deps.elevation_store.drop_session("telegram", chat_id)
+    if dropped:
+        print(f"[audit] sudo_drop user_id={user.id}")
+        await deps.channel.send(
+            chat_id, "Da ha quyen admin.", use_markdown=False,
+        )
+    else:
+        await deps.channel.send(
+            chat_id, "Ban khong dang trong phien sudo.", use_markdown=False,
+        )
 
 
 async def _cmd_wiki_ingest(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
@@ -2009,7 +2225,10 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_TRI_NHO":        ["xem trí nhớ", "xem tri nho"],
     "XEM_HO_SO":          ["xem hồ sơ", "xem ho so"],
     "XEM_SCOPE":          ["xem scope "],
-    "TOI_LA_AI":          ["toi la ai", "tôi là ai", "tai khoan", "tài khoản"],
+    "TOI_LA_AI":          ["toi la ai", "tôi là ai", "tai khoan", "tài khoản", "who am i", "whoami"],
+    "DAT_MAT_KHAU":       ["dat mat khau: ", "đặt mật khẩu: ", "set password: "],
+    "THOAT_SUDO":         ["thoat sudo", "thoát sudo", "exit sudo"],
+    "SUDO":               ["sudo: "],
     "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
     "LIET_KE":            ["liệt kê", "liet ke"],
     "TIM":                ["tìm ", "tim ", "search "],
@@ -2052,6 +2271,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
         "XEM_TRI_NHO", "XEM_HO_SO",
+        "DAT_MAT_KHAU", "SUDO", "THOAT_SUDO",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -2124,6 +2344,14 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_xem(chat_id, remainder, user, deps); return
         if cmd_id == "TOI_LA_AI":
             await _cmd_whoami(chat_id, user, deps); return
+        if cmd_id == "DAT_MAT_KHAU":
+            message_id = msg.raw.get("message_id") if msg.raw else None
+            await _cmd_dat_mat_khau(chat_id, remainder, user, message_id, deps); return
+        if cmd_id == "SUDO":
+            message_id = msg.raw.get("message_id") if msg.raw else None
+            await _cmd_sudo(chat_id, remainder, user, message_id, deps); return
+        if cmd_id == "THOAT_SUDO":
+            await _cmd_thoat_sudo(chat_id, user, deps); return
         if cmd_id == "XEM_TRI_NHO":
             await _cmd_xem_tri_nho(chat_id, user, deps); return
         if cmd_id == "XEM_HO_SO":

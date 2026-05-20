@@ -22,6 +22,11 @@ ENABLE_OWNERSHIP_TRANSFER = os.getenv("ENABLE_OWNERSHIP_TRANSFER", "true").lower
 # ── Security ──────────────────────────────────────────────────────────────────
 MAX_FILES_PER_HOUR = int(os.getenv("MAX_FILES_PER_HOUR", "20"))
 
+# ── Sudo / privilege elevation (FR-3.5) ──────────────────────────────────────
+SUDO_TTL_MINUTES     = int(os.getenv("SUDO_TTL_MINUTES", "15"))
+SUDO_MAX_FAILS       = int(os.getenv("SUDO_MAX_FAILS", "5"))
+SUDO_LOCKOUT_MINUTES = int(os.getenv("SUDO_LOCKOUT_MINUTES", "15"))
+
 # ── Budget ────────────────────────────────────────────────────────────────────
 BUDGET_LIMIT = float(os.getenv("BUDGET_LIMIT", "10.0"))
 ALERT_80     = BUDGET_LIMIT * 0.80
