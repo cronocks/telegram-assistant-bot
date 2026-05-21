@@ -386,6 +386,24 @@ source: telegram-bot
         audit_log("list_all", details=f"found={len(files)}")
         return files
 
+    # ─── Delete (best-effort, FR-4 recycle bin hard-delete) ──────────────────
+
+    def delete_file(self, file_id: str) -> bool:
+        """Permanently delete a Drive file. Best-effort; never raises.
+
+        Returns True on success, False on any failure (Drive API error,
+        permission, network, etc.). The caller logs the outcome but does
+        NOT retry — recycle-bin purge proceeds against SQLite regardless.
+        """
+        try:
+            service = _get_service()
+            service.files().delete(fileId=file_id).execute()
+            audit_log("delete_file", details=f"file_id={file_id}")
+            return True
+        except Exception as e:
+            print(f"[drive] delete_file FAILED file_id={file_id}: {e}")
+            return False
+
     # ─── Append ──────────────────────────────────────────────────────────────
 
     def append_to_file(self, file_id: str, append_content: str) -> str:

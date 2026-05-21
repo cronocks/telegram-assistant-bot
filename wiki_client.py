@@ -400,6 +400,23 @@ class DriveWikiStore:
         audit_log("wiki_page_append", file_id=file_id, filename=meta.get("name"))
         return meta.get("name")
 
+    # ─── Delete (best-effort, FR-4 recycle bin hard-delete) ──────────────────
+
+    def delete_file(self, file_id: str) -> bool:
+        """Permanently delete a wiki page file. Best-effort; never raises.
+
+        Mirrors `DriveNoteStore.delete_file`. The caller logs the outcome
+        and proceeds with SQLite purge regardless.
+        """
+        try:
+            service = _get_service()
+            service.files().delete(fileId=file_id).execute()
+            audit_log("wiki_delete_file", file_id=file_id)
+            return True
+        except Exception as e:
+            print(f"[wiki] delete_file FAILED file_id={file_id}: {e}")
+            return False
+
     # ─── Builders (pure markdown helpers) ───────────────────────────────────
 
     def build_new_page(

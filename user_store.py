@@ -78,6 +78,45 @@ class SqliteUserStore:
                 (user_id,),
             )
 
+    # ── FR-4 recycle bin ──────────────────────────────────────────────────────
+
+    def list_deleted_users(self) -> list[User]:
+        """Return soft-deleted users ordered by `deleted_at DESC`."""
+        rows = self._conn.execute(
+            "SELECT * FROM users WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+        ).fetchall()
+        return [_row_to_user(r) for r in rows]
+
+    def restore_user(self, user_id: int) -> bool:
+        """Clear `deleted_at` for a soft-deleted user. Returns True on change.
+
+        Returns False if the user doesn't exist or wasn't deleted in the first
+        place — caller can surface this to the operator.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE users SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+                (user_id,),
+            )
+        return cur.rowcount > 0
+
+    def hard_delete_user(self, user_id: int) -> bool:
+        """Permanently DELETE a user row. Returns True on success.
+
+        Returns False on FK constraint violation (the user still has rows
+        referencing them — channel_bindings, notes, parent_links, etc.). The
+        caller is expected to surface this to the operator; this method never
+        raises IntegrityError to the caller.
+        """
+        try:
+            with self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM users WHERE id = ?", (user_id,),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return cur.rowcount > 0
+
     def update_user_role(self, user_id: int, role: str) -> None:
         with self._conn:
             self._conn.execute(

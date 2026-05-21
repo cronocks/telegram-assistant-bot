@@ -1011,6 +1011,227 @@ async def _cmd_xem_audit(
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
 
+# ─── FR-4 sub 4.3: Recycle bin commands ───────────────────────────────────────
+
+_RECYCLE_KINDS = ("user", "note", "wiki")
+
+
+def _parse_recycle_target(body: str) -> "tuple[str, int] | None":
+    """Parse `<kind> <id>` syntax used by `khoi phuc` and `xoa han`.
+
+    Returns (kind, id) if valid; None otherwise. Kind must be one of user/note/wiki
+    and id must be a positive integer.
+    """
+    parts = body.strip().split()
+    if len(parts) != 2:
+        return None
+    kind = parts[0].lower()
+    if kind not in _RECYCLE_KINDS:
+        return None
+    if not parts[1].isdigit():
+        return None
+    target_id = int(parts[1])
+    if target_id <= 0:
+        return None
+    return kind, target_id
+
+
+async def _cmd_xem_thung_rac(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem thung rac — admin lists all soft-deleted users/notes/wiki pages."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể xem thùng rác.", use_markdown=False,
+        )
+        return
+
+    deleted_users = deps.user_store.list_deleted_users()
+    deleted_notes = deps.note_index.list_deleted_notes()
+    deleted_wikis = deps.note_index.list_deleted_wiki_pages()
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="recycle_view",
+        payload={
+            "items": len(deleted_users) + len(deleted_notes) + len(deleted_wikis),
+            "users": len(deleted_users),
+            "notes": len(deleted_notes),
+            "wiki": len(deleted_wikis),
+        },
+    )
+
+    total = len(deleted_users) + len(deleted_notes) + len(deleted_wikis)
+    if total == 0:
+        await deps.channel.send(
+            chat_id, "Thung rac trong.", use_markdown=False,
+        )
+        return
+
+    lines = [f"Thung rac ({total} muc):"]
+    if deleted_users:
+        lines.append("\n— Users —")
+        for u in deleted_users:
+            del_at = u.deleted_at.strftime("%Y-%m-%d") if u.deleted_at else "?"
+            lines.append(f"• [user {u.id}] {u.name} (role={u.role}) — da xoa {del_at}")
+    if deleted_notes:
+        lines.append("\n— Notes —")
+        for n in deleted_notes:
+            title = n.get("title") or "(no title)"
+            del_at = (n.get("deleted_at") or "")[:10]
+            lines.append(f"• [note {n['id']}] {title} (owner={n['owner_user_id']}) — da xoa {del_at}")
+    if deleted_wikis:
+        lines.append("\n— Wiki —")
+        for w in deleted_wikis:
+            del_at = (w.get("deleted_at") or "")[:10]
+            lines.append(f"• [wiki {w['id']}] {w['topic']} (owner={w['owner_user_id']}) — da xoa {del_at}")
+
+    lines.append(
+        "\nKhoi phuc: `khoi phuc: <kind> <id>` (vd `khoi phuc: user 3`)"
+        "\nXoa han:   `xoa han: <kind> <id>`"
+    )
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_khoi_phuc(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """khoi phuc: <kind> <id> — admin restores a soft-deleted item."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể khôi phục.", use_markdown=False,
+        )
+        return
+
+    parsed = _parse_recycle_target(body)
+    if parsed is None:
+        await deps.channel.send(
+            chat_id,
+            "Cu phap: khoi phuc: <kind> <id>\n"
+            "Kind hop le: user, note, wiki\n"
+            "Vi du: khoi phuc: user 3",
+            use_markdown=False,
+        )
+        return
+
+    kind, target_id = parsed
+
+    if kind == "user":
+        ok = deps.user_store.restore_user(target_id)
+        label = f"user #{target_id}"
+    elif kind == "note":
+        ok = deps.note_index.restore_note(target_id)
+        label = f"note #{target_id}"
+    else:  # wiki
+        ok = deps.note_index.restore_wiki(target_id)
+        label = f"wiki #{target_id}"
+
+    if not ok:
+        await deps.channel.send(
+            chat_id,
+            f"Khong tim thay {label} trong thung rac (hoac da khoi phuc).",
+            use_markdown=False,
+        )
+        return
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="recycle_restore",
+        target_type=kind,
+        target_id=target_id,
+    )
+    await deps.channel.send(
+        chat_id, f"Da khoi phuc {label}.", use_markdown=False,
+    )
+
+
+async def _cmd_xoa_han(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xoa han: <kind> <id> — admin permanently purges an item.
+
+    For notes/wiki: also issues a best-effort Drive delete. For users: detects
+    FK constraint violations and surfaces a clear error.
+    """
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể xóa hẳn.", use_markdown=False,
+        )
+        return
+
+    parsed = _parse_recycle_target(body)
+    if parsed is None:
+        await deps.channel.send(
+            chat_id,
+            "Cu phap: xoa han: <kind> <id>\n"
+            "Kind hop le: user, note, wiki\n"
+            "Vi du: xoa han: note 12",
+            use_markdown=False,
+        )
+        return
+
+    kind, target_id = parsed
+
+    if kind == "user":
+        ok = deps.user_store.hard_delete_user(target_id)
+        if not ok:
+            await deps.channel.send(
+                chat_id,
+                f"Khong the xoa han user #{target_id}. "
+                "Co the user khong ton tai, hoac con du lieu tham chieu "
+                "(channel_bindings, notes, parent_links...). "
+                "Hay thu khoi phuc + cleanup tay neu can.",
+                use_markdown=False,
+            )
+            return
+        deps.audit.log(
+            actor_user_id=user.id,
+            action="recycle_purge",
+            target_type="user",
+            target_id=target_id,
+        )
+        await deps.channel.send(
+            chat_id, f"Da xoa han user #{target_id}.", use_markdown=False,
+        )
+        return
+
+    # note / wiki — purge SQLite + best-effort Drive delete
+    if kind == "note":
+        meta = deps.note_index.hard_delete_note(target_id)
+        adapter = deps.notes
+        target_type = "note"
+    else:  # wiki
+        meta = deps.note_index.hard_delete_wiki(target_id)
+        adapter = deps.wiki
+        target_type = "wiki"
+
+    if meta is None:
+        await deps.channel.send(
+            chat_id, f"Khong tim thay {kind} #{target_id}.", use_markdown=False,
+        )
+        return
+
+    drive_file_id = meta.get("drive_file_id")
+    drive_deleted = False
+    if drive_file_id:
+        try:
+            drive_deleted = bool(adapter.delete_file(drive_file_id))
+        except Exception as e:
+            print(f"[recycle] Drive delete exception (kind={kind} id={target_id}): {e}")
+            drive_deleted = False
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="recycle_purge",
+        target_type=target_type,
+        target_id=target_id,
+        payload={"drive_file_id": drive_file_id, "drive_deleted": drive_deleted},
+    )
+
+    suffix = " (Drive deleted)" if drive_deleted else " (Drive delete failed — file orphaned)"
+    await deps.channel.send(
+        chat_id, f"Da xoa han {kind} #{target_id}.{suffix}", use_markdown=False,
+    )
+
+
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
@@ -1089,6 +1310,9 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "  `xem audit [trang]` — Trang cu the (vd `xem audit 2`)\n"
         "  `xem audit [action]` — Filter theo action (vd `xem audit sudo_elevate`)\n"
         "  `xem audit [type] [id]` — Filter theo target (vd `xem audit note 42`)\n"
+        "`xem thung rac` — Liet ke item da xoa (user/note/wiki) (admin)\n"
+        "`khoi phuc: [kind] [id]` — Khoi phuc item (vd `khoi phuc: user 3`) (admin)\n"
+        "`xoa han: [kind] [id]` — Xoa han khoi he thong (vd `xoa han: note 12`) (admin)\n"
         "Luu y: tin nhan chua mat khau se duoc bot tu dong xoa khoi chat.",
     ),
     "he thong": (
@@ -2511,6 +2735,9 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
     "RESET_QUOTA":        ["reset quota: "],
     "XEM_AUDIT":          ["xem audit"],
+    "XEM_THUNG_RAC":      ["xem thung rac", "xem thùng rác"],
+    "KHOI_PHUC":          ["khoi phuc: ", "khôi phục: "],
+    "XOA_HAN":            ["xoa han: ", "xóa hẳn: "],
     "BO_CHIA_SE_FILE":    ["bỏ chia sẻ ", "bo chia se "],
     "CHIA_SE_FILE":       ["chia sẻ ", "chia se "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
@@ -2569,6 +2796,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "DAT_CHA", "XEM_CHA",
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
         "XEM_AUDIT",
+        "XEM_THUNG_RAC", "KHOI_PHUC", "XOA_HAN",
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
         "XEM_TRI_NHO", "XEM_HO_SO",
         "DAT_MAT_KHAU", "SUDO", "THOAT_SUDO",
@@ -2618,6 +2846,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_reset_quota(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_AUDIT":
             await _cmd_xem_audit(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_THUNG_RAC":
+            await _cmd_xem_thung_rac(chat_id, user, deps); return
+        if cmd_id == "KHOI_PHUC":
+            await _cmd_khoi_phuc(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_HAN":
+            await _cmd_xoa_han(chat_id, remainder, user, deps); return
         if cmd_id == "CHIA_SE_FILE":
             await _cmd_chia_se(chat_id, remainder, user, deps); return
         if cmd_id == "BO_CHIA_SE_FILE":
