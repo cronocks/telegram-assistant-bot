@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 
 from audit import SqliteAuditLog
 from channel_telegram import TelegramAdapter
+import scheduled_jobs
 from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 from core_handler import CoreDeps, handle_message
@@ -104,8 +105,12 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
 
     scheduler.add_job(check_and_alert, "interval", hours=6, id="cost_alert")
+    scheduled_jobs.register_jobs(scheduler, deps)
     scheduler.start()
-    print("[bot] Scheduler started — cost check every 6h")
+    print(
+        "[bot] Scheduler started — cost check every 6h; "
+        "FR-4 recycle purge (180d) + auto-purge-18 at 03:00 UTC+7"
+    )
     yield
     scheduler.shutdown()
 
