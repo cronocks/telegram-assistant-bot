@@ -1205,13 +1205,23 @@ def _acl_filter_notes(notes: list[dict], viewer: User, deps: CoreDeps) -> list[d
     """Filter a list of note search results to those the viewer may read.
 
     Each note dict must contain an 'id' field (drive_file_id). Notes with no
-    SQLite row (orphans) are treated as invisible — safe default.
+    SQLite row (orphans) are treated as invisible — safe default. Stealth-read
+    rows (FR-4) emit one audit row per revealed resource.
     """
     if not notes:
         return []
     file_ids = [n["id"] for n in notes if n.get("id")]
     meta_rows = deps.note_index.note_meta_for_ids(file_ids)
-    visible = acl_mod.filter_visible(viewer, meta_rows)
+    visible = acl_mod.filter_visible(viewer, meta_rows, user_store=deps.user_store)
+    for row in visible:
+        if row.get("is_stealth_read"):
+            deps.audit.log(
+                actor_user_id=viewer.id,
+                action="stealth_read_note",
+                target_type="note",
+                target_id=row.get("drive_file_id"),
+                payload={"owner_user_id": row.get("owner_user_id")},
+            )
     visible_ids = {r["drive_file_id"] for r in visible}
     return [n for n in notes if n.get("id") in visible_ids]
 
@@ -1381,7 +1391,8 @@ def _visible_notes_with_meta(
     """ACL-filter Drive files against the note index.
 
     Returns (visible files, {drive_file_id: meta}). Orphans (files with no
-    index row) are dropped — safe default per FR-3.
+    index row) are dropped — safe default per FR-3. FR-4 stealth-read rows
+    emit one audit row each.
     """
     if not files:
         return [], {}
@@ -1389,11 +1400,25 @@ def _visible_notes_with_meta(
         m["drive_file_id"]: m
         for m in deps.note_index.note_meta_for_ids([f["id"] for f in files])
     }
-    visible = [
-        f for f in files
-        if (m := metas.get(f["id"])) is not None
-        and acl_mod.can_read(user, m["scope"], m["owner_user_id"])
-    ]
+    visible: list[dict] = []
+    for f in files:
+        m = metas.get(f["id"])
+        if m is None:
+            continue
+        allowed, is_stealth = acl_mod.can_read(
+            user, m["scope"], m["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
+            continue
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_note",
+                target_type="note",
+                target_id=m["drive_file_id"],
+                payload={"owner_user_id": m["owner_user_id"]},
+            )
+        visible.append(f)
     return visible, metas
 
 
@@ -1702,11 +1727,22 @@ async def _cmd_xem_scope(
                 chat_id, "File nay chua duoc index.", use_markdown=False,
             )
             return
-        if not acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+        allowed, is_stealth = acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
             await deps.channel.send(
                 chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
             )
             return
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_note",
+                target_type="note",
+                target_id=meta["drive_file_id"],
+                payload={"owner_user_id": meta["owner_user_id"]},
+            )
         await _send_scope_info(chat_id, matches[0]["name"], meta, deps)
         return
 
@@ -1724,11 +1760,22 @@ async def _cmd_xem_scope(
                 chat_id, "Trang wiki nay chua duoc index.", use_markdown=False,
             )
             return
-        if not acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+        allowed, is_stealth = acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
             await deps.channel.send(
                 chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
             )
             return
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_wiki",
+                target_type="wiki_page",
+                target_id=meta["drive_file_id"],
+                payload={"owner_user_id": meta["owner_user_id"]},
+            )
         await _send_scope_info(chat_id, page["name"], meta, deps, is_wiki=True)
         return
 
@@ -2146,8 +2193,20 @@ async def _cmd_xem_wiki_list(chat_id: str, user: User, deps: CoreDeps) -> None:
             meta = deps.note_index.get_wiki_meta(p["id"])
             if meta is None:
                 continue
-            if acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
-                visible.append(p)
+            allowed, is_stealth = acl_mod.can_read(
+                user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+            )
+            if not allowed:
+                continue
+            if is_stealth:
+                deps.audit.log(
+                    actor_user_id=user.id,
+                    action="stealth_read_wiki",
+                    target_type="wiki_page",
+                    target_id=meta["drive_file_id"],
+                    payload={"owner_user_id": meta["owner_user_id"]},
+                )
+            visible.append(p)
         if not visible:
             await deps.channel.send(
                 chat_id,
@@ -2185,11 +2244,23 @@ async def _cmd_xem_wiki_page(
         # ACL: an unindexed or unauthorized page returns the same "not found"
         # message so a private page's existence is never leaked.
         meta = deps.note_index.get_wiki_meta(page["id"])
-        if meta is None or not acl_mod.can_read(
-            user, meta["scope"], meta["owner_user_id"]
-        ):
+        if meta is None:
             await deps.channel.send(chat_id, not_found_msg, use_markdown=False)
             return
+        allowed, is_stealth = acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
+            await deps.channel.send(chat_id, not_found_msg, use_markdown=False)
+            return
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_wiki",
+                target_type="wiki_page",
+                target_id=meta["drive_file_id"],
+                payload={"owner_user_id": meta["owner_user_id"]},
+            )
         content = page["content"]
         if len(content) > 3500:
             content = content[:3500] + "\n\n[...] (da cat)"
