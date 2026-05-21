@@ -447,6 +447,69 @@ async def _cmd_xoa_user(
         await deps.channel.send(chat_id, f"Lỗi: {str(e)[:400]}", use_markdown=False)
 
 
+async def _cmd_doi_role(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """doi role: <ten/id> <role moi> — admin changes an existing user's role."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể đổi role.", use_markdown=False)
+        return
+
+    parts = body.strip().split(None, 1)
+    if len(parts) != 2:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: doi role: <tên/id> <role mới>\n"
+            "Role hợp lệ: admin, manager, member, readonly\n"
+            "Ví dụ: doi role: an manager",
+            use_markdown=False,
+        )
+        return
+
+    target_token = parts[0].strip()
+    new_role = parts[1].strip().lower()
+
+    if new_role not in _VALID_ROLES:
+        await deps.channel.send(
+            chat_id,
+            f"Role không hợp lệ: '{new_role}'. Chọn: admin, manager, member, readonly",
+            use_markdown=False,
+        )
+        return
+
+    target = await _resolve_user_or_reply(target_token, chat_id, deps)
+    if target is None:
+        return
+
+    # Safety: prevent admin from demoting themselves (could lock out admin access).
+    if target.id == user.id and new_role != "admin":
+        await deps.channel.send(
+            chat_id,
+            "Không thể tự hạ role của chính mình. Nhờ một admin khác thực hiện.",
+            use_markdown=False,
+        )
+        return
+
+    if target.role == new_role:
+        await deps.channel.send(
+            chat_id,
+            f"{target.name} (#{target.id}) đã ở role '{new_role}'. Không cần đổi.",
+            use_markdown=False,
+        )
+        return
+
+    try:
+        old_role = target.role
+        deps.user_store.update_user_role(target.id, new_role)
+        await deps.channel.send(
+            chat_id,
+            f"Đã đổi role của {target.name} (#{target.id}): {old_role} → {new_role}.",
+            use_markdown=False,
+        )
+    except Exception as e:
+        await deps.channel.send(chat_id, f"Lỗi khi đổi role: {str(e)[:400]}", use_markdown=False)
+
+
 _MIN_BIRTHDATE = "1900-01-01"
 
 
@@ -862,6 +925,7 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`them user: [ten], [role]` — Them user moi (admin)\n"
         "`xem danh sach user` — Liet ke tat ca user (admin)\n"
         "`xoa user: [ten/id]` — Xoa user (admin)\n"
+        "`doi role: [ten/id] [role moi]` — Doi role cua user (admin)\n"
         "`dat username: [ten]` — Dat username cua ban\n"
         "`duyet username` — Duyet yeu cau doi username (admin)\n"
         "`dat birthdate: [YYYY-MM-DD]` — Dat ngay sinh\n"
@@ -2203,6 +2267,7 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "THEM_USER":          ["thêm user: ", "them user: ", "add user: "],
     "XEM_DANH_SACH_USER": ["xem danh sach user", "xem danh sách user", "list users"],
     "XOA_USER":           ["xoa user: ", "xóa user: ", "delete user: "],
+    "DOI_ROLE":           ["doi role: ", "đổi role: ", "change role: "],
     "DAT_BIRTHDATE":      ["dat birthdate: ", "đặt birthdate: ", "set birthdate: "],
     "DUYET_BIRTHDATE":    ["duyet birthdate", "duyệt birthdate", "approve birthdate"],
     "DAT_USERNAME":       ["dat username: ", "đặt username: ", "set username: "],
@@ -2264,7 +2329,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
     # ── Step 2.5: quota enforcement for LLM-heavy operations ──────────────────
     # Non-LLM commands (user management, quota admin) bypass this check.
     _QUOTA_EXEMPT = {
-        "THEM_USER", "XEM_DANH_SACH_USER", "XOA_USER",
+        "THEM_USER", "XEM_DANH_SACH_USER", "XOA_USER", "DOI_ROLE",
         "DAT_BIRTHDATE", "DUYET_BIRTHDATE",
         "DAT_USERNAME", "DUYET_USERNAME",
         "DAT_CHA", "XEM_CHA",
@@ -2296,6 +2361,8 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_xem_danh_sach_user(chat_id, user, deps); return
         if cmd_id == "XOA_USER":
             await _cmd_xoa_user(chat_id, remainder, user, deps); return
+        if cmd_id == "DOI_ROLE":
+            await _cmd_doi_role(chat_id, remainder, user, deps); return
         if cmd_id == "DAT_BIRTHDATE":
             await _cmd_dat_birthdate(chat_id, remainder, user, deps); return
         if cmd_id == "DUYET_BIRTHDATE":
