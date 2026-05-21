@@ -432,6 +432,38 @@ class ElevationStore(Protocol):
     def reset_failures(self, channel: str, chat_id: str) -> None: ...
 
 
+# ─── Audit log (FR-4) ─────────────────────────────────────────────────────────
+
+@runtime_checkable
+class AuditLog(Protocol):
+    """Abstract append-only audit log. Concrete impl: SqliteAuditLog.
+
+    Only `log()` writes; immutability is enforced by NOT exposing update/delete.
+    `actor_user_id=None` denotes a system event. Payload is an optional dict
+    serialized to JSON. See docs/FR-4-PLAN.md section 2.3 for the action
+    taxonomy.
+    """
+
+    def log(
+        self,
+        actor_user_id: int | None,
+        action: str,
+        target_type: str | None = None,
+        target_id: "str | int | None" = None,
+        payload: "dict | None" = None,
+    ) -> int: ...
+
+    def list_recent(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        actor_user_id: int | None = None,
+        action: str | None = None,
+        target_type: str | None = None,
+        target_id: "str | int | None" = None,
+    ) -> list: ...
+
+
 # ─── User store ───────────────────────────────────────────────────────────────
 
 @runtime_checkable

@@ -35,6 +35,7 @@ def _make_deps(store) -> CoreDeps:
         note_index=None,  # type: ignore[arg-type]
         memory_store=None,  # type: ignore[arg-type]
         elevation_store=None,  # type: ignore[arg-type]
+        audit=None,  # type: ignore[arg-type]
     )
 
 

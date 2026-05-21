@@ -15,6 +15,7 @@ import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 
+from audit import SqliteAuditLog
 from channel_telegram import TelegramAdapter
 from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
@@ -45,6 +46,7 @@ user_store = SqliteUserStore()
 note_index = SqliteNoteIndex()
 memory_store = SqliteMemoryStore()
 elevation_store = SqliteElevationStore()
+audit = SqliteAuditLog()
 
 deps = CoreDeps(
     llm=llm,
@@ -55,6 +57,7 @@ deps = CoreDeps(
     note_index=note_index,
     memory_store=memory_store,
     elevation_store=elevation_store,
+    audit=audit,
 )
 
 

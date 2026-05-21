@@ -20,7 +20,7 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 import acl as acl_mod
-from interfaces import ChannelAdapter, ChannelMessage, ElevationStore, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
+from interfaces import AuditLog, ChannelAdapter, ChannelMessage, ElevationStore, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
@@ -42,6 +42,7 @@ class CoreDeps:
     note_index: NoteIndex
     memory_store: MemoryStore
     elevation_store: ElevationStore
+    audit: AuditLog
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -888,6 +889,128 @@ async def _cmd_reset_quota(
     await deps.channel.send(chat_id, f"Đã reset usage của {target.name} (#{target.id}).", use_markdown=False)
 
 
+# ─── FR-4: Audit log viewer ───────────────────────────────────────────────────
+
+_AUDIT_PAGE_SIZE = 20
+
+
+def _fmt_relative_time(iso_ts: str) -> str:
+    """Format a SQLite CURRENT_TIMESTAMP-style 'YYYY-MM-DD HH:MM:SS' as a short relative string."""
+    from datetime import datetime, timezone
+
+    try:
+        # SQLite CURRENT_TIMESTAMP is UTC, no timezone suffix.
+        ts = datetime.strptime(iso_ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return iso_ts or "?"
+
+    now = datetime.now(timezone.utc)
+    delta = now - ts
+    secs = int(delta.total_seconds())
+    if secs < 0:
+        return iso_ts
+    if secs < 60:
+        return f"{secs}s trước"
+    if secs < 3600:
+        return f"{secs // 60}m trước"
+    if secs < 86400:
+        return f"{secs // 3600}h trước"
+    return f"{secs // 86400}d trước"
+
+
+async def _cmd_xem_audit(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem audit [page|action|target_type target_id] — admin views recent audit events.
+
+    Usage forms:
+      xem audit                       → page 1 (20 most recent events)
+      xem audit 2                     → page 2
+      xem audit sudo_elevate          → filter by action
+      xem audit note 42               → filter by target_type + target_id
+    """
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể xem audit log.", use_markdown=False)
+        return
+
+    raw = body.strip()
+    page = 1
+    action_filter: str | None = None
+    target_type_filter: str | None = None
+    target_id_filter: str | None = None
+
+    if raw:
+        parts = raw.split(None, 1)
+        first = parts[0]
+        if first.isdigit():
+            page = max(1, int(first))
+        elif len(parts) == 2:
+            # Two tokens — interpreted as `<target_type> <target_id>`.
+            target_type_filter = first
+            target_id_filter = parts[1].strip()
+        else:
+            # Single non-numeric token — interpreted as `<action>`.
+            action_filter = first
+
+    offset = (page - 1) * _AUDIT_PAGE_SIZE
+    events = deps.audit.list_recent(
+        limit=_AUDIT_PAGE_SIZE,
+        offset=offset,
+        action=action_filter,
+        target_type=target_type_filter,
+        target_id=target_id_filter,
+    )
+
+    if not events:
+        if page > 1:
+            await deps.channel.send(chat_id, f"Trang {page}: không có sự kiện.", use_markdown=False)
+        else:
+            await deps.channel.send(chat_id, "Audit log trống (chưa có sự kiện nào).", use_markdown=False)
+        return
+
+    # Build a name lookup for actor ids that appear in the page.
+    actor_ids = {e.actor_user_id for e in events if e.actor_user_id is not None}
+    name_by_id: dict[int, str] = {}
+    for aid in actor_ids:
+        u = deps.user_store.get_user_by_id(aid)
+        if u is not None:
+            name_by_id[aid] = u.name
+
+    header = f"Audit log — trang {page} ({len(events)} sự kiện)"
+    if action_filter:
+        header += f" — action={action_filter}"
+    elif target_type_filter:
+        header += f" — target={target_type_filter} {target_id_filter}"
+    lines = [header]
+
+    for ev in events:
+        rel = _fmt_relative_time(ev.created_at)
+        actor = "system" if ev.actor_user_id is None else f"{name_by_id.get(ev.actor_user_id, '?')}#{ev.actor_user_id}"
+        target = ""
+        if ev.target_type:
+            target = f" [{ev.target_type}"
+            if ev.target_id:
+                target += f" {ev.target_id}"
+            target += "]"
+        payload_hint = ""
+        if ev.payload:
+            # Compact one-line preview, truncated.
+            try:
+                import json as _json
+                preview = _json.dumps(ev.payload, ensure_ascii=False)
+            except Exception:
+                preview = str(ev.payload)
+            if len(preview) > 120:
+                preview = preview[:117] + "..."
+            payload_hint = f" {preview}"
+        lines.append(f"• {rel} — {actor} — {ev.action}{target}{payload_hint}")
+
+    if len(events) == _AUDIT_PAGE_SIZE:
+        lines.append(f"\n(Trang sau: `xem audit {page + 1}`)")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
@@ -962,6 +1085,10 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`sudo: [mat khau]` — Nang quyen len admin trong 15 phut (chi role manager)\n"
         "`thoat sudo` — Ha quyen admin ngay lap tuc\n"
         "`dat mat khau: [mat khau]` — Dat/doi mat khau admin (chi tu tai khoan admin goc)\n"
+        "`xem audit` — Xem audit log gan day (admin); ho tro phan trang va filter\n"
+        "  `xem audit [trang]` — Trang cu the (vd `xem audit 2`)\n"
+        "  `xem audit [action]` — Filter theo action (vd `xem audit sudo_elevate`)\n"
+        "  `xem audit [type] [id]` — Filter theo target (vd `xem audit note 42`)\n"
         "Luu y: tin nhan chua mat khau se duoc bot tu dong xoa khoi chat.",
     ),
     "he thong": (
@@ -2277,6 +2404,7 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_QUOTA":          ["xem quota", "view quota"],
     "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
     "RESET_QUOTA":        ["reset quota: "],
+    "XEM_AUDIT":          ["xem audit"],
     "BO_CHIA_SE_FILE":    ["bỏ chia sẻ ", "bo chia se "],
     "CHIA_SE_FILE":       ["chia sẻ ", "chia se "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
@@ -2334,6 +2462,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "DAT_USERNAME", "DUYET_USERNAME",
         "DAT_CHA", "XEM_CHA",
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
+        "XEM_AUDIT",
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
         "XEM_TRI_NHO", "XEM_HO_SO",
         "DAT_MAT_KHAU", "SUDO", "THOAT_SUDO",
@@ -2381,6 +2510,8 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_quota(chat_id, remainder, user, deps); return
         if cmd_id == "RESET_QUOTA":
             await _cmd_reset_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_AUDIT":
+            await _cmd_xem_audit(chat_id, remainder, user, deps); return
         if cmd_id == "CHIA_SE_FILE":
             await _cmd_chia_se(chat_id, remainder, user, deps); return
         if cmd_id == "BO_CHIA_SE_FILE":
