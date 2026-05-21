@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-3** (SQLite scope + L1 Memory).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-3.5** (Privilege Elevation / sudo).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -67,8 +67,9 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `user_store.py` | `UserStore` — SQLite user registry, quota, parent links, password |
 | `note_index.py` | `SqliteNoteIndex` — SQLite ACL/index layer mapping Drive file IDs to owner + scope |
 | `memory_store.py` | `SqliteMemoryStore` — L1 memory (`memory` and `user` slots per user) |
+| `elevation_store.py` | `SqliteElevationStore` — sudo elevation sessions + failed-attempt rate-limit (FR-3.5) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
-| `auth.py` | Argon2id password hashing (web auth infrastructure, not yet exposed) |
+| `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
 | `text_utils.py` | Vietnamese diacritic normalization, multi-prefix command matcher |
 | `timeutils.py` | UTC+7 helpers |
@@ -77,7 +78,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–012) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–013) |
 
 ---
 
@@ -226,6 +227,30 @@ L1 memory store. Two named slots per user, populated by LLM curation on demand.
 | `curated_at` | TEXT | Timestamp of last LLM curation; NULL = never curated |
 | PRIMARY KEY | `(user_id, kind)` | |
 
+#### `elevation_sessions` *(FR-3.5)*
+Sudo elevation sessions, one row per `(channel, chat_id)`. Re-elevating refreshes `expires_at`. Expiry handled lazily (`get_active_session` only returns rows still within TTL).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `channel` | TEXT NOT NULL | `telegram` \| `web` \| … |
+| `chat_id` | TEXT NOT NULL | Channel-side conversation identifier |
+| `base_user_id` | INTEGER FK → users | The real user behind the session (a manager); identity is NOT swapped |
+| `started_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+| `expires_at` | DATETIME NOT NULL | 15 minutes after elevation |
+| PRIMARY KEY | `(channel, chat_id)` | |
+
+#### `sudo_attempts` *(FR-3.5)*
+Per-chat failed-password counter; locks after threshold. Reset on a successful sudo.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `channel` | TEXT NOT NULL | |
+| `chat_id` | TEXT NOT NULL | |
+| `failed_count` | INTEGER | Default 0; ≥ `SUDO_MAX_FAILS` (5) → sets `locked_until` |
+| `locked_until` | DATETIME NULL | Lockout end timestamp (15 minutes after the last fail) |
+| `last_attempt_at` | DATETIME NULL | |
+| PRIMARY KEY | `(channel, chat_id)` | |
+
 ---
 
 ## 6. Permission Model
@@ -266,6 +291,23 @@ Every note and wiki page has a `scope` column in the SQLite ACL layer (`notes`, 
 
 **Admin and private data:** in FR-3, admin **does not** read other users' private notes (Decision #52). Stealth-read with audit logging is deferred to FR-4.
 
+### Privilege Elevation — sudo *(FR-3.5)*
+
+Production does NOT use admin as the default account. The primary account runs as `manager`; admin power is acquired by **temporary elevation** when needed.
+
+| Concept | Description |
+|---------|-------------|
+| **Natively-admin** | User with `role='admin'` in DB, bound directly to a chat_id. No elevation session involved. |
+| **Elevated-admin** | A `manager` user with a still-valid elevation session — their `role` is overridden to `admin` at resolution time. |
+
+**Mechanics:**
+- After `find_by_channel`, `main.py` checks `elevation_store.get_active_session()`. If a valid session exists → `dataclasses.replace(user, role="admin")`. Identity (`id`, `name`) is **not swapped** — audit always records the real user (Decision #57).
+- TTL 15 minutes (`SUDO_TTL_MINUTES`), lazy expiry — no cron required.
+- Defense in depth: `sudo` is gated to role `manager`; verifies Argon2id against the hash of any user with role `admin`; rate-limited to 5 fails → 15-minute lockout.
+- The bot deletes messages containing passwords via `delete_message` on `ChannelAdapter` (implemented through Telegram's `deleteMessage` API).
+- Audit goes to stdout: `sudo_elevate`, `sudo_drop`, `sudo_fail`, `sudo_locked`, `password_set` (a formal audit table arrives in FR-4).
+- `dat mat khau` is restricted to **natively-admin** accounts — it covers both initial setup and password recovery (no separate "forgot password" flow — Decision #59).
+
 ### Command access by role
 
 | Command | admin | manager | member | readonly |
@@ -298,6 +340,7 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | `thêm user: <name>, <role>` | Generate invite code for new user |
 | `xem danh sách user` | List all registered users |
 | `xóa user: <name>` | Soft-delete a user |
+| `đổi role: <name/id> <new role>` | Change an existing user's role (safety guard: admin cannot self-demote) |
 | `đặt quota: <name>, <tokens>` | Set monthly token limit |
 | `reset quota: <name>` | Reset current month usage |
 | `đặt cha: <parent>, <child>` | Create parent-child link |
@@ -345,6 +388,13 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | `xem trí nhớ` | Read own `memory` snapshot (rolling facts) |
 | `xem hồ sơ` | Read own `user` snapshot (stable profile) |
 | `cập nhật trí nhớ` | Trigger LLM curation pass over recent notes |
+
+### Privilege Elevation *(FR-3.5)*
+| Command | Description |
+|---------|-------------|
+| `sudo: <password>` | Elevate `manager` to `admin` for 15 minutes (the bot deletes the message containing the password) |
+| `thoát sudo` | Drop elevation immediately |
+| `đặt mật khẩu: <password>` | Set/change the admin password — natively-admin accounts only (also the recovery mechanism) |
 
 ### Registration (pre-auth)
 | Command | Description |

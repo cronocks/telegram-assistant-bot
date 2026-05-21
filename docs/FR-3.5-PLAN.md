@@ -1,8 +1,9 @@
 # FR-3.5 — Privilege Elevation (sudo) — Detailed Implementation Plan
 
-> **Status:** DRAFT — chờ review lần 2 trước khi execute
+> **Status:** ✅ DONE — merged to `main` 2026-05-21
 > **Created:** 2026-05-19
-> **Branch:** sẽ tạo branch riêng từ `main` (theo Git workflow Section 3.5)
+> **Branch:** `feature/FR3_5` (đã merge vào `main`)
+> **Note:** Tài liệu giữ nguyên như reference lịch sử thiết kế; mọi thay đổi trạng thái khác cập nhật tại `docs/ROADMAP.md`.
 
 ---
 
@@ -215,12 +216,12 @@ Lazy: `get_active_session` chỉ trả dòng có `expires_at > now`. Dòng quá 
 
 ## 12. Definition of Done
 
-- [ ] Migration 013 apply OK trên fresh + existing DB
-- [ ] `pytest` pass 100%
-- [ ] Smoke test (11.2) pass trên staging
-- [ ] Mật khẩu không bao giờ lưu plaintext; message mật khẩu bị xóa
-- [ ] Audit log đầy đủ các sự kiện sudo
-- [ ] ROADMAP Section 5 + Decision Log cập nhật (#57–60 đã có)
+- [x] Migration 013 apply OK trên fresh + existing DB
+- [x] `pytest` pass 100% (256 tests, gồm `tests/test_elevation_store.py` + `tests/test_sudo.py`)
+- [x] Smoke test (11.2) pass trên staging
+- [x] Mật khẩu không bao giờ lưu plaintext (Argon2id); message mật khẩu bị xóa qua `delete_message`
+- [x] Audit log đầy đủ các sự kiện sudo (stdout — `sudo_elevate` / `sudo_drop` / `sudo_fail` / `sudo_locked` / `password_set`)
+- [x] ROADMAP Section 5 cập nhật (DONE 2026-05-21) + Decision Log #57–60
 
 ---
 

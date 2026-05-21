@@ -395,15 +395,18 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-3.5 — Privilege Elevation (sudo)
-**Status:** PENDING — chi tiết tại `docs/FR-3.5-PLAN.md`
-**Lý do:** Production sẽ KHÔNG dùng admin làm tài khoản mặc định. Tài khoản Telegram chính chạy role `manager`; cần cơ chế nâng quyền tạm thời lên `admin` khi cần thao tác quản trị.
-**Scope:**
-- Bảng `elevation_sessions` — phiên nâng quyền theo `(channel, chat_id)`, TTL 15 phút
-- Nâng quyền = override `role` thành `admin` tạm thời (KHÔNG đổi danh tính) — audit ghi đúng người thật
-- `dat mat khau` — đặt/đổi mật khẩu admin (chỉ từ tài khoản natively-admin; cũng là cơ chế recovery)
-- `sudo: <mật khẩu>` — nâng quyền (gated role `manager` + verify Argon2id); `thoat sudo` — hạ quyền
-- Rate-limit sudo sai; bot tự xóa message chứa mật khẩu; audit mọi lần elevate/drop/fail
-- `delete_message` thêm vào `ChannelAdapter`
+**Status:** ✅ DONE — merged to `main` 2026-05-21 (kế hoạch chi tiết giữ tại `docs/FR-3.5-PLAN.md` như reference)
+**Lý do:** Production KHÔNG dùng admin làm tài khoản mặc định. Tài khoản Telegram chính chạy role `manager`; cần cơ chế nâng quyền tạm thời lên `admin` khi cần thao tác quản trị.
+**Scope delivered:**
+- Migration 013: bảng `elevation_sessions` (phiên nâng quyền theo `(channel, chat_id)`, TTL 15 phút, lazy expiry) + `sudo_attempts` (đếm fail + lockout)
+- `elevation_store.py` — `SqliteElevationStore` + Protocol `ElevationStore`
+- Role override ở `main.py`: nếu có phiên elevation còn hạn → `dataclasses.replace(user, role="admin")` (KHÔNG đổi `id`/`name` — audit ghi đúng người thật)
+- Lệnh `dat mat khau: <mật khẩu>` — đặt/đổi mật khẩu admin, chỉ từ tài khoản natively-admin (cũng là cơ chế recovery; không làm "quên mật khẩu" riêng)
+- Lệnh `sudo: <mật khẩu>` — nâng quyền (gated role `manager` + verify Argon2id qua hash của bất kỳ user role `admin` nào)
+- Lệnh `thoat sudo` — hạ quyền ngay; `toi la ai` bổ sung dòng trạng thái elevation
+- Rate-limit: 5 fail → khóa 15 phút; bot tự xóa message chứa mật khẩu qua `delete_message`; audit stdout (`sudo_elevate` / `sudo_drop` / `sudo_fail` / `sudo_locked` / `password_set`)
+- `delete_message` thêm vào Protocol `ChannelAdapter` + implement trên `TelegramAdapter`
+**Bổ sung kèm theo:** lệnh `doi role: <tên/id> <role mới>` — admin đổi role của user đã tồn tại (safety guard: không cho admin tự hạ role chính mình)
 **Dependencies:** FR-2 (hạ tầng Argon2id), FR-3
 
 ---
