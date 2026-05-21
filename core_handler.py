@@ -1843,6 +1843,13 @@ async def _cmd_dat_mat_khau(
         return
 
     print(f"[audit] password_set user_id={base.id} name={base.name!r}")
+    deps.audit.log(
+        actor_user_id=base.id,
+        action="password_set",
+        target_type="user",
+        target_id=base.id,
+        payload={"name": base.name},
+    )
     await deps.channel.send(
         chat_id,
         "Da dat mat khau admin. Tin nhan chua mat khau da bi xoa khoi chat.",
@@ -1881,6 +1888,11 @@ async def _cmd_sudo(
             use_markdown=False,
         )
         print(f"[audit] sudo_fail reason=role_not_manager user_id={base.id} role={base.role}")
+        deps.audit.log(
+            actor_user_id=base.id,
+            action="sudo_fail",
+            payload={"reason": "role_not_manager", "role": base.role},
+        )
         return
 
     locked, locked_until = deps.elevation_store.is_locked("telegram", chat_id)
@@ -1891,6 +1903,11 @@ async def _cmd_sudo(
             use_markdown=False,
         )
         print(f"[audit] sudo_locked user_id={base.id} until={locked_until}")
+        deps.audit.log(
+            actor_user_id=base.id,
+            action="sudo_locked",
+            payload={"locked_until": locked_until},
+        )
         return
 
     password = password.strip()
@@ -1913,6 +1930,15 @@ async def _cmd_sudo(
         print(
             f"[audit] sudo_fail user_id={base.id} failed_count={state['failed_count']} "
             f"locked_until={state['locked_until']}"
+        )
+        deps.audit.log(
+            actor_user_id=base.id,
+            action="sudo_fail",
+            payload={
+                "reason": "wrong_password",
+                "failed_count": state["failed_count"],
+                "locked_until": state["locked_until"],
+            },
         )
         if state["locked_until"]:
             await deps.channel.send(
@@ -1937,6 +1963,11 @@ async def _cmd_sudo(
         f"[audit] sudo_elevate user_id={base.id} matched_admin={matched_admin.id} "
         f"expires_at={expires_iso}"
     )
+    deps.audit.log(
+        actor_user_id=base.id,
+        action="sudo_elevate",
+        payload={"matched_admin": matched_admin.id, "expires_at": expires_iso},
+    )
     await deps.channel.send(
         chat_id,
         f"Da nang quyen admin trong {config.SUDO_TTL_MINUTES} phut. "
@@ -1950,6 +1981,10 @@ async def _cmd_thoat_sudo(chat_id: str, user: User, deps: CoreDeps) -> None:
     dropped = deps.elevation_store.drop_session("telegram", chat_id)
     if dropped:
         print(f"[audit] sudo_drop user_id={user.id}")
+        deps.audit.log(
+            actor_user_id=user.id,
+            action="sudo_drop",
+        )
         await deps.channel.send(
             chat_id, "Da ha quyen admin.", use_markdown=False,
         )
