@@ -35,6 +35,21 @@ class SqliteUserStore:
             ).fetchall()
         return [_row_to_user(r) for r in rows]
 
+    def get_chat_id_for_user(self, user_id: int, channel: str) -> str | None:
+        """Return the chat_id bound to (user_id, channel), or None.
+
+        Used by NotificationService at delivery time to resolve where to send.
+        A user may have at most one binding per channel; ordered by insertion
+        for determinism if that ever changes.
+        """
+        row = self._conn.execute(
+            "SELECT chat_id FROM channel_bindings"
+            " WHERE user_id = ? AND channel = ?"
+            " ORDER BY ROWID ASC LIMIT 1",
+            (user_id, channel),
+        ).fetchone()
+        return row["chat_id"] if row else None
+
     def find_by_channel(self, channel: str, chat_id: str) -> User | None:
         """Return the active user bound to (channel, chat_id), or None."""
         row = self._conn.execute(

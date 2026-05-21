@@ -27,6 +27,8 @@ from drive_client import DriveNoteStore
 from elevation_store import SqliteElevationStore
 from memory_store import SqliteMemoryStore
 from note_index import SqliteNoteIndex
+from notification_store import SqliteNotificationStore
+from notification_service import NotificationService
 from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
 
@@ -48,6 +50,13 @@ note_index = SqliteNoteIndex()
 memory_store = SqliteMemoryStore()
 elevation_store = SqliteElevationStore()
 audit = SqliteAuditLog()
+notif_store = SqliteNotificationStore()
+notif_service = NotificationService(
+    store=notif_store,
+    audit=audit,
+    user_store=user_store,
+    channels={"telegram": channel},
+)
 
 deps = CoreDeps(
     llm=llm,
@@ -59,6 +68,7 @@ deps = CoreDeps(
     memory_store=memory_store,
     elevation_store=elevation_store,
     audit=audit,
+    notification_service=notif_service,
 )
 
 

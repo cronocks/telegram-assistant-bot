@@ -37,6 +37,7 @@ RECYCLE_RETENTION_DAYS = 180
 
 JOB_ID_180D = "fr4_purge_180d"
 JOB_ID_TURN_18 = "fr4_purge_children_18"
+JOB_ID_NOTIF_FLUSH = "fr4_flush_notifications"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -194,6 +195,35 @@ def purge_children_turning_18(deps: "CoreDeps", now: datetime | None = None) -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Job 3 — Notification flush (every 30 seconds)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def flush_pending_notifications(
+    deps: "CoreDeps", now: datetime | None = None,
+) -> dict:
+    """Deliver pending notifications from the queue via registered channel adapters.
+
+    Calls NotificationService.flush_pending, which handles retry/backoff and
+    audit emission internally. Returns the summary dict from that call, or an
+    empty dict if no notification_service is wired.
+
+    This job is async because channel adapters (e.g. TelegramAdapter.send) are
+    coroutines. APScheduler's AsyncIOScheduler runs async callables natively.
+    """
+    if deps.notification_service is None:
+        return {}
+    try:
+        summary = await deps.notification_service.flush_pending(now=now)
+        if any(summary.values()):
+            logger.info("flush_pending_notifications: %s", summary)
+        return summary
+    except Exception:
+        logger.exception("flush_pending_notifications: unexpected error")
+        return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -232,5 +262,13 @@ def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
         args=[deps],
         trigger=CronTrigger(hour=3, minute=5, timezone=VN_TZ),
         id=JOB_ID_TURN_18,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        flush_pending_notifications,
+        args=[deps],
+        trigger="interval",
+        seconds=30,
+        id=JOB_ID_NOTIF_FLUSH,
         replace_existing=True,
     )

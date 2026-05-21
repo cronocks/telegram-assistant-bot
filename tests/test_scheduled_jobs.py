@@ -492,7 +492,7 @@ class TestPurgeChildrenTurning18:
 
 class TestRegisterJobs:
 
-    def test_both_jobs_registered_with_expected_ids(self, store, idx, audit):
+    def test_all_jobs_registered_with_expected_ids(self, store, idx, audit):
         from apscheduler.schedulers.background import BackgroundScheduler
 
         scheduler = BackgroundScheduler()
@@ -503,6 +503,7 @@ class TestRegisterJobs:
             ids = {j.id for j in scheduler.get_jobs()}
             assert scheduled_jobs.JOB_ID_180D in ids
             assert scheduled_jobs.JOB_ID_TURN_18 in ids
+            assert scheduled_jobs.JOB_ID_NOTIF_FLUSH in ids
         finally:
             scheduler.shutdown(wait=False)
 
@@ -517,6 +518,6 @@ class TestRegisterJobs:
             # Second call should not raise (replace_existing=True replaces
             # rather than duplicating).
             scheduled_jobs.register_jobs(scheduler, deps)
-            assert len(scheduler.get_jobs()) == 2
+            assert len(scheduler.get_jobs()) == 3
         finally:
             scheduler.shutdown(wait=False)
