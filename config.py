@@ -67,3 +67,13 @@ else:
         raise RuntimeError(
             f"APP_ENV={APP_ENV} requires SQLITE_PATH to be set explicitly"
         )
+
+# ── Web UI (FR-5) ────────────────────────────────────────────────────────────
+# WEB_SECRET_KEY must be set explicitly in staging/production (fail-fast below).
+WEB_SECRET_KEY = os.getenv("WEB_SECRET_KEY", "")
+if APP_ENV != "local" and not WEB_SECRET_KEY:
+    raise RuntimeError("APP_ENV=%s requires WEB_SECRET_KEY to be set" % APP_ENV)
+if APP_ENV == "local" and not WEB_SECRET_KEY:
+    WEB_SECRET_KEY = "dev-secret-key-not-for-production"
+
+WEB_SESSION_TTL_DAYS = int(os.getenv("WEB_SESSION_TTL_DAYS", "7"))
