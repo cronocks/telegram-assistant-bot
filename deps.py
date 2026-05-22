@@ -17,6 +17,7 @@ from interfaces import (
     NoteStore,
     NotificationService,
     UserStore,
+    WebSessionStore,
     WikiStore,
 )
 
@@ -34,3 +35,4 @@ class CoreDeps:
     elevation_store: ElevationStore
     audit: AuditLog
     notification_service: "NotificationService | None" = None
+    web_session_store: "WebSessionStore | None" = None

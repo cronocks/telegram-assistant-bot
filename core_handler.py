@@ -2110,6 +2110,64 @@ async def _cmd_dat_mat_khau(
     )
 
 
+async def _cmd_dat_web_pass(
+    chat_id: str,
+    remainder: str,
+    user: User,
+    deps: CoreDeps,
+) -> None:
+    """dat web pass: <ten_user>, <mat_khau> — admin sets web password for another user.
+
+    Sets password_hash + must_change_password=1 so the user is forced to choose
+    their own password on first web login. Admin-only.
+    """
+    if not user.is_admin:
+        await deps.channel.send(
+            chat_id, "Chi admin moi co the dat mat khau web cho nguoi khac.", use_markdown=False,
+        )
+        return
+
+    parts = remainder.split(",", 1)
+    if len(parts) != 2:
+        await deps.channel.send(
+            chat_id,
+            "Cu phap: dat web pass: <ten_user>, <mat_khau>",
+            use_markdown=False,
+        )
+        return
+
+    target_name = parts[0].strip()
+    password = parts[1].strip()
+
+    if len(password) < 8:
+        await deps.channel.send(
+            chat_id, "Mat khau phai co it nhat 8 ky tu.", use_markdown=False,
+        )
+        return
+
+    target = deps.user_store.find_by_username_or_name(target_name)
+    if target is None or not target.is_active:
+        await deps.channel.send(
+            chat_id, f"Khong tim thay user: {target_name}", use_markdown=False,
+        )
+        return
+
+    deps.user_store.set_password(target.id, password)
+    deps.user_store.set_must_change_password(target.id, True)
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="web_password_set",
+        target_type="user",
+        target_id=target.id,
+        payload={"target_name": target.name, "set_by": user.name},
+    )
+    await deps.channel.send(
+        chat_id,
+        f"Da dat mat khau web cho {target.name}. Ho se phai doi mat khau khi dang nhap lan dau.",
+        use_markdown=False,
+    )
+
+
 async def _cmd_sudo(
     chat_id: str,
     password: str,
@@ -2735,6 +2793,7 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_SCOPE":          ["xem scope "],
     "TOI_LA_AI":          ["toi la ai", "tôi là ai", "tai khoan", "tài khoản", "who am i", "whoami"],
     "DAT_MAT_KHAU":       ["dat mat khau: ", "đặt mật khẩu: ", "set password: "],
+    "DAT_WEB_PASS":       ["dat web pass: ", "đặt web pass: "],
     "THOAT_SUDO":         ["thoat sudo", "thoát sudo", "exit sudo"],
     "SUDO":               ["sudo: "],
     "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
@@ -2867,6 +2926,8 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "DAT_MAT_KHAU":
             message_id = msg.raw.get("message_id") if msg.raw else None
             await _cmd_dat_mat_khau(chat_id, remainder, user, message_id, deps); return
+        if cmd_id == "DAT_WEB_PASS":
+            await _cmd_dat_web_pass(chat_id, remainder, user, deps); return
         if cmd_id == "SUDO":
             message_id = msg.raw.get("message_id") if msg.raw else None
             await _cmd_sudo(chat_id, remainder, user, message_id, deps); return

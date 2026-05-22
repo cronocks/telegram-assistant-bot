@@ -14,9 +14,13 @@ from contextlib import asynccontextmanager
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
+from fastapi.templating import Jinja2Templates
 
 from audit import SqliteAuditLog
 from channel_telegram import TelegramAdapter
+from web_channel import WebChannelAdapter
+from web_session_store import SqliteWebSessionStore
+from web_router import router as web_router, init_web_router
 import scheduled_jobs
 from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
@@ -46,11 +50,13 @@ llm = AnthropicLLM()
 notes = DriveNoteStore()
 wiki = DriveWikiStore(llm=llm)
 channel = TelegramAdapter(token=TELEGRAM_TOKEN, allowed_chat_id=TELEGRAM_CHAT_ID)
+web_channel = WebChannelAdapter()
 user_store = SqliteUserStore()
 note_index = SqliteNoteIndex()
 memory_store = SqliteMemoryStore()
 elevation_store = SqliteElevationStore()
 audit = SqliteAuditLog()
+web_session_store = SqliteWebSessionStore()
 notif_store = SqliteNotificationStore()
 notif_service = NotificationService(
     store=notif_store,
@@ -70,6 +76,22 @@ deps = CoreDeps(
     elevation_store=elevation_store,
     audit=audit,
     notification_service=notif_service,
+    web_session_store=web_session_store,
+)
+
+# CoreDeps for web channel — same adapters, different channel adapter.
+web_deps = CoreDeps(
+    llm=llm,
+    notes=notes,
+    wiki=wiki,
+    channel=web_channel,
+    user_store=user_store,
+    note_index=note_index,
+    memory_store=memory_store,
+    elevation_store=elevation_store,
+    audit=audit,
+    notification_service=notif_service,
+    web_session_store=web_session_store,
 )
 
 
@@ -115,6 +137,8 @@ async def lifespan(app: FastAPI):
         print(f"[bot] Note index backfill ERROR (non-fatal): {e}")
         traceback.print_exc()
 
+    app.state.web_deps = web_deps
+
     scheduler.add_job(check_and_alert, "interval", hours=6, id="cost_alert")
     scheduled_jobs.register_jobs(scheduler, deps)
     scheduler.start()
@@ -126,7 +150,19 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
+templates = Jinja2Templates(directory="templates")
+
 app = FastAPI(lifespan=lifespan)
+app.include_router(web_router)
+
+init_web_router(
+    templates=templates,
+    web_channel=web_channel,
+    session_store=web_session_store,
+    user_store=user_store,
+    audit=audit,
+    elevation_store=elevation_store,
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
