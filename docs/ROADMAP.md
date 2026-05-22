@@ -412,24 +412,31 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-4 — Audit + Under-18 + Recycle Bin + Notifications
-**Status:** PENDING
-**Scope:**
-- Audit log table (immutable, append-only)
-- Under-18 stealth-read cho admin (silent to member)
-- Recycle bin: disclosed, 180 ngày retention, admin-only access
-- Auto-purge ở tuổi 18
-- Notification framework (qua channel adapter, không hardcode Telegram)
+**Status:** ✅ DONE — merged to `main` 2026-05-22 (commits `e76a98c` → `3496f3e`); plan chi tiết tại `docs/FR-4-PLAN.md`
+**Scope delivered:**
+- Sub 4.1a — Audit log infrastructure: migration 014 (`audit_log` append-only, không UPDATE/DELETE bằng trigger), `audit.py` + `SqliteAuditLog` + Protocol `AuditLog`, wire vào `CoreDeps`
+- Sub 4.1b — Migrate sudo events (`sudo_elevate` / `sudo_drop` / `sudo_fail` / `sudo_locked` / `password_set`) từ stdout sang bảng `audit_log` (giữ stdout làm dev log song song)
+- Sub 4.2 — Under-18 stealth-read: ACL cho admin đọc note/wiki/journal của user under-18 **không thông báo cho member**; mỗi lần đọc emit audit `stealth_read` với `target_user_id` + `resource_id`
+- Sub 4.3 — Recycle bin: migration 015 (`recycle_bin`), lệnh admin `xem thung rac`, `khoi phuc <id>`, `xoa vinh vien <id>`; mọi soft-delete đi qua recycle bin, retention 180 ngày
+- Sub 4.4 — Auto-purge scheduled jobs: APScheduler chạy daily — purge entry recycle bin >180 ngày + tự hạ role/disable cờ stealth-read khi user đủ 18 tuổi (runtime check theo birthdate, không mutate DB)
+- Sub 4.5 — Persistent notification queue: migration mới `pending_notifications`; `notification_service.py` enqueue thay vì trực tiếp `channel.send()` → flush job APScheduler retry; survive process crash
+- Refactor `deps.py`: tách `CoreDeps` ra file riêng để chuẩn bị split `cmd_*` modules
+**Dependencies:** FR-2 (users + birthdate), FR-3 (ACL framework), FR-3.5 (audit precedent)
 
 ---
 
 ### FR-5 — Web UI + Password Auth
-**Status:** PENDING
-**Scope:**
-- HTMX + Alpine.js + SSE
-- Argon2id password
-- Force-reset on first login (no plaintext)
-- Session cookies
-- Web là channel mới: `WebChannelAdapter`
+**Status:** 🟡 IN PROGRESS — code hoàn tất trên `feature/FR5` (chưa commit), 40/40 unit tests pass, login flow tested local OK; **pending:** commit + manual e2e test + set `WEB_SECRET_KEY` trên Render staging/production + merge → `main`. Plan chi tiết tại `docs/FR-5-PLAN.md`.
+**Scope delivered (trên branch):**
+- Migration 016 (`web_sessions` + `users.must_change_password`); `web_session_store.py` (SqliteWebSessionStore, DB-revocable, không JWT)
+- `web_channel.py` — `WebChannelAdapter` channel mới, in-memory `asyncio.Queue` per-user cho SSE push
+- `web_router.py` — FastAPI router: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/send`, `/chat/stream` (SSE qua `sse-starlette`); cookie `web_session` HttpOnly + SameSite=Lax + Secure (non-local)
+- Brute-force protection: reuse `sudo_attempts` table với `channel="web"`, 5 fails → khóa 15 phút; audit events `web_login` / `web_logout` / `web_login_failed` / `web_password_set`
+- Templates Jinja2 + HTMX + Alpine.js (CDN, no build step); design **glass/dark mode** (CSS variables, backdrop-blur, gradient indigo→violet, toggle 🌙/☀️ floating hoặc trong nav, persist localStorage)
+- Lệnh admin `dat web pass: <user>, <password>` — admin đặt mật khẩu + set `must_change_password=1` → user đăng nhập lần đầu bị force-reset
+- `CoreDeps` riêng cho web (`web_deps` trên `app.state`) với `WebChannelAdapter` thay `TelegramAdapter` — share rest của adapter pool
+- Tests: `test_web_session.py` (14), `test_web_channel.py` (16), `test_web_auth.py` (10) = 40/40 PASS, 0 warnings
+**Dependencies:** FR-2 (Argon2id), FR-3.5 (sudo password infra reused)
 
 ---
 
@@ -590,40 +597,74 @@ INDEX (user_id, category_id, occurred_at)
 | 58 | sudo TTL + gating | Phiên elevation hết hạn sau 15 phút (lazy expiry); lệnh `sudo` chỉ role `manager` dùng được, cổng chính là mật khẩu admin | 15p đủ cho thao tác quản trị gia đình; gating role + password + rate-limit là phòng thủ nhiều tầng | 2026-05-19 |
 | 59 | Recovery mật khẩu admin | KHÔNG làm tính năng quên mật khẩu riêng; `dat mat khau` chỉ chạy từ tài khoản natively-admin (admin qua channel binding) → vừa đặt lần đầu vừa là recovery | Tài khoản bootstrap admin vốn đã là admin nhờ binding, không cần mật khẩu để chứng minh → là đường recovery sẵn có | 2026-05-19 |
 | 60 | `liet ke` sort theo createdTime | Danh sách file sắp xếp `createdTime desc` (không phải `modifiedTime`) | Đúng nghĩa "file mới tạo lên trên"; journal cũ append hằng ngày không nhảy lên đầu | 2026-05-19 |
+| 61 | Audit log immutable | Bảng `audit_log` chống UPDATE/DELETE bằng SQLite trigger (RAISE FAIL); chỉ INSERT | Audit trail không được sửa retroactively; bằng chứng pháp lý/gia đình nếu tranh chấp | 2026-05-21 |
+| 62 | Under-18 stealth không notify | Admin đọc note/wiki/journal của user under-18 KHÔNG gửi notification cho member; chỉ emit audit `stealth_read` | Bản chất stealth-read là silent; thông báo sẽ làm vô hiệu hóa feature; audit đủ để truy vết | 2026-05-21 |
+| 63 | Recycle bin admin-only + 180d | `recycle_bin` chỉ admin xem/restore/purge; retention 180 ngày fix cứng; mọi soft-delete đi qua đây | Member không cần quyền tự khôi phục (admin gia đình quản); 180 ngày đủ dài để phát hiện mất nhầm; cố định để tránh config phức tạp | 2026-05-21 |
+| 64 | Auto-purge tuổi 18 = scheduled job + runtime check | Daily APScheduler job chạy purge + check tuổi; quyền under-18 (stealth-read) enforce theo birthdate tại runtime, KHÔNG mutate DB | Source of truth = birthdate; mutate DB tạo dual-source dễ drift; scheduled job chỉ là cleanup, ACL tự hết hiệu lực | 2026-05-21 |
+| 65 | Notification queue persistent | `pending_notifications` table thay vì in-memory queue; flush job APScheduler retry với backoff | Channel adapter có thể fail (Telegram timeout, rate-limit); process restart không mất notification; survive crash | 2026-05-22 |
+| 66 | Web session = DB-revocable cookie (không JWT) | Cookie chứa opaque token 32 byte hex; `web_sessions` table có `revoked_at`; logout = set `revoked_at` | JWT không revoke được giữa lúc TTL; gia đình ~10 user — DB lookup mỗi request không phải bottleneck; cần force-logout khi đổi mật khẩu | 2026-05-22 |
+| 67 | CSRF = SameSite=Lax thay token | Cookie `SameSite=Lax` + `HttpOnly` + `Secure` (non-local); KHÔNG implement explicit CSRF token | Đủ chống CSRF cho gia đình ~10 user; giảm complexity (không cần token rotation, hidden form field, header check); migration path sang token sau này là additive nếu cần | 2026-05-22 |
+| 68 | Admin đặt mật khẩu + force-reset flag | Lệnh `dat web pass: <user>, <pw>` admin-only; set `users.must_change_password=1`; user login lần đầu bị redirect `/setup-password` đổi mật khẩu mới trước khi vào chat | Tránh admin biết password thật của user (admin chỉ biết temp); pattern chuẩn cho first-login setup | 2026-05-22 |
+| 69 | Web `CoreDeps` riêng | `web_deps` instance riêng trên `app.state` với `WebChannelAdapter` thay `TelegramAdapter`; share rest của adapter pool (DB, store, audit, ...) | Channel khác nhau cần channel adapter khác; nhưng auth/storage/audit cùng pool → tách `CoreDeps` riêng là pattern sạch nhất | 2026-05-22 |
 
 ---
 
 ## 7. Open Questions
 
-*(Hiện tại không có. Khi phát sinh thì thêm vào đây.)*
+### Q1 — Web chat history sidebar (giống Claude.ai)
+**Status:** 🆕 OPEN — chờ thảo luận trong phiên làm việc kế tiếp (mở đầu 2026-05-23)
+**Bối cảnh:** FR-5 đang có chat UI 1 màn hình (single-thread, không lưu lịch sử hiển thị). Sau khi reload page, không xem lại được hội thoại trước. Ý tưởng: thêm thanh menu bên trái liệt kê các phiên chat cũ — click để mở lại — UX giống Claude.ai/ChatGPT.
+**Câu hỏi mở:**
+1. **Storage:** lưu lịch sử ở đâu? Bảng mới `web_conversations` (id, user_id, title, created_at) + `web_messages` (conversation_id, role, text, created_at)? Hay reuse cấu trúc nào sẵn có?
+2. **Scope:** chỉ lưu hội thoại từ kênh web, hay gom luôn lịch sử Telegram của cùng user vào sidebar? (Cross-channel sẽ phức tạp hơn nhưng có giá trị "single inbox")
+3. **Search:** có cần full-text search không? Nếu có → dùng SQLite FTS5?
+4. **Title generation:** auto-gen từ first user message (truncate), hay nhờ LLM tóm tắt? Có rename được không?
+5. **UI:** sidebar collapsible (mặc định collapsed trên mobile), lazy load (vô hạn scroll), pagination, hay load tất cả?
+6. **Retention:** giữ vĩnh viễn hay có retention policy (vd 1 năm)? Tích hợp với recycle bin (FR-4) không?
+7. **Privacy:** hội thoại web có tính là "note private"? Admin có quyền đọc (giống stealth-read FR-4)?
+8. **Scope FR:** đây là sub-task của FR-5 (chưa merge), hay tách ra thành FR mới sau khi FR-5 vào main?
 
 ---
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-19)
+### Right now (2026-05-22)
 - ✅ **FR-1** merged to `main` (production)
 - ✅ **FR-2** merged to `main` (production) 2026-05-18 — 11 commits, 148 tests passing
-  - SQLite schema: users, channel_bindings, invite_codes, birthdate_changes, username_changes, parent_links, user_quotas, password_hash
-  - Docker runtime + Litestream → Cloudflare R2 (production + staging)
-  - Multi-user registry, roles (admin/manager/member/readonly), soft-delete
-  - Invite code registration flow (Telegram)
-  - Birthdate change flow (manager approval)
-  - Username set + change flow (admin approval, 30-day rate-limit)
-  - Parent-child links (soft history)
-  - Per-user monthly token quota (lazy monthly reset)
-  - Argon2id password infrastructure (not yet exposed via commands)
-- ✅ **FR-3** code + staging test hoàn tất (2026-05-19) — chờ merge → `main`
-  - SQLite schema: notes, wiki_pages, user_memory (migrations 009–011)
-  - ACL layer: `acl.py` + `SqliteNoteIndex` + `NoteIndex` Protocol
-  - Dual-write + ACL filter trên tất cả retrieval paths
-  - `chia se` / `bo chia se` commands + startup backfill
-  - L1 Memory: `SqliteMemoryStore`, `curate_memory()`, 3 lệnh tri nhớ, inject vào Q&A
-  - `/start` redesign + `/help [nhom]`
-  - ✅ **Staging test hoàn tất** (2026-05-19) — checklist 3.1–3.7 pass toàn bộ; phát hiện + đã fix: help text mismatch command prefix, invite code không gửi (Telegram Markdown v1 + tên có `_`), duplicate user name (thêm unique index migration 012), ACL bypass trên `xem`/`xem wiki`/`liet ke`
-  - Bổ sung trong lúc test: lệnh `xem scope`, `toi la ai`; `liet ke` phân trang theo `createdTime`
-  - **Next:** merge `feature/FR3` → `main`
-- ⏳ **FR-3.5** PENDING — Privilege Elevation (sudo); plan chi tiết tại `docs/FR-3.5-PLAN.md`
+- ✅ **FR-3** merged to `main` (production) 2026-05-19 — Scope (private/everyone), ACL, L1 Memory, `/help [nhom]`
+- ✅ **FR-3.5** merged to `main` 2026-05-21 — Privilege Elevation (sudo); commits `b06e61a`, `f9511eb`
+  - `elevation_sessions` + `sudo_attempts` tables; `sudo` / `thoat sudo` / `dat mat khau` commands
+  - Role override runtime (không mutate user.role), TTL 15 phút lazy expiry, rate-limit 5 fails → 15p lockout
+  - Bổ sung: `doi role` admin command để đổi role user đã tồn tại
+- ✅ **FR-4** merged to `main` 2026-05-22 — Audit + Stealth-read + Recycle Bin + Notifications; commits `e76a98c` → `3496f3e`
+  - Audit log append-only (trigger chống UPDATE/DELETE), wire sudo events vào table
+  - Under-18 stealth-read cho admin, emit audit `stealth_read`
+  - Recycle bin admin-only + 180 ngày retention; lệnh `xem thung rac`, `khoi phuc`, `xoa vinh vien`
+  - Auto-purge scheduled jobs (APScheduler daily): purge recycle bin >180d + check tuổi 18
+  - Notification queue persistent (`pending_notifications` + flush job retry)
+  - Refactor `deps.py` (tách `CoreDeps` ra file riêng)
+- 🟡 **FR-5** IN PROGRESS — Web UI + Password Auth trên `feature/FR5` (chưa commit)
+  - **Code complete:** migration 016, `web_session_store`, `web_channel` (SSE), `web_router` (FastAPI), templates Jinja2 + HTMX + Alpine, glass UI + dark mode toggle, `dat web pass` admin command, `web_deps` riêng trên `app.state`
+  - **Tests:** 40/40 PASS (`test_web_session.py` 14, `test_web_channel.py` 16, `test_web_auth.py` 10), 0 warnings
+  - **Local manual test:** đăng nhập `Bot Owner` / `demo1234` qua `http://localhost:8000/login` OK; UI glass + dark mode toggle hoạt động; Enter gửi (IME-aware) / Shift+Enter xuống dòng
+  - **Pending:**
+    1. Commit toàn bộ FR-5 work (10 untracked + 7 modified files)
+    2. Manual e2e test đầy đủ: force-reset flow, brute-force lockout, SSE streaming, logout → revoke session
+    3. Set `WEB_SECRET_KEY` env var trên Render staging + production (fail-fast nếu thiếu)
+    4. Cập nhật `docs/architecture_vn.md` + `architecture_en.md` cho FR-5
+    5. Merge `feature/FR5` → `main`
+
+---
+
+### 🔔 Next session reminder (cho phiên 2026-05-23+)
+
+**Trước khi tiếp tục FR-5 commit/merge hoặc bắt đầu FR-6**, thảo luận với user về:
+
+→ **Web chat history sidebar** (giống Claude.ai/ChatGPT) — xem chi tiết & 8 câu hỏi mở ở **Section 7 / Q1**.
+   Hiện chat web là single-thread không lưu lịch sử hiển thị; ý tưởng là thêm sidebar bên trái liệt kê các phiên cũ.
+   Quyết định cần lấy trước khi code: storage schema, cross-channel scope, FTS5, title gen, retention, privacy (vs stealth-read FR-4), và có phải sub-task FR-5 hay FR riêng.
+
+---
 
 ### Staging test checklist (feature/FR3 → dev, 2026-05-18)
 
@@ -669,17 +710,21 @@ INDEX (user_id, category_id, occurred_at)
 - [x] `toi la ai` → hiện đúng tên/username/role/id
 - [x] `them user: <ten>, <role>` → nhận được invite code (regression sau fix)
 
+> _Checklist trên là lịch sử FR-3 (giữ làm tham khảo). FR-3, FR-3.5, FR-4 đã merge `main` — xem trạng thái mới nhất ở mục "Right now"._
+
 ---
 
-### Immediate next steps
-1. Merge `feature/FR3` → `main`
-2. Xóa `feature/FR3` branch sau khi vào `main`
-3. Làm FR-3.5: Privilege Elevation (sudo) — review `docs/FR-3.5-PLAN.md` trước khi execute
-4. Bắt đầu FR-4: Audit + Under-18 Stealth-read + Recycle Bin + Notifications
-- **Cleanup pending:** xóa 2 Render service cũ (`telegram-claude-bot`, `test-telegram-claude-bot`) sau khi confirm production ổn định
+### Immediate next steps (2026-05-22)
+1. **Thảo luận trước:** Web chat history sidebar (Section 7 / Q1) — chốt scope trước khi commit FR-5
+2. Commit FR-5 work trên branch `feature/FR5` (chia commit hợp lý: migration → store → channel → router → templates → admin command → tests)
+3. Manual e2e test FR-5: force-reset flow, brute-force lockout, SSE streaming, logout revoke, IME Enter handling
+4. Set `WEB_SECRET_KEY` env var trên Render staging + production
+5. Cập nhật `docs/architecture_vn.md` + `architecture_en.md` cho FR-4 đã merge + FR-5 (nếu merge xong trong phiên)
+6. Merge `feature/FR5` → `main`; xóa branch sau khi vào `main`
+7. Bắt đầu FR-6: Backup / Restore Tooling
 
 ### Pending FRs
-- FR-3.5 (sudo), FR-4..FR-9 — sequential theo Section 5
+- FR-5 (in progress), FR-6..FR-9 — sequential theo Section 5
 
 ---
 
