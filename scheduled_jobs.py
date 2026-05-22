@@ -24,7 +24,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 if TYPE_CHECKING:
     from apscheduler.schedulers.base import BaseScheduler
-    from core_handler import CoreDeps
+    from deps import CoreDeps
 
 logger = logging.getLogger(__name__)
 

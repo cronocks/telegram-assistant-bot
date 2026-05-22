@@ -5,7 +5,8 @@ async-pytest plugin configured.
 """
 import asyncio
 
-from core_handler import CoreDeps, _cmd_doi_role
+from deps import CoreDeps
+from core_handler import _cmd_doi_role
 
 
 class FakeChannel:

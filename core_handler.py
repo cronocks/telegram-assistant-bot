@@ -10,7 +10,6 @@ User-facing strings remain Vietnamese; everything else is English.
 import re
 import time
 import traceback
-from dataclasses import dataclass
 
 import config
 from config import (
@@ -20,30 +19,12 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 import acl as acl_mod
+from deps import CoreDeps
 from interfaces import AuditLog, ChannelAdapter, ChannelMessage, ElevationStore, LLMClient, MemoryStore, NoteIndex, NoteStore, NotificationService, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CoreDeps — dependency bundle injected by main.py
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class CoreDeps:
-    """Bundle of adapter instances the core handler depends on."""
-    llm: LLMClient
-    notes: NoteStore
-    wiki: WikiStore
-    channel: ChannelAdapter
-    user_store: UserStore
-    note_index: NoteIndex
-    memory_store: MemoryStore
-    elevation_store: ElevationStore
-    audit: AuditLog
-    notification_service: "NotificationService | None" = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

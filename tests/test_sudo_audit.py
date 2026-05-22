@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 
 from audit import SqliteAuditLog
+from deps import CoreDeps
 from core_handler import (
-    CoreDeps,
     _cmd_dat_mat_khau,
     _cmd_sudo,
     _cmd_thoat_sudo,

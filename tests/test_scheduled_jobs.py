@@ -18,7 +18,7 @@ import pytest
 
 import scheduled_jobs
 from audit import SqliteAuditLog
-from core_handler import CoreDeps
+from deps import CoreDeps
 from note_index import SqliteNoteIndex
 
 

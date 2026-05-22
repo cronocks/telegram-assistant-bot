@@ -20,7 +20,8 @@ from channel_telegram import TelegramAdapter
 import scheduled_jobs
 from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
-from core_handler import CoreDeps, handle_message
+from deps import CoreDeps
+from core_handler import handle_message
 from cost_monitor import check_and_alert
 from db.migrations import run_migrations
 from drive_client import DriveNoteStore
