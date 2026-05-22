@@ -110,6 +110,152 @@ class SqliteNoteIndex:
             )
         return cur.rowcount > 0
 
+    # ── FR-4 recycle bin (soft-delete + restore + hard-delete) ────────────────
+
+    def soft_delete_note(self, note_id: int) -> bool:
+        """Mark a note row as deleted by stamping `deleted_at = now`.
+
+        Returns True if the row was updated (was previously active). Idempotent
+        on already-deleted rows (returns False).
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE notes SET deleted_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')"
+                " WHERE id = ? AND deleted_at IS NULL",
+                (note_id,),
+            )
+        return cur.rowcount > 0
+
+    def soft_delete_wiki(self, wiki_id: int) -> bool:
+        """Mark a wiki_page row as deleted. See soft_delete_note for semantics."""
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE wiki_pages SET deleted_at = STRFTIME('%Y-%m-%dT%H:%M:%SZ', 'now')"
+                " WHERE id = ? AND deleted_at IS NULL",
+                (wiki_id,),
+            )
+        return cur.rowcount > 0
+
+    def list_deleted_notes(self) -> list[dict]:
+        """Return soft-deleted notes ordered by `deleted_at DESC`."""
+        rows = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, kind, title, deleted_at"
+            " FROM notes WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+        ).fetchall()
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "kind", "title", "deleted_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def list_deleted_wiki_pages(self) -> list[dict]:
+        """Return soft-deleted wiki pages ordered by `deleted_at DESC`."""
+        rows = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, topic, slug, deleted_at"
+            " FROM wiki_pages WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC"
+        ).fetchall()
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "topic", "slug", "deleted_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def restore_note(self, note_id: int) -> bool:
+        """Clear `deleted_at` for a soft-deleted note. Returns True on change."""
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE notes SET deleted_at = NULL"
+                " WHERE id = ? AND deleted_at IS NOT NULL",
+                (note_id,),
+            )
+        return cur.rowcount > 0
+
+    def restore_wiki(self, wiki_id: int) -> bool:
+        """Clear `deleted_at` for a soft-deleted wiki_page. Returns True on change."""
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE wiki_pages SET deleted_at = NULL"
+                " WHERE id = ? AND deleted_at IS NOT NULL",
+                (wiki_id,),
+            )
+        return cur.rowcount > 0
+
+    def hard_delete_note(self, note_id: int) -> dict | None:
+        """Permanently DELETE a note row. Returns the row metadata if deleted, else None.
+
+        Returns metadata (incl. drive_file_id) so the caller can issue a
+        best-effort Drive delete.
+        """
+        row = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, kind, title"
+            " FROM notes WHERE id = ?",
+            (note_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        with self._conn:
+            self._conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "kind", "title"]
+        return dict(zip(keys, row))
+
+    def list_soft_deleted_notes_older_than(self, threshold_iso: str) -> list[dict]:
+        """Return soft-deleted notes with `deleted_at < threshold_iso`.
+
+        `threshold_iso` should be in the same format as `deleted_at` storage:
+        `YYYY-MM-DDTHH:MM:SSZ` (the format written by soft_delete_note).
+        """
+        rows = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, kind, title, deleted_at"
+            " FROM notes WHERE deleted_at IS NOT NULL AND deleted_at < ?"
+            " ORDER BY deleted_at ASC",
+            (threshold_iso,),
+        ).fetchall()
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "kind", "title", "deleted_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def list_soft_deleted_wiki_older_than(self, threshold_iso: str) -> list[dict]:
+        """Return soft-deleted wiki pages with `deleted_at < threshold_iso`."""
+        rows = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, topic, slug, deleted_at"
+            " FROM wiki_pages WHERE deleted_at IS NOT NULL AND deleted_at < ?"
+            " ORDER BY deleted_at ASC",
+            (threshold_iso,),
+        ).fetchall()
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "topic", "slug", "deleted_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def list_soft_deleted_notes_by_owner(self, owner_user_id: int) -> list[dict]:
+        """Return all soft-deleted notes owned by `owner_user_id`, regardless of age.
+
+        Used by the auto-purge-at-18 job to wipe a child's recycle-bin items
+        the day after they turn 18.
+        """
+        rows = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, kind, title, deleted_at"
+            " FROM notes WHERE deleted_at IS NOT NULL AND owner_user_id = ?",
+            (owner_user_id,),
+        ).fetchall()
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "kind", "title", "deleted_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def list_soft_deleted_wiki_by_owner(self, owner_user_id: int) -> list[dict]:
+        """Return all soft-deleted wiki pages owned by `owner_user_id`."""
+        rows = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, topic, slug, deleted_at"
+            " FROM wiki_pages WHERE deleted_at IS NOT NULL AND owner_user_id = ?",
+            (owner_user_id,),
+        ).fetchall()
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "topic", "slug", "deleted_at"]
+        return [dict(zip(keys, r)) for r in rows]
+
+    def hard_delete_wiki(self, wiki_id: int) -> dict | None:
+        """Permanently DELETE a wiki_page row. Returns the row metadata if deleted, else None."""
+        row = self._conn.execute(
+            "SELECT id, drive_file_id, owner_user_id, scope, topic, slug"
+            " FROM wiki_pages WHERE id = ?",
+            (wiki_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        with self._conn:
+            self._conn.execute("DELETE FROM wiki_pages WHERE id = ?", (wiki_id,))
+        keys = ["id", "drive_file_id", "owner_user_id", "scope", "topic", "slug"]
+        return dict(zip(keys, row))
+
     # ── Read ──────────────────────────────────────────────────────────────────
 
     def get_note_meta(self, drive_file_id: str) -> dict | None:

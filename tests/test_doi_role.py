@@ -5,7 +5,8 @@ async-pytest plugin configured.
 """
 import asyncio
 
-from core_handler import CoreDeps, _cmd_doi_role
+from deps import CoreDeps
+from core_handler import _cmd_doi_role
 
 
 class FakeChannel:
@@ -35,6 +36,7 @@ def _make_deps(store) -> CoreDeps:
         note_index=None,  # type: ignore[arg-type]
         memory_store=None,  # type: ignore[arg-type]
         elevation_store=None,  # type: ignore[arg-type]
+        audit=None,  # type: ignore[arg-type]
     )
 
 

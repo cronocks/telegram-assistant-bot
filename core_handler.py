@@ -10,7 +10,6 @@ User-facing strings remain Vietnamese; everything else is English.
 import re
 import time
 import traceback
-from dataclasses import dataclass
 
 import config
 from config import (
@@ -20,28 +19,12 @@ from config import (
 )
 from cost_monitor import check_and_alert, get_current_cost, record_usage
 import acl as acl_mod
-from interfaces import ChannelAdapter, ChannelMessage, ElevationStore, LLMClient, MemoryStore, NoteIndex, NoteStore, User, UserStore, WikiStore
+from deps import CoreDeps
+from interfaces import AuditLog, ChannelAdapter, ChannelMessage, ElevationStore, LLMClient, MemoryStore, NoteIndex, NoteStore, NotificationService, User, UserStore, WikiStore
 from permissions import can_manage, has_role
 from text_utils import match_command, normalize_vn, validate_username
 from security import get_security_status
 from timeutils import current_week_range_str, time_str, today_str
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# CoreDeps — dependency bundle injected by main.py
-# ═══════════════════════════════════════════════════════════════════════════════
-
-@dataclass
-class CoreDeps:
-    """Bundle of adapter instances the core handler depends on."""
-    llm: LLMClient
-    notes: NoteStore
-    wiki: WikiStore
-    channel: ChannelAdapter
-    user_store: UserStore
-    note_index: NoteIndex
-    memory_store: MemoryStore
-    elevation_store: ElevationStore
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -888,6 +871,349 @@ async def _cmd_reset_quota(
     await deps.channel.send(chat_id, f"Đã reset usage của {target.name} (#{target.id}).", use_markdown=False)
 
 
+# ─── FR-4: Audit log viewer ───────────────────────────────────────────────────
+
+_AUDIT_PAGE_SIZE = 20
+
+
+def _fmt_relative_time(iso_ts: str) -> str:
+    """Format a SQLite CURRENT_TIMESTAMP-style 'YYYY-MM-DD HH:MM:SS' as a short relative string."""
+    from datetime import datetime, timezone
+
+    try:
+        # SQLite CURRENT_TIMESTAMP is UTC, no timezone suffix.
+        ts = datetime.strptime(iso_ts, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return iso_ts or "?"
+
+    now = datetime.now(timezone.utc)
+    delta = now - ts
+    secs = int(delta.total_seconds())
+    if secs < 0:
+        return iso_ts
+    if secs < 60:
+        return f"{secs}s trước"
+    if secs < 3600:
+        return f"{secs // 60}m trước"
+    if secs < 86400:
+        return f"{secs // 3600}h trước"
+    return f"{secs // 86400}d trước"
+
+
+async def _cmd_xem_audit(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xem audit [page|action|target_type target_id] — admin views recent audit events.
+
+    Usage forms:
+      xem audit                       → page 1 (20 most recent events)
+      xem audit 2                     → page 2
+      xem audit sudo_elevate          → filter by action
+      xem audit note 42               → filter by target_type + target_id
+    """
+    if not has_role(user, "admin"):
+        await deps.channel.send(chat_id, "Chỉ admin mới có thể xem audit log.", use_markdown=False)
+        return
+
+    raw = body.strip()
+    page = 1
+    action_filter: str | None = None
+    target_type_filter: str | None = None
+    target_id_filter: str | None = None
+
+    if raw:
+        parts = raw.split(None, 1)
+        first = parts[0]
+        if first.isdigit():
+            page = max(1, int(first))
+        elif len(parts) == 2:
+            # Two tokens — interpreted as `<target_type> <target_id>`.
+            target_type_filter = first
+            target_id_filter = parts[1].strip()
+        else:
+            # Single non-numeric token — interpreted as `<action>`.
+            action_filter = first
+
+    offset = (page - 1) * _AUDIT_PAGE_SIZE
+    events = deps.audit.list_recent(
+        limit=_AUDIT_PAGE_SIZE,
+        offset=offset,
+        action=action_filter,
+        target_type=target_type_filter,
+        target_id=target_id_filter,
+    )
+
+    if not events:
+        if page > 1:
+            await deps.channel.send(chat_id, f"Trang {page}: không có sự kiện.", use_markdown=False)
+        else:
+            await deps.channel.send(chat_id, "Audit log trống (chưa có sự kiện nào).", use_markdown=False)
+        return
+
+    # Build a name lookup for actor ids that appear in the page.
+    actor_ids = {e.actor_user_id for e in events if e.actor_user_id is not None}
+    name_by_id: dict[int, str] = {}
+    for aid in actor_ids:
+        u = deps.user_store.get_user_by_id(aid)
+        if u is not None:
+            name_by_id[aid] = u.name
+
+    header = f"Audit log — trang {page} ({len(events)} sự kiện)"
+    if action_filter:
+        header += f" — action={action_filter}"
+    elif target_type_filter:
+        header += f" — target={target_type_filter} {target_id_filter}"
+    lines = [header]
+
+    for ev in events:
+        rel = _fmt_relative_time(ev.created_at)
+        actor = "system" if ev.actor_user_id is None else f"{name_by_id.get(ev.actor_user_id, '?')}#{ev.actor_user_id}"
+        target = ""
+        if ev.target_type:
+            target = f" [{ev.target_type}"
+            if ev.target_id:
+                target += f" {ev.target_id}"
+            target += "]"
+        payload_hint = ""
+        if ev.payload:
+            # Compact one-line preview, truncated.
+            try:
+                import json as _json
+                preview = _json.dumps(ev.payload, ensure_ascii=False)
+            except Exception:
+                preview = str(ev.payload)
+            if len(preview) > 120:
+                preview = preview[:117] + "..."
+            payload_hint = f" {preview}"
+        lines.append(f"• {rel} — {actor} — {ev.action}{target}{payload_hint}")
+
+    if len(events) == _AUDIT_PAGE_SIZE:
+        lines.append(f"\n(Trang sau: `xem audit {page + 1}`)")
+
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+# ─── FR-4 sub 4.3: Recycle bin commands ───────────────────────────────────────
+
+_RECYCLE_KINDS = ("user", "note", "wiki")
+
+
+def _parse_recycle_target(body: str) -> "tuple[str, int] | None":
+    """Parse `<kind> <id>` syntax used by `khoi phuc` and `xoa han`.
+
+    Returns (kind, id) if valid; None otherwise. Kind must be one of user/note/wiki
+    and id must be a positive integer.
+    """
+    parts = body.strip().split()
+    if len(parts) != 2:
+        return None
+    kind = parts[0].lower()
+    if kind not in _RECYCLE_KINDS:
+        return None
+    if not parts[1].isdigit():
+        return None
+    target_id = int(parts[1])
+    if target_id <= 0:
+        return None
+    return kind, target_id
+
+
+async def _cmd_xem_thung_rac(chat_id: str, user: User, deps: CoreDeps) -> None:
+    """xem thung rac — admin lists all soft-deleted users/notes/wiki pages."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể xem thùng rác.", use_markdown=False,
+        )
+        return
+
+    deleted_users = deps.user_store.list_deleted_users()
+    deleted_notes = deps.note_index.list_deleted_notes()
+    deleted_wikis = deps.note_index.list_deleted_wiki_pages()
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="recycle_view",
+        payload={
+            "items": len(deleted_users) + len(deleted_notes) + len(deleted_wikis),
+            "users": len(deleted_users),
+            "notes": len(deleted_notes),
+            "wiki": len(deleted_wikis),
+        },
+    )
+
+    total = len(deleted_users) + len(deleted_notes) + len(deleted_wikis)
+    if total == 0:
+        await deps.channel.send(
+            chat_id, "Thung rac trong.", use_markdown=False,
+        )
+        return
+
+    lines = [f"Thung rac ({total} muc):"]
+    if deleted_users:
+        lines.append("\n— Users —")
+        for u in deleted_users:
+            del_at = u.deleted_at.strftime("%Y-%m-%d") if u.deleted_at else "?"
+            lines.append(f"• [user {u.id}] {u.name} (role={u.role}) — da xoa {del_at}")
+    if deleted_notes:
+        lines.append("\n— Notes —")
+        for n in deleted_notes:
+            title = n.get("title") or "(no title)"
+            del_at = (n.get("deleted_at") or "")[:10]
+            lines.append(f"• [note {n['id']}] {title} (owner={n['owner_user_id']}) — da xoa {del_at}")
+    if deleted_wikis:
+        lines.append("\n— Wiki —")
+        for w in deleted_wikis:
+            del_at = (w.get("deleted_at") or "")[:10]
+            lines.append(f"• [wiki {w['id']}] {w['topic']} (owner={w['owner_user_id']}) — da xoa {del_at}")
+
+    lines.append(
+        "\nKhoi phuc: `khoi phuc: <kind> <id>` (vd `khoi phuc: user 3`)"
+        "\nXoa han:   `xoa han: <kind> <id>`"
+    )
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_khoi_phuc(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """khoi phuc: <kind> <id> — admin restores a soft-deleted item."""
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể khôi phục.", use_markdown=False,
+        )
+        return
+
+    parsed = _parse_recycle_target(body)
+    if parsed is None:
+        await deps.channel.send(
+            chat_id,
+            "Cu phap: khoi phuc: <kind> <id>\n"
+            "Kind hop le: user, note, wiki\n"
+            "Vi du: khoi phuc: user 3",
+            use_markdown=False,
+        )
+        return
+
+    kind, target_id = parsed
+
+    if kind == "user":
+        ok = deps.user_store.restore_user(target_id)
+        label = f"user #{target_id}"
+    elif kind == "note":
+        ok = deps.note_index.restore_note(target_id)
+        label = f"note #{target_id}"
+    else:  # wiki
+        ok = deps.note_index.restore_wiki(target_id)
+        label = f"wiki #{target_id}"
+
+    if not ok:
+        await deps.channel.send(
+            chat_id,
+            f"Khong tim thay {label} trong thung rac (hoac da khoi phuc).",
+            use_markdown=False,
+        )
+        return
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="recycle_restore",
+        target_type=kind,
+        target_id=target_id,
+    )
+    await deps.channel.send(
+        chat_id, f"Da khoi phuc {label}.", use_markdown=False,
+    )
+
+
+async def _cmd_xoa_han(
+    chat_id: str, body: str, user: User, deps: CoreDeps,
+) -> None:
+    """xoa han: <kind> <id> — admin permanently purges an item.
+
+    For notes/wiki: also issues a best-effort Drive delete. For users: detects
+    FK constraint violations and surfaces a clear error.
+    """
+    if not has_role(user, "admin"):
+        await deps.channel.send(
+            chat_id, "Chỉ admin mới có thể xóa hẳn.", use_markdown=False,
+        )
+        return
+
+    parsed = _parse_recycle_target(body)
+    if parsed is None:
+        await deps.channel.send(
+            chat_id,
+            "Cu phap: xoa han: <kind> <id>\n"
+            "Kind hop le: user, note, wiki\n"
+            "Vi du: xoa han: note 12",
+            use_markdown=False,
+        )
+        return
+
+    kind, target_id = parsed
+
+    if kind == "user":
+        ok = deps.user_store.hard_delete_user(target_id)
+        if not ok:
+            await deps.channel.send(
+                chat_id,
+                f"Khong the xoa han user #{target_id}. "
+                "Co the user khong ton tai, hoac con du lieu tham chieu "
+                "(channel_bindings, notes, parent_links...). "
+                "Hay thu khoi phuc + cleanup tay neu can.",
+                use_markdown=False,
+            )
+            return
+        deps.audit.log(
+            actor_user_id=user.id,
+            action="recycle_purge",
+            target_type="user",
+            target_id=target_id,
+        )
+        await deps.channel.send(
+            chat_id, f"Da xoa han user #{target_id}.", use_markdown=False,
+        )
+        return
+
+    # note / wiki — purge SQLite + best-effort Drive delete
+    if kind == "note":
+        meta = deps.note_index.hard_delete_note(target_id)
+        adapter = deps.notes
+        target_type = "note"
+    else:  # wiki
+        meta = deps.note_index.hard_delete_wiki(target_id)
+        adapter = deps.wiki
+        target_type = "wiki"
+
+    if meta is None:
+        await deps.channel.send(
+            chat_id, f"Khong tim thay {kind} #{target_id}.", use_markdown=False,
+        )
+        return
+
+    drive_file_id = meta.get("drive_file_id")
+    drive_deleted = False
+    if drive_file_id:
+        try:
+            drive_deleted = bool(adapter.delete_file(drive_file_id))
+        except Exception as e:
+            print(f"[recycle] Drive delete exception (kind={kind} id={target_id}): {e}")
+            drive_deleted = False
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="recycle_purge",
+        target_type=target_type,
+        target_id=target_id,
+        payload={"drive_file_id": drive_file_id, "drive_deleted": drive_deleted},
+    )
+
+    suffix = " (Drive deleted)" if drive_deleted else " (Drive delete failed — file orphaned)"
+    await deps.channel.send(
+        chat_id, f"Da xoa han {kind} #{target_id}.{suffix}", use_markdown=False,
+    )
+
+
 async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
     await deps.channel.send(chat_id, (
         "Xin chao! Toi la Claude Bot.\n\n"
@@ -962,6 +1288,13 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`sudo: [mat khau]` — Nang quyen len admin trong 15 phut (chi role manager)\n"
         "`thoat sudo` — Ha quyen admin ngay lap tuc\n"
         "`dat mat khau: [mat khau]` — Dat/doi mat khau admin (chi tu tai khoan admin goc)\n"
+        "`xem audit` — Xem audit log gan day (admin); ho tro phan trang va filter\n"
+        "  `xem audit [trang]` — Trang cu the (vd `xem audit 2`)\n"
+        "  `xem audit [action]` — Filter theo action (vd `xem audit sudo_elevate`)\n"
+        "  `xem audit [type] [id]` — Filter theo target (vd `xem audit note 42`)\n"
+        "`xem thung rac` — Liet ke item da xoa (user/note/wiki) (admin)\n"
+        "`khoi phuc: [kind] [id]` — Khoi phuc item (vd `khoi phuc: user 3`) (admin)\n"
+        "`xoa han: [kind] [id]` — Xoa han khoi he thong (vd `xoa han: note 12`) (admin)\n"
         "Luu y: tin nhan chua mat khau se duoc bot tu dong xoa khoi chat.",
     ),
     "he thong": (
@@ -1078,13 +1411,23 @@ def _acl_filter_notes(notes: list[dict], viewer: User, deps: CoreDeps) -> list[d
     """Filter a list of note search results to those the viewer may read.
 
     Each note dict must contain an 'id' field (drive_file_id). Notes with no
-    SQLite row (orphans) are treated as invisible — safe default.
+    SQLite row (orphans) are treated as invisible — safe default. Stealth-read
+    rows (FR-4) emit one audit row per revealed resource.
     """
     if not notes:
         return []
     file_ids = [n["id"] for n in notes if n.get("id")]
     meta_rows = deps.note_index.note_meta_for_ids(file_ids)
-    visible = acl_mod.filter_visible(viewer, meta_rows)
+    visible = acl_mod.filter_visible(viewer, meta_rows, user_store=deps.user_store)
+    for row in visible:
+        if row.get("is_stealth_read"):
+            deps.audit.log(
+                actor_user_id=viewer.id,
+                action="stealth_read_note",
+                target_type="note",
+                target_id=row.get("drive_file_id"),
+                payload={"owner_user_id": row.get("owner_user_id")},
+            )
     visible_ids = {r["drive_file_id"] for r in visible}
     return [n for n in notes if n.get("id") in visible_ids]
 
@@ -1254,7 +1597,8 @@ def _visible_notes_with_meta(
     """ACL-filter Drive files against the note index.
 
     Returns (visible files, {drive_file_id: meta}). Orphans (files with no
-    index row) are dropped — safe default per FR-3.
+    index row) are dropped — safe default per FR-3. FR-4 stealth-read rows
+    emit one audit row each.
     """
     if not files:
         return [], {}
@@ -1262,11 +1606,25 @@ def _visible_notes_with_meta(
         m["drive_file_id"]: m
         for m in deps.note_index.note_meta_for_ids([f["id"] for f in files])
     }
-    visible = [
-        f for f in files
-        if (m := metas.get(f["id"])) is not None
-        and acl_mod.can_read(user, m["scope"], m["owner_user_id"])
-    ]
+    visible: list[dict] = []
+    for f in files:
+        m = metas.get(f["id"])
+        if m is None:
+            continue
+        allowed, is_stealth = acl_mod.can_read(
+            user, m["scope"], m["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
+            continue
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_note",
+                target_type="note",
+                target_id=m["drive_file_id"],
+                payload={"owner_user_id": m["owner_user_id"]},
+            )
+        visible.append(f)
     return visible, metas
 
 
@@ -1575,11 +1933,22 @@ async def _cmd_xem_scope(
                 chat_id, "File nay chua duoc index.", use_markdown=False,
             )
             return
-        if not acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+        allowed, is_stealth = acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
             await deps.channel.send(
                 chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
             )
             return
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_note",
+                target_type="note",
+                target_id=meta["drive_file_id"],
+                payload={"owner_user_id": meta["owner_user_id"]},
+            )
         await _send_scope_info(chat_id, matches[0]["name"], meta, deps)
         return
 
@@ -1597,11 +1966,22 @@ async def _cmd_xem_scope(
                 chat_id, "Trang wiki nay chua duoc index.", use_markdown=False,
             )
             return
-        if not acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
+        allowed, is_stealth = acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
             await deps.channel.send(
                 chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
             )
             return
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_wiki",
+                target_type="wiki_page",
+                target_id=meta["drive_file_id"],
+                payload={"owner_user_id": meta["owner_user_id"]},
+            )
         await _send_scope_info(chat_id, page["name"], meta, deps, is_wiki=True)
         return
 
@@ -1716,6 +2096,13 @@ async def _cmd_dat_mat_khau(
         return
 
     print(f"[audit] password_set user_id={base.id} name={base.name!r}")
+    deps.audit.log(
+        actor_user_id=base.id,
+        action="password_set",
+        target_type="user",
+        target_id=base.id,
+        payload={"name": base.name},
+    )
     await deps.channel.send(
         chat_id,
         "Da dat mat khau admin. Tin nhan chua mat khau da bi xoa khoi chat.",
@@ -1754,6 +2141,11 @@ async def _cmd_sudo(
             use_markdown=False,
         )
         print(f"[audit] sudo_fail reason=role_not_manager user_id={base.id} role={base.role}")
+        deps.audit.log(
+            actor_user_id=base.id,
+            action="sudo_fail",
+            payload={"reason": "role_not_manager", "role": base.role},
+        )
         return
 
     locked, locked_until = deps.elevation_store.is_locked("telegram", chat_id)
@@ -1764,6 +2156,11 @@ async def _cmd_sudo(
             use_markdown=False,
         )
         print(f"[audit] sudo_locked user_id={base.id} until={locked_until}")
+        deps.audit.log(
+            actor_user_id=base.id,
+            action="sudo_locked",
+            payload={"locked_until": locked_until},
+        )
         return
 
     password = password.strip()
@@ -1786,6 +2183,15 @@ async def _cmd_sudo(
         print(
             f"[audit] sudo_fail user_id={base.id} failed_count={state['failed_count']} "
             f"locked_until={state['locked_until']}"
+        )
+        deps.audit.log(
+            actor_user_id=base.id,
+            action="sudo_fail",
+            payload={
+                "reason": "wrong_password",
+                "failed_count": state["failed_count"],
+                "locked_until": state["locked_until"],
+            },
         )
         if state["locked_until"]:
             await deps.channel.send(
@@ -1810,6 +2216,11 @@ async def _cmd_sudo(
         f"[audit] sudo_elevate user_id={base.id} matched_admin={matched_admin.id} "
         f"expires_at={expires_iso}"
     )
+    deps.audit.log(
+        actor_user_id=base.id,
+        action="sudo_elevate",
+        payload={"matched_admin": matched_admin.id, "expires_at": expires_iso},
+    )
     await deps.channel.send(
         chat_id,
         f"Da nang quyen admin trong {config.SUDO_TTL_MINUTES} phut. "
@@ -1823,6 +2234,10 @@ async def _cmd_thoat_sudo(chat_id: str, user: User, deps: CoreDeps) -> None:
     dropped = deps.elevation_store.drop_session("telegram", chat_id)
     if dropped:
         print(f"[audit] sudo_drop user_id={user.id}")
+        deps.audit.log(
+            actor_user_id=user.id,
+            action="sudo_drop",
+        )
         await deps.channel.send(
             chat_id, "Da ha quyen admin.", use_markdown=False,
         )
@@ -1984,8 +2399,20 @@ async def _cmd_xem_wiki_list(chat_id: str, user: User, deps: CoreDeps) -> None:
             meta = deps.note_index.get_wiki_meta(p["id"])
             if meta is None:
                 continue
-            if acl_mod.can_read(user, meta["scope"], meta["owner_user_id"]):
-                visible.append(p)
+            allowed, is_stealth = acl_mod.can_read(
+                user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+            )
+            if not allowed:
+                continue
+            if is_stealth:
+                deps.audit.log(
+                    actor_user_id=user.id,
+                    action="stealth_read_wiki",
+                    target_type="wiki_page",
+                    target_id=meta["drive_file_id"],
+                    payload={"owner_user_id": meta["owner_user_id"]},
+                )
+            visible.append(p)
         if not visible:
             await deps.channel.send(
                 chat_id,
@@ -2023,11 +2450,23 @@ async def _cmd_xem_wiki_page(
         # ACL: an unindexed or unauthorized page returns the same "not found"
         # message so a private page's existence is never leaked.
         meta = deps.note_index.get_wiki_meta(page["id"])
-        if meta is None or not acl_mod.can_read(
-            user, meta["scope"], meta["owner_user_id"]
-        ):
+        if meta is None:
             await deps.channel.send(chat_id, not_found_msg, use_markdown=False)
             return
+        allowed, is_stealth = acl_mod.can_read(
+            user, meta["scope"], meta["owner_user_id"], user_store=deps.user_store,
+        )
+        if not allowed:
+            await deps.channel.send(chat_id, not_found_msg, use_markdown=False)
+            return
+        if is_stealth:
+            deps.audit.log(
+                actor_user_id=user.id,
+                action="stealth_read_wiki",
+                target_type="wiki_page",
+                target_id=meta["drive_file_id"],
+                payload={"owner_user_id": meta["owner_user_id"]},
+            )
         content = page["content"]
         if len(content) > 3500:
             content = content[:3500] + "\n\n[...] (da cat)"
@@ -2277,6 +2716,10 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XEM_QUOTA":          ["xem quota", "view quota"],
     "DAT_QUOTA":          ["dat quota: ", "đặt quota: ", "set quota: "],
     "RESET_QUOTA":        ["reset quota: "],
+    "XEM_AUDIT":          ["xem audit"],
+    "XEM_THUNG_RAC":      ["xem thung rac", "xem thùng rác"],
+    "KHOI_PHUC":          ["khoi phuc: ", "khôi phục: "],
+    "XOA_HAN":            ["xoa han: ", "xóa hẳn: "],
     "BO_CHIA_SE_FILE":    ["bỏ chia sẻ ", "bo chia se "],
     "CHIA_SE_FILE":       ["chia sẻ ", "chia se "],
     "HOI_WIKI":           ["hỏi wiki ", "hoi wiki ", "ask wiki "],
@@ -2334,6 +2777,8 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "DAT_USERNAME", "DUYET_USERNAME",
         "DAT_CHA", "XEM_CHA",
         "XEM_QUOTA", "DAT_QUOTA", "RESET_QUOTA",
+        "XEM_AUDIT",
+        "XEM_THUNG_RAC", "KHOI_PHUC", "XOA_HAN",
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
         "XEM_TRI_NHO", "XEM_HO_SO",
         "DAT_MAT_KHAU", "SUDO", "THOAT_SUDO",
@@ -2381,6 +2826,14 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_quota(chat_id, remainder, user, deps); return
         if cmd_id == "RESET_QUOTA":
             await _cmd_reset_quota(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_AUDIT":
+            await _cmd_xem_audit(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_THUNG_RAC":
+            await _cmd_xem_thung_rac(chat_id, user, deps); return
+        if cmd_id == "KHOI_PHUC":
+            await _cmd_khoi_phuc(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_HAN":
+            await _cmd_xoa_han(chat_id, remainder, user, deps); return
         if cmd_id == "CHIA_SE_FILE":
             await _cmd_chia_se(chat_id, remainder, user, deps); return
         if cmd_id == "BO_CHIA_SE_FILE":

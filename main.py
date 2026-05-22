@@ -15,16 +15,21 @@ import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI, Request
 
+from audit import SqliteAuditLog
 from channel_telegram import TelegramAdapter
+import scheduled_jobs
 from claude_client import AnthropicLLM
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
-from core_handler import CoreDeps, handle_message
+from deps import CoreDeps
+from core_handler import handle_message
 from cost_monitor import check_and_alert
 from db.migrations import run_migrations
 from drive_client import DriveNoteStore
 from elevation_store import SqliteElevationStore
 from memory_store import SqliteMemoryStore
 from note_index import SqliteNoteIndex
+from notification_store import SqliteNotificationStore
+from notification_service import NotificationService
 from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
 
@@ -45,6 +50,14 @@ user_store = SqliteUserStore()
 note_index = SqliteNoteIndex()
 memory_store = SqliteMemoryStore()
 elevation_store = SqliteElevationStore()
+audit = SqliteAuditLog()
+notif_store = SqliteNotificationStore()
+notif_service = NotificationService(
+    store=notif_store,
+    audit=audit,
+    user_store=user_store,
+    channels={"telegram": channel},
+)
 
 deps = CoreDeps(
     llm=llm,
@@ -55,6 +68,8 @@ deps = CoreDeps(
     note_index=note_index,
     memory_store=memory_store,
     elevation_store=elevation_store,
+    audit=audit,
+    notification_service=notif_service,
 )
 
 
@@ -101,8 +116,12 @@ async def lifespan(app: FastAPI):
         traceback.print_exc()
 
     scheduler.add_job(check_and_alert, "interval", hours=6, id="cost_alert")
+    scheduled_jobs.register_jobs(scheduler, deps)
     scheduler.start()
-    print("[bot] Scheduler started — cost check every 6h")
+    print(
+        "[bot] Scheduler started — cost check every 6h; "
+        "FR-4 recycle purge (180d) + auto-purge-18 at 03:00 UTC+7"
+    )
     yield
     scheduler.shutdown()
 

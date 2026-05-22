@@ -182,6 +182,10 @@ class NoteStore(Protocol):
         """All notes modified during the current local week (Mon..Sun). Returns [{id, name, modified, content}]."""
         ...
 
+    def delete_file(self, file_id: str) -> bool:
+        """Permanently delete a file. Best-effort: returns False on failure, never raises."""
+        ...
+
 
 # ─── Wiki store (LLM-organized topic pages + index) ──────────────────────────
 
@@ -211,6 +215,10 @@ class WikiStore(Protocol):
 
     def build_new_page(self, topic: str, topic_type: str, content_to_add: str) -> str:
         """Build the full markdown body (with frontmatter) for a new wiki page."""
+        ...
+
+    def delete_file(self, file_id: str) -> bool:
+        """Permanently delete a wiki page file. Best-effort: returns False on failure."""
         ...
 
     def build_section(self, content_to_add: str) -> str:
@@ -296,6 +304,21 @@ class NoteIndex(Protocol):
     ) -> bool:
         """Change wiki page scope. Returns False if requester is not the owner."""
         ...
+
+    # ── FR-4 recycle bin ──────────────────────────────────────────────────────
+
+    def soft_delete_note(self, note_id: int) -> bool: ...
+    def soft_delete_wiki(self, wiki_id: int) -> bool: ...
+    def list_deleted_notes(self) -> list[dict]: ...
+    def list_deleted_wiki_pages(self) -> list[dict]: ...
+    def restore_note(self, note_id: int) -> bool: ...
+    def restore_wiki(self, wiki_id: int) -> bool: ...
+    def hard_delete_note(self, note_id: int) -> "dict | None": ...
+    def hard_delete_wiki(self, wiki_id: int) -> "dict | None": ...
+    def list_soft_deleted_notes_older_than(self, threshold_iso: str) -> list[dict]: ...
+    def list_soft_deleted_wiki_older_than(self, threshold_iso: str) -> list[dict]: ...
+    def list_soft_deleted_notes_by_owner(self, owner_user_id: int) -> list[dict]: ...
+    def list_soft_deleted_wiki_by_owner(self, owner_user_id: int) -> list[dict]: ...
 
     # ── Read ──────────────────────────────────────────────────────────────────
 
@@ -432,6 +455,65 @@ class ElevationStore(Protocol):
     def reset_failures(self, channel: str, chat_id: str) -> None: ...
 
 
+# ─── Notification framework (FR-4 sub 4.5) ───────────────────────────────────
+
+@runtime_checkable
+class NotificationStore(Protocol):
+    """Abstract pending-notification queue. Concrete impl: SqliteNotificationStore."""
+
+    def enqueue(self, user_id: int, channel: str, payload: dict) -> int: ...
+    def get_by_id(self, notif_id: int) -> "dict | None": ...
+    def get_pending_ready(self, now=None, limit: int = 100) -> list[dict]: ...
+    def mark_delivered(self, notif_id: int, now=None) -> bool: ...
+    def record_failed_attempt(
+        self, notif_id: int, error: str, max_attempts: int = 5, now=None,
+    ) -> dict: ...
+
+
+@runtime_checkable
+class NotificationService(Protocol):
+    """Producer-facing notification API + scheduled flush.
+
+    Concrete impl: notification_service.NotificationService.
+    """
+
+    def enqueue(self, user_id: int, channel: str, payload: dict) -> int: ...
+
+    async def flush_pending(self, now=None) -> dict: ...
+
+
+# ─── Audit log (FR-4) ─────────────────────────────────────────────────────────
+
+@runtime_checkable
+class AuditLog(Protocol):
+    """Abstract append-only audit log. Concrete impl: SqliteAuditLog.
+
+    Only `log()` writes; immutability is enforced by NOT exposing update/delete.
+    `actor_user_id=None` denotes a system event. Payload is an optional dict
+    serialized to JSON. See docs/FR-4-PLAN.md section 2.3 for the action
+    taxonomy.
+    """
+
+    def log(
+        self,
+        actor_user_id: int | None,
+        action: str,
+        target_type: str | None = None,
+        target_id: "str | int | None" = None,
+        payload: "dict | None" = None,
+    ) -> int: ...
+
+    def list_recent(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        actor_user_id: int | None = None,
+        action: str | None = None,
+        target_type: str | None = None,
+        target_id: "str | int | None" = None,
+    ) -> list: ...
+
+
 # ─── User store ───────────────────────────────────────────────────────────────
 
 @runtime_checkable
@@ -449,6 +531,11 @@ class UserStore(Protocol):
         username: str | None = None,
     ) -> User: ...
     def soft_delete_user(self, user_id: int) -> None: ...
+    def list_deleted_users(self, older_than: str | None = None) -> list[User]: ...
+    def restore_user(self, user_id: int) -> bool: ...
+    def hard_delete_user(self, user_id: int) -> bool: ...
+    def find_users_turning_18(self, on_date: date) -> list[User]: ...
+    def get_chat_id_for_user(self, user_id: int, channel: str) -> "str | None": ...
     def update_user_role(self, user_id: int, role: str) -> None: ...
     def bind_channel(self, user_id: int, channel: str, chat_id: str) -> None: ...
     def create_invite_code(

@@ -35,6 +35,21 @@ class SqliteUserStore:
             ).fetchall()
         return [_row_to_user(r) for r in rows]
 
+    def get_chat_id_for_user(self, user_id: int, channel: str) -> str | None:
+        """Return the chat_id bound to (user_id, channel), or None.
+
+        Used by NotificationService at delivery time to resolve where to send.
+        A user may have at most one binding per channel; ordered by insertion
+        for determinism if that ever changes.
+        """
+        row = self._conn.execute(
+            "SELECT chat_id FROM channel_bindings"
+            " WHERE user_id = ? AND channel = ?"
+            " ORDER BY ROWID ASC LIMIT 1",
+            (user_id, channel),
+        ).fetchone()
+        return row["chat_id"] if row else None
+
     def find_by_channel(self, channel: str, chat_id: str) -> User | None:
         """Return the active user bound to (channel, chat_id), or None."""
         row = self._conn.execute(
@@ -77,6 +92,87 @@ class SqliteUserStore:
                 "UPDATE users SET deleted_at = CURRENT_TIMESTAMP WHERE id = ? AND deleted_at IS NULL",
                 (user_id,),
             )
+
+    # ── FR-4 recycle bin ──────────────────────────────────────────────────────
+
+    def list_deleted_users(self, older_than: str | None = None) -> list[User]:
+        """Return soft-deleted users ordered by `deleted_at DESC`.
+
+        If `older_than` is provided (ISO `YYYY-MM-DD HH:MM:SS` matching the
+        `CURRENT_TIMESTAMP` format), only rows with `deleted_at < older_than`
+        are returned. Used by the 180-day purge job.
+        """
+        if older_than is None:
+            rows = self._conn.execute(
+                "SELECT * FROM users WHERE deleted_at IS NOT NULL"
+                " ORDER BY deleted_at DESC"
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM users WHERE deleted_at IS NOT NULL AND deleted_at < ?"
+                " ORDER BY deleted_at DESC",
+                (older_than,),
+            ).fetchall()
+        return [_row_to_user(r) for r in rows]
+
+    def find_users_turning_18(self, on_date: date) -> list[User]:
+        """Return active users for whom `on_date` is their 18th-birthday day.
+
+        Definition: age(birthdate, on_date) == 18 AND age(birthdate, on_date - 1d) == 17.
+        Used by the daily auto-purge-at-18 scheduled job (FR-4 sub 4.4).
+
+        Known limitation: Feb 29 birthdates are treated as Mar 1 in non-leap
+        years (consistent with `acl._age_in_years`), so a Feb-29 child turns
+        18 on Mar 1 of a non-leap year and the purge runs on Mar 2.
+        """
+        from datetime import timedelta
+
+        yesterday = on_date - timedelta(days=1)
+        rows = self._conn.execute(
+            "SELECT * FROM users WHERE birthdate IS NOT NULL AND deleted_at IS NULL"
+        ).fetchall()
+
+        result: list[User] = []
+        for row in rows:
+            u = _row_to_user(row)
+            if u.birthdate is None:
+                continue
+            if (
+                _age_in_years_local(u.birthdate, on_date) == 18
+                and _age_in_years_local(u.birthdate, yesterday) == 17
+            ):
+                result.append(u)
+        return result
+
+    def restore_user(self, user_id: int) -> bool:
+        """Clear `deleted_at` for a soft-deleted user. Returns True on change.
+
+        Returns False if the user doesn't exist or wasn't deleted in the first
+        place — caller can surface this to the operator.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE users SET deleted_at = NULL WHERE id = ? AND deleted_at IS NOT NULL",
+                (user_id,),
+            )
+        return cur.rowcount > 0
+
+    def hard_delete_user(self, user_id: int) -> bool:
+        """Permanently DELETE a user row. Returns True on success.
+
+        Returns False on FK constraint violation (the user still has rows
+        referencing them — channel_bindings, notes, parent_links, etc.). The
+        caller is expected to surface this to the operator; this method never
+        raises IntegrityError to the caller.
+        """
+        try:
+            with self._conn:
+                cur = self._conn.execute(
+                    "DELETE FROM users WHERE id = ?", (user_id,),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return cur.rowcount > 0
 
     def update_user_role(self, user_id: int, role: str) -> None:
         with self._conn:
@@ -590,3 +686,19 @@ def _row_to_user(row: sqlite3.Row) -> User:
         created_at=datetime.fromisoformat(row["created_at"]),
         deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
     )
+
+
+def _age_in_years_local(birthdate: date, today: date) -> int:
+    """Whole-year age, decrementing if the birthday hasn't happened yet this year.
+
+    Local copy of `acl._age_in_years` to avoid importing from acl into user_store
+    (would invert the dependency layering — acl already references UserStore).
+    Behavior is identical: Feb 29 birthdays treat Mar 1 of non-leap years as
+    the effective birthday.
+    """
+    years = today.year - birthdate.year
+    birth_md = (birthdate.month, birthdate.day)
+    today_md = (today.month, today.day)
+    if today_md < birth_md:
+        years -= 1
+    return years
