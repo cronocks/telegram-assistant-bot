@@ -640,6 +640,49 @@ class SqliteUserStore:
             return False
         return verify_password(plain, row["password_hash"])
 
+    def set_must_change_password(self, user_id: int, flag: bool) -> None:
+        """Set the must_change_password flag for user_id (FR-5)."""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE users SET must_change_password = ? WHERE id = ?",
+                (1 if flag else 0, user_id),
+            )
+
+    def get_must_change_password(self, user_id: int) -> bool:
+        """Return True if the user must change password on next web login (FR-5)."""
+        row = self._conn.execute(
+            "SELECT must_change_password FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return False
+        return bool(row["must_change_password"])
+
+    def get_password_hash(self, user_id: int) -> str | None:
+        """Return the raw password_hash for user_id, or None if not set (FR-5)."""
+        row = self._conn.execute(
+            "SELECT password_hash FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row["password_hash"]
+
+    def find_by_username_or_name(self, login: str) -> User | None:
+        """Look up an active user by username (case-insensitive) or display name (FR-5).
+
+        Used by web login: user may enter either their @username or their display name.
+        Returns None if no active match found.
+        """
+        row = self._conn.execute(
+            """
+            SELECT * FROM users
+            WHERE deleted_at IS NULL
+              AND (LOWER(username) = LOWER(?) OR LOWER(name) = LOWER(?))
+            LIMIT 1
+            """,
+            (login, login),
+        ).fetchone()
+        return _row_to_user(row) if row else None
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
     def bootstrap_admin(self) -> User | None:
