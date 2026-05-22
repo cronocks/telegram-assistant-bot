@@ -1,6 +1,6 @@
 # Kiến Trúc Hệ Thống
 
-> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-3.5** (Privilege Elevation / sudo).
+> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-4** (Audit Log + Stealth-read + Recycle Bin + Notifications).
 > Xem lộ trình phát triển đầy đủ tại [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -68,6 +68,11 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
 | `note_index.py` | `SqliteNoteIndex` — lớp ACL/index SQLite ánh xạ Drive file ID → owner + scope |
 | `memory_store.py` | `SqliteMemoryStore` — L1 memory (2 slot `memory` và `user` mỗi user) |
 | `elevation_store.py` | `SqliteElevationStore` — phiên nâng quyền sudo + rate-limit thất bại (FR-3.5) |
+| `audit.py` | `SqliteAuditLog` — ghi sự kiện audit append-only; Protocol `AuditLog` (FR-4) |
+| `notification_store.py` | `SqliteNotificationStore` — CRUD hàng đợi thông báo persistent (FR-4) |
+| `notification_service.py` | `NotificationService` — bridge store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
+| `scheduled_jobs.py` | Định nghĩa APScheduler jobs: purge 180d, purge-at-18, flush notifications (FR-4) |
+| `deps.py` | `CoreDeps` dataclass — gom tất cả dependency inject vào `core_handler` (FR-4 refactor) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) dùng bởi các retrieval path |
 | `auth.py` | Argon2id password hashing (hạ tầng từ FR-2; FR-3.5 dùng để verify mật khẩu sudo) |
 | `permissions.py` | Permission helpers theo role |
@@ -78,7 +83,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
 | `config.py` | Load biến môi trường |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | Migration runner idempotent dựa trên file |
-| `db/migrations/*.sql` | File SQL migration (001–013) |
+| `db/migrations/*.sql` | File SQL migration (001–015) |
 
 ---
 
@@ -251,6 +256,38 @@ Phiên nâng quyền sudo, một dòng / `(channel, chat_id)`. Re-elevate sẽ r
 | `last_attempt_at` | DATETIME NULL | |
 | PRIMARY KEY | `(channel, chat_id)` | |
 
+#### `audit_log` *(FR-4)*
+Bảng append-only ghi mọi sự kiện có ý nghĩa pháp lý/quản trị. Chỉ INSERT — không bao giờ UPDATE/DELETE. `actor_user_id` nullable cho system events (scheduled job, ...).
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `actor_user_id` | INTEGER FK → users | NULL = sự kiện hệ thống (scheduled job) |
+| `action` | TEXT NOT NULL | Tên sự kiện (xem taxonomy Section 6) |
+| `target_type` | TEXT | `note` \| `wiki_page` \| `user` \| `notification` \| NULL |
+| `target_id` | TEXT | Drive file ID hoặc integer id; TEXT để linh hoạt |
+| `payload` | TEXT | JSON string; NULL nếu không có metadata thêm |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+
+Indexes: `(actor_user_id, created_at DESC)`, `(target_type, target_id, created_at DESC)`, `(action, created_at DESC)`.
+
+#### `pending_notifications` *(FR-4)*
+Hàng đợi thông báo persistent. Survive restart (không dùng in-memory queue). Job `flush_pending_notifications` đọc bảng này mỗi 30 giây.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | Người nhận |
+| `channel` | TEXT NOT NULL | `telegram` \| `web` \| … |
+| `payload` | TEXT NOT NULL | JSON: `{kind, text, extra}` — service quyết định shape |
+| `status` | TEXT | `pending` \| `delivered` \| `failed` — default `pending` |
+| `attempts` | INTEGER | Mặc định 0; ≥ 5 → `failed` |
+| `last_error` | TEXT | Error message rút gọn (max 500 chars) |
+| `next_retry_at` | DATETIME | NULL = ready ngay; set khi backoff |
+| `created_at` / `delivered_at` | DATETIME | Timestamps |
+
+Partial index: `(status, next_retry_at) WHERE status = 'pending'` — job retry chỉ scan rows đang pending.
+
 ---
 
 ## 6. Mô Hình Phân Quyền
@@ -289,7 +326,52 @@ Mỗi note và wiki page có cột `scope` trong lớp ACL SQLite (`notes`, `wik
 
 **Điểm enforce ACL:** mọi retrieval path đều filter qua `acl.can_read` / `acl.filter_visible` — `smart_search`, `get_recent_notes`, `get_current_week_notes`, wiki `retrieve_pages`, và các lệnh trực tiếp `xem` / `xem wiki` / `liệt kê`.
 
-**Admin và data private:** trong FR-3, admin **không** đọc được note private của người khác (Decision #52). Stealth-read + audit log dời sang FR-4.
+**Admin và data private (FR-4):** admin **đọc được** note/wiki `private` của user là con dưới 18 tuổi (stealth-read). Điều kiện: `reader.role == 'admin'` AND owner có quan hệ `parent_links` (là con của ai đó) AND `age(owner) < 18`. Mọi lần đọc đều ghi audit row `stealth_read_note` / `stealth_read_wiki`; owner KHÔNG nhận thông báo. Khi con tròn 18, stealth-read tự động tắt tại runtime (không mutate DB).
+
+### Recycle Bin *(FR-4)*
+
+Soft-delete đã có từ trước qua cột `deleted_at` trên `notes`, `wiki_pages`, `users`. FR-4 bổ sung lệnh admin để xem, khôi phục, và xóa hẳn.
+
+| Lệnh | Hành vi |
+|------|---------|
+| `xem thung rac` | Liệt kê tất cả items có `deleted_at IS NOT NULL` (notes, wiki pages, users), sắp xếp theo `deleted_at` giảm dần. Ghi audit `recycle_view`. |
+| `khoi phuc: <kind> <id>` | Clear `deleted_at`. Ví dụ: `khoi phuc: note 12`. Ghi audit `recycle_restore`. |
+| `xoa han: <kind> <id>` | Hard delete ngay, bỏ qua retention 180 ngày. Với note/wiki: xóa cả file trên Drive (best-effort). Ghi audit `recycle_purge`. |
+
+**Scheduled jobs (chạy 3h sáng UTC+7 hàng ngày):**
+- `purge_recycle_bin_180d`: xóa vĩnh viễn mọi item có `deleted_at < now − 180 ngày`.
+- `purge_children_turning_18`: khi user vừa tròn 18 hôm trước, purge toàn bộ soft-deleted notes/wiki thuộc user đó. Live data không bị đụng.
+
+### Audit Log Taxonomy *(FR-4)*
+
+| `action` | `target_type` | Khi nào |
+|---|---|---|
+| `stealth_read_note` | `note` | Admin đọc private note của child <18 |
+| `stealth_read_wiki` | `wiki_page` | Admin đọc private wiki của child <18 |
+| `recycle_view` | — | Admin chạy `xem thung rac` |
+| `recycle_restore` | `note` / `wiki_page` / `user` | Admin khôi phục item |
+| `recycle_purge` | `note` / `wiki_page` / `user` | Hard delete (manual hoặc auto 180d) |
+| `auto_purge_18` | `user` | Daily job phát hiện user vừa tròn 18 |
+| `sudo_elevate` / `sudo_drop` / `sudo_fail` / `sudo_locked` | — | Sudo events (migrate từ stdout FR-3.5) |
+| `password_set` | `user` | Đặt/đổi mật khẩu admin |
+| `role_change` | `user` | Admin đổi role |
+| `scope_change` | `note` / `wiki_page` | `chia se` / `bo chia se` |
+| `notification_enqueued` | `notification` | Thông báo được đưa vào queue |
+| `notification_delivered` | `notification` | Gửi thành công |
+| `notification_retry` | `notification` | Lần gửi lại trung gian (attempts < 5) |
+| `notification_failed` | `notification` | Đạt max 5 attempts — không retry nữa |
+
+### Notification Framework *(FR-4)*
+
+Plumbing tối thiểu để bất kỳ module nào enqueue thông báo gửi qua `ChannelAdapter`, với retry/backoff persistent qua SQLite.
+
+- **`enqueue(user_id, channel, payload)`** — chỉ ghi DB + audit `notification_enqueued`. Không gửi ngay, không blocking caller.
+- **`flush_pending()`** — scheduler gọi mỗi 30 giây; đọc queue, gửi qua adapter:
+  - Thành công → `status='delivered'`, audit `notification_delivered`.
+  - Thất bại nhưng `attempts < 5` → tăng `attempts`, set `next_retry_at = now + 2^attempts phút`, audit `notification_retry`.
+  - Thất bại và `attempts >= 5` → `status='failed'`, audit `notification_failed`.
+- Payload schema: `{"kind": "text", "text": "...", "extra": {...}}`. FR-7 sẽ định nghĩa thêm kinds (`reminder`, `digest`, ...).
+- Observability: `xem audit` cho ra full trace enqueue → retry × N → delivered/failed theo thứ tự thời gian.
 
 ### Privilege Elevation — sudo *(FR-3.5)*
 
@@ -305,7 +387,7 @@ Production KHÔNG dùng admin làm tài khoản mặc định. Tài khoản chí
 - TTL 15 phút (`SUDO_TTL_MINUTES`), hết hạn lazy — không cần cron.
 - Gating nhiều tầng: lệnh `sudo` chỉ role `manager` dùng; verify Argon2id với hash của (các) user role `admin`; rate-limit 5 fail → khóa 15 phút.
 - Bot tự xóa message chứa mật khẩu (`delete_message` trên `ChannelAdapter`, implement bằng Telegram `deleteMessage` API).
-- Audit stdout: `sudo_elevate`, `sudo_drop`, `sudo_fail`, `sudo_locked`, `password_set` (audit table chính thức ở FR-4).
+- Audit table: `sudo_elevate`, `sudo_drop`, `sudo_fail`, `sudo_locked`, `password_set` ghi vào `audit_log` (migrate từ stdout FR-3.5 sang FR-4).
 - `dat mat khau` chỉ chạy được từ tài khoản **natively-admin** — vừa là đặt lần đầu vừa là cơ chế recovery (không có flow "quên mật khẩu" riêng — Decision #59).
 
 ### Phân quyền lệnh theo role
@@ -318,6 +400,8 @@ Production KHÔNG dùng admin làm tài khoản mặc định. Tài khoản chí
 | Duyệt username | ✅ | ❌ | ❌ | ❌ |
 | Đặt parent link | ✅ | ❌ | ❌ | ❌ |
 | Ghi chú / nhật ký / wiki | ✅ | ✅ | ✅ | chỉ đọc |
+| Xem thung rác / khôi phục / xóa hẳn | ✅ | ❌ | ❌ | ❌ |
+| Xem audit log | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -395,6 +479,15 @@ Lệnh được match qua prefix matcher không phân biệt dấu tiếng Việ
 | `sudo: <mật khẩu>` | Nâng role `manager` lên `admin` tạm thời 15 phút (bot tự xóa message chứa mật khẩu) |
 | `thoát sudo` | Hạ quyền ngay lập tức |
 | `đặt mật khẩu: <mật khẩu>` | Đặt/đổi mật khẩu admin — chỉ tài khoản natively-admin (cũng là cơ chế recovery) |
+
+### Audit & Quản trị *(FR-4)*
+| Lệnh | Mô tả | Ai dùng |
+|------|-------|---------|
+| `xem audit` | Liệt kê 50 audit events gần nhất | admin |
+| `xem audit <action>` | Lọc theo loại sự kiện (vd `xem audit sudo_elevate`) | admin |
+| `xem thung rac` | Liệt kê items đang trong recycle bin (soft-deleted) | admin |
+| `khoi phuc: <kind> <id>` | Khôi phục item (vd `khoi phuc: note 12`) | admin |
+| `xoa han: <kind> <id>` | Hard delete ngay, bỏ qua retention 180 ngày | admin |
 
 ### Đăng ký (trước khi xác thực)
 | Lệnh | Mô tả |

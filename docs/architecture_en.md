@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-3.5** (Privilege Elevation / sudo).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-4** (Audit Log + Stealth-read + Recycle Bin + Notifications).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -68,6 +68,11 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `note_index.py` | `SqliteNoteIndex` — SQLite ACL/index layer mapping Drive file IDs to owner + scope |
 | `memory_store.py` | `SqliteMemoryStore` — L1 memory (`memory` and `user` slots per user) |
 | `elevation_store.py` | `SqliteElevationStore` — sudo elevation sessions + failed-attempt rate-limit (FR-3.5) |
+| `audit.py` | `SqliteAuditLog` — append-only audit event writer; `AuditLog` Protocol (FR-4) |
+| `notification_store.py` | `SqliteNotificationStore` — persistent notification queue CRUD (FR-4) |
+| `notification_service.py` | `NotificationService` — bridges store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
+| `scheduled_jobs.py` | APScheduler job definitions: 180d purge, purge-at-18, notification flush (FR-4) |
+| `deps.py` | `CoreDeps` dataclass — collects all dependencies injected into `core_handler` (FR-4 refactor) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
@@ -78,7 +83,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–013) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–015) |
 
 ---
 
@@ -251,6 +256,38 @@ Per-chat failed-password counter; locks after threshold. Reset on a successful s
 | `last_attempt_at` | DATETIME NULL | |
 | PRIMARY KEY | `(channel, chat_id)` | |
 
+#### `audit_log` *(FR-4)*
+Append-only table recording every event with legal or administrative significance. INSERT only — never UPDATE or DELETE. `actor_user_id` is nullable for system events (scheduled jobs, etc.).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `actor_user_id` | INTEGER FK → users | NULL = system event (scheduled job) |
+| `action` | TEXT NOT NULL | Event name (see taxonomy in Section 6) |
+| `target_type` | TEXT | `note` \| `wiki_page` \| `user` \| `notification` \| NULL |
+| `target_id` | TEXT | Drive file ID or integer id; TEXT for flexibility |
+| `payload` | TEXT | JSON string; NULL if no additional metadata |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+
+Indexes: `(actor_user_id, created_at DESC)`, `(target_type, target_id, created_at DESC)`, `(action, created_at DESC)`.
+
+#### `pending_notifications` *(FR-4)*
+Persistent notification queue. Survives restarts (no in-memory queue). The `flush_pending_notifications` job reads this table every 30 seconds.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | Recipient |
+| `channel` | TEXT NOT NULL | `telegram` \| `web` \| … |
+| `payload` | TEXT NOT NULL | JSON: `{kind, text, extra}` — shape defined by service |
+| `status` | TEXT | `pending` \| `delivered` \| `failed` — default `pending` |
+| `attempts` | INTEGER | Default 0; ≥ 5 → `failed` |
+| `last_error` | TEXT | Truncated error message (max 500 chars) |
+| `next_retry_at` | DATETIME | NULL = ready immediately; set during backoff |
+| `created_at` / `delivered_at` | DATETIME | Timestamps |
+
+Partial index: `(status, next_retry_at) WHERE status = 'pending'` — retry job scans only pending rows.
+
 ---
 
 ## 6. Permission Model
@@ -289,7 +326,52 @@ Every note and wiki page has a `scope` column in the SQLite ACL layer (`notes`, 
 
 **ACL enforcement points:** all retrieval paths filter through `acl.can_read` / `acl.filter_visible` — `smart_search`, `get_recent_notes`, `get_current_week_notes`, wiki `retrieve_pages`, and the direct `xem` / `xem wiki` / `liệt kê` commands.
 
-**Admin and private data:** in FR-3, admin **does not** read other users' private notes (Decision #52). Stealth-read with audit logging is deferred to FR-4.
+**Admin and private data (FR-4):** admin **can read** `private` notes/wiki belonging to users who are children under 18. Conditions: `reader.role == 'admin'` AND owner has a `parent_links` relationship (is someone's child) AND `age(owner) < 18`. Every read emits an audit row (`stealth_read_note` / `stealth_read_wiki`); the owner receives no notification. When the child turns 18, stealth-read is automatically disabled at runtime (DB is not mutated).
+
+### Recycle Bin *(FR-4)*
+
+Soft-delete has been present since earlier FRs via `deleted_at` on `notes`, `wiki_pages`, and `users`. FR-4 adds admin commands to view, restore, and permanently delete items.
+
+| Command | Behavior |
+|---------|----------|
+| `xem thung rac` | Lists all items with `deleted_at IS NOT NULL` (notes, wiki pages, users), sorted by `deleted_at` descending. Emits audit `recycle_view`. |
+| `khoi phuc: <kind> <id>` | Clears `deleted_at`. Example: `khoi phuc: note 12`. Emits audit `recycle_restore`. |
+| `xoa han: <kind> <id>` | Hard deletes immediately, bypassing 180-day retention. For notes/wiki: also removes the Drive file (best-effort). Emits audit `recycle_purge`. |
+
+**Scheduled jobs (run at 03:00 UTC+7 daily):**
+- `purge_recycle_bin_180d`: permanently deletes all items with `deleted_at < now − 180 days`.
+- `purge_children_turning_18`: when a user turned 18 yesterday, purges all their soft-deleted notes/wiki. Live data is untouched.
+
+### Audit Log Taxonomy *(FR-4)*
+
+| `action` | `target_type` | When |
+|---|---|---|
+| `stealth_read_note` | `note` | Admin reads a private note belonging to a child <18 |
+| `stealth_read_wiki` | `wiki_page` | Admin reads a private wiki page belonging to a child <18 |
+| `recycle_view` | — | Admin runs `xem thung rac` |
+| `recycle_restore` | `note` / `wiki_page` / `user` | Admin restores an item |
+| `recycle_purge` | `note` / `wiki_page` / `user` | Hard delete (manual or auto 180d) |
+| `auto_purge_18` | `user` | Daily job detected a user who just turned 18 |
+| `sudo_elevate` / `sudo_drop` / `sudo_fail` / `sudo_locked` | — | Sudo events (migrated from stdout in FR-3.5) |
+| `password_set` | `user` | Admin password set or changed |
+| `role_change` | `user` | Admin changes a user's role |
+| `scope_change` | `note` / `wiki_page` | `chia se` / `bo chia se` |
+| `notification_enqueued` | `notification` | Notification added to queue |
+| `notification_delivered` | `notification` | Successfully sent |
+| `notification_retry` | `notification` | Intermediate retry (attempts < 5) |
+| `notification_failed` | `notification` | Reached max 5 attempts — no further retries |
+
+### Notification Framework *(FR-4)*
+
+Minimal plumbing allowing any module to enqueue notifications delivered via `ChannelAdapter`, with persistent retry/backoff in SQLite.
+
+- **`enqueue(user_id, channel, payload)`** — writes to DB and emits audit `notification_enqueued`. Does not send immediately; non-blocking for the caller.
+- **`flush_pending()`** — called by scheduler every 30 seconds; reads the queue, sends via adapter:
+  - Success → `status='delivered'`, audit `notification_delivered`.
+  - Failure with `attempts < 5` → increments `attempts`, sets `next_retry_at = now + 2^attempts minutes`, audit `notification_retry`.
+  - Failure with `attempts >= 5` → `status='failed'`, audit `notification_failed`.
+- Payload schema: `{"kind": "text", "text": "...", "extra": {...}}`. FR-7 will define additional kinds (`reminder`, `digest`, …).
+- Observability: `xem audit` surfaces the full trace — enqueue → retry × N → delivered/failed — in chronological order.
 
 ### Privilege Elevation — sudo *(FR-3.5)*
 
@@ -305,7 +387,7 @@ Production does NOT use admin as the default account. The primary account runs a
 - TTL 15 minutes (`SUDO_TTL_MINUTES`), lazy expiry — no cron required.
 - Defense in depth: `sudo` is gated to role `manager`; verifies Argon2id against the hash of any user with role `admin`; rate-limited to 5 fails → 15-minute lockout.
 - The bot deletes messages containing passwords via `delete_message` on `ChannelAdapter` (implemented through Telegram's `deleteMessage` API).
-- Audit goes to stdout: `sudo_elevate`, `sudo_drop`, `sudo_fail`, `sudo_locked`, `password_set` (a formal audit table arrives in FR-4).
+- Audit table: `sudo_elevate`, `sudo_drop`, `sudo_fail`, `sudo_locked`, `password_set` are written to `audit_log` (migrated from stdout in FR-3.5 to FR-4).
 - `dat mat khau` is restricted to **natively-admin** accounts — it covers both initial setup and password recovery (no separate "forgot password" flow — Decision #59).
 
 ### Command access by role
@@ -318,6 +400,8 @@ Production does NOT use admin as the default account. The primary account runs a
 | Approve username | ✅ | ❌ | ❌ | ❌ |
 | Set parent link | ✅ | ❌ | ❌ | ❌ |
 | Notes / journal / wiki | ✅ | ✅ | ✅ | read-only |
+| Recycle bin (view / restore / hard delete) | ✅ | ❌ | ❌ | ❌ |
+| View audit log | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -395,6 +479,15 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | `sudo: <password>` | Elevate `manager` to `admin` for 15 minutes (the bot deletes the message containing the password) |
 | `thoát sudo` | Drop elevation immediately |
 | `đặt mật khẩu: <password>` | Set/change the admin password — natively-admin accounts only (also the recovery mechanism) |
+
+### Audit & Administration *(FR-4)*
+| Command | Description | Who |
+|---------|-------------|-----|
+| `xem audit` | List the 50 most recent audit events | admin |
+| `xem audit <action>` | Filter by event type (e.g. `xem audit sudo_elevate`) | admin |
+| `xem thung rac` | List items currently in the recycle bin (soft-deleted) | admin |
+| `khoi phuc: <kind> <id>` | Restore an item (e.g. `khoi phuc: note 12`) | admin |
+| `xoa han: <kind> <id>` | Hard delete immediately, bypassing 180-day retention | admin |
 
 ### Registration (pre-auth)
 | Command | Description |
