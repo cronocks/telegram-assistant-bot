@@ -74,6 +74,11 @@ _backup_engine: BackupEngine | None = None
 _import_tokens: dict[str, dict] = {}
 _IMPORT_TOKEN_TTL = timedelta(minutes=5)
 
+# Download token store: token → {zip_bytes, filename, expires_at}
+# Allows IDM/download managers to re-request the same file without hitting cooldown.
+_download_tokens: dict[str, dict] = {}
+_DOWNLOAD_TOKEN_TTL = timedelta(seconds=60)
+
 _COOKIE_NAME = "web_session"
 _SESSION_MAX_AGE = config.WEB_SESSION_TTL_DAYS * 86_400  # seconds
 
@@ -132,6 +137,33 @@ def _consume_import_token(token: str) -> ParsedImport | None:
     if entry["expires_at"] < datetime.now(timezone.utc):
         return None
     return entry["parsed"]
+
+
+# ── Download token helpers ────────────────────────────────────────────────────
+
+def _store_download_token(zip_bytes: bytes, filename: str) -> str:
+    """Store a ZIP payload keyed by a fresh UUID. Returns the token."""
+    now = datetime.now(timezone.utc)
+    expired = [t for t, v in _download_tokens.items() if v["expires_at"] < now]
+    for t in expired:
+        del _download_tokens[t]
+    token = str(uuid.uuid4())
+    _download_tokens[token] = {
+        "zip_bytes": zip_bytes,
+        "filename": filename,
+        "expires_at": now + _DOWNLOAD_TOKEN_TTL,
+    }
+    return token
+
+
+def _consume_download_token(token: str) -> dict | None:
+    """Retrieve and remove a download entry by token. Returns None if expired/missing."""
+    entry = _download_tokens.pop(token, None)
+    if entry is None:
+        return None
+    if entry["expires_at"] < datetime.now(timezone.utc):
+        return None
+    return entry
 
 
 # ── Cookie helpers ─────────────────────────────────────────────────────────────
@@ -745,7 +777,11 @@ def _export_filename(user_name: str) -> str:
 
 @router.get("/settings/export")
 async def self_export(web_session: str | None = Cookie(default=None)):
-    """Self-export: the authenticated user downloads their own data as a ZIP."""
+    """Self-export: generate ZIP, store under a one-time token, redirect to download URL.
+
+    Two-step approach prevents download managers (e.g. IDM) from hitting the
+    rate-limit on their mandatory second request to the same URL.
+    """
     user = _resolve_user(web_session)
     if user is None:
         return RedirectResponse(url="/login", status_code=303)
@@ -766,7 +802,21 @@ async def self_export(web_session: str | None = Cookie(default=None)):
         logger.warning("Self export failed for user %s: %s", user.id, exc)
         return HTMLResponse(f"Export thất bại: {exc}", status_code=500)
 
-    return _zip_response(zip_bytes, _export_filename(user.name))
+    filename = _export_filename(user.name)
+    token = _store_download_token(zip_bytes, filename)
+    return RedirectResponse(url=f"/settings/export/download?token={token}", status_code=303)
+
+
+@router.get("/settings/export/download")
+async def self_export_download(token: str):
+    """Serve the pre-generated ZIP identified by a one-time download token (TTL 60s)."""
+    entry = _consume_download_token(token)
+    if entry is None:
+        return HTMLResponse(
+            "Link tải đã hết hạn hoặc không hợp lệ. Vui lòng thử lại.",
+            status_code=410,
+        )
+    return _zip_response(entry["zip_bytes"], entry["filename"])
 
 
 @router.get("/admin/users/{target_id}/export")
