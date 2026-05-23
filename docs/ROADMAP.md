@@ -467,7 +467,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 - Import / restore từ backup
 - Migration tool cho local mode (clone SQLite + Drive → local FS)
 
-**Implementation summary (7 sub-tasks):**
+**Implementation summary (7 sub-tasks + staging fixes + Option C):**
 - **6.1** `BackupEngine` + `generate_export()`: ZIP in-memory (BytesIO), rate-limit 5 phút/user, audit `data_export`
 - **6.2** `parse_import()` + `apply_import()`: validate ZIP, transactional restore (user → bindings → quota → notes → wiki → memory → conversations → parent_links), best-effort Drive rollback
 - **6.3** Web routes + `templates/import.html`: `GET /settings/export`, `GET /admin/users/{id}/export`, `GET /admin/import`, `POST /admin/import/preview`, `POST /admin/import/apply`; import preview token 5 phút
@@ -475,6 +475,9 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 - **6.5** `tools/local_migrate.py`: CLI standalone, `sqlite3.backup()` read-only, idempotent file mirror từ Drive, `--dry-run`/`--users`/`--include-deleted`
 - **6.6** Wiring: instantiate `BackupEngine` trong `main.py`, pass vào `deps`, `web_deps`, `init_web_router()`
 - **6.7** Tests: 82 test cases (`test_backup_engine.py`, `test_backup_routes.py`, `test_local_migrate.py`)
+- **Staging fix — IDM double-request**: download token redirect pattern (D81); `GET /settings/export/download?token=` route mới
+- **Staging fix — self-export guard**: `xuat du lieu` self guard khi có trailing text để tránh nhầm với admin command
+- **Option C — self-service password**: lệnh `doi web pass: <mat_khau>` (mọi user, D82) + web form `GET/POST /settings/export/password` + `templates/settings_password.html`; link trong sidebar chat
 
 ---
 
@@ -646,6 +649,8 @@ INDEX (user_id, category_id, occurred_at)
 | 78 | Rate-limit export = in-memory dict | `_last_export_at: dict[int, datetime]` trên instance `BackupEngine`; 5 phút/user | Đủ cho quy mô gia đình; không cần DB table chỉ để lưu timestamp rate-limit; reset khi restart là acceptable | 2026-05-23 |
 | 79 | Import preview token = in-memory UUID, TTL 5 phút | `_import_tokens: dict[str, dict]` trong `web_router.py`; token 1 lần dùng; cleanup lazy | Tránh DB table chỉ để bridge preview → apply (2 request liên tiếp); TTL 5 phút đủ cho UX; không cần persist qua restart | 2026-05-23 |
 | 80 | Drive upload backup dùng API trực tiếp, không qua NoteStore Protocol | `BackupEngine.upload_to_drive()` gọi thẳng `_get_service()` từ `drive_client.py`; tạo subfolder `Claude-Notes/Backups/` | `NoteStore.save_note()` chỉ nhận string content (encode UTF-8), không xử lý được ZIP binary; BackupEngine là concrete class (D76) nên không vi phạm hexagonal — chỉ core_handler mới bắt buộc qua Protocol | 2026-05-23 |
+| 81 | Web export dùng download token redirect để tránh IDM double-request | `GET /settings/export` generate ZIP → lưu vào `_download_tokens` dict (TTL 60s) → redirect 303 tới `GET /settings/export/download?token=xxx`; token dùng `get` (không `pop`) để IDM retry trong TTL không bị 410 | IDM và download manager thường gửi 2 request HEAD+GET tới cùng URL; redirect tách URL generate (rate-limited) khỏi URL download (token-gated); token TTL-based thay vì one-time-use để support retry trong window | 2026-05-23 |
+| 82 | Self-service web password qua Telegram channel binding | Lệnh `doi web pass: <mat_khau>` cho mọi user (không cần admin); channel binding là identity proof — không cần current password; set `must_change_password=False`; auto-delete message chứa password; web form `/settings/password` dùng current password để xác nhận | User thường không có admin để set password ban đầu; Telegram channel binding đủ để chứng minh identity; web form cần current password vì không có channel binding identity proof | 2026-05-23 |
 
 ---
 
@@ -696,17 +701,19 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
   - Sidebar collapsible, conversation list, rename inline, search (LIKE), new chat lazy create
   - LLM title generation async (Haiku 4.5) sau message đầu; SSE `title_update` event
   - Admin stealth-read hội thoại web của user under-18; audit `stealth_read_web_conversation`
-- 🔄 **FR-6** IN PROGRESS — branch `feature/FR6` — Backup / Restore Tooling; 82 tests passing
+- ✅ **FR-6** DONE — branch `feature/FR6` — Backup / Restore Tooling; staging tested; chờ merge main
   - `backup_engine.py`: `BackupEngine` concrete class; export ZIP in-memory, rate-limit 5 phút; parse/apply import transactional với Drive rollback
-  - Web: 5 routes (`/settings/export`, `/admin/users/{id}/export`, `/admin/import`, `/admin/import/preview`, `/admin/import/apply`); `templates/import.html`
-  - Telegram: `xuat du lieu` (self) + `xuat du lieu: <tên>` (admin); Drive upload vào `Claude-Notes/Backups/`
+  - Web: 6 routes (`/settings/export`, `/settings/export/download`, `/admin/users/{id}/export`, `/admin/import`, `/admin/import/preview`, `/admin/import/apply`); download token redirect (D81); `templates/import.html`
+  - Telegram: `xuat du lieu` (self, guard trailing text) + `xuat du lieu: <tên>` (admin); `doi web pass: <mat_khau>` self-service (D82)
   - `tools/local_migrate.py`: CLI standalone migrate SQLite + Drive → local FS
+  - Option C: web form `GET/POST /settings/password` + `templates/settings_password.html`; sidebar link trong chat
+  - 82 tests passing
 
 ---
 
 ### 🔔 Next session reminder (cho phiên tiếp theo)
 
-**FR-6 đang trên branch `feature/FR6` — code và tests xong (82 cases), chờ merge vào `main`.**
+**FR-6 DONE — branch `feature/FR6`, staging tested, decisions #76-#82 logged, chờ merge vào `main`.**
 
 **Tiếp theo:** merge FR-6 → `main`, sau đó bắt đầu **FR-7** (Tasks + Reminders + Daily Summary + Parent Digest).
 
