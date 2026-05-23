@@ -186,7 +186,7 @@
 <nav>
   <div style="display:flex; align-items:center; gap:0.6rem;">
     <button class="sidebar-toggle" type="button"
-            onclick="document.querySelector('[x-data]').__x.$data.toggleSidebar()"
+            onclick="window.dispatchEvent(new CustomEvent('toggle-sidebar'))"
             title="Ẩn/hiện danh sách hội thoại">☰</button>
     <span class="brand">🏠 Family Assistant</span>
   </div>
@@ -215,7 +215,7 @@
      data-user-id="{{ user.id }}">
 </div>
 
-<div class="app-shell" x-data="chatApp()" x-init="init()">
+<div class="app-shell" x-data="chatApp()" x-init="init()" @toggle-sidebar.window="toggleSidebar()">
 
   {# Mobile backdrop #}
   <div class="sidebar-backdrop" :class="{ visible: sidebarOpen && isMobile }"
@@ -342,9 +342,7 @@ function chatApp() {
         this.isMobile = window.innerWidth <= 768;
         if (!this.isMobile) this.sidebarOpen = true;
       });
-      const key = this.activeConvId
-        ? `?conversation_id=${this.activeConvId}`
-        : `?conversation_id=pending_${_userId}`;
+      const key = this.activeConvId ? `?conversation_id=${this.activeConvId}` : '';
       this._connectSSE(key);
       this.$nextTick(() => {
         this.scrollBottom();
@@ -444,7 +442,7 @@ function chatApp() {
       this.searchResults = null;
       window.history.pushState({}, '', '/chat');
       // SSE with pending key so title_update can still reach us after lazy create
-      this._connectSSE(`?conversation_id=pending_${_userId}`);
+      this._connectSSE('');
       if (this.isMobile) this.sidebarOpen = false;
       this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
     },
