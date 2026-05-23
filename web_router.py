@@ -157,11 +157,17 @@ def _store_download_token(zip_bytes: bytes, filename: str) -> str:
 
 
 def _consume_download_token(token: str) -> dict | None:
-    """Retrieve and remove a download entry by token. Returns None if expired/missing."""
-    entry = _download_tokens.pop(token, None)
+    """Retrieve a download entry by token. Returns None if expired/missing.
+
+    Token is NOT removed on read — it expires naturally after TTL (60s).
+    This allows download managers (e.g. IDM) to re-request the same URL
+    multiple times within the TTL window without getting 410 Gone.
+    """
+    entry = _download_tokens.get(token)
     if entry is None:
         return None
     if entry["expires_at"] < datetime.now(timezone.utc):
+        _download_tokens.pop(token, None)
         return None
     return entry
 
