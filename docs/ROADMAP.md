@@ -440,6 +440,26 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 
 ---
 
+### FR-5.5 — Web Chat History Sidebar
+**Status:** PENDING (chốt scope 2026-05-23, sẽ start sau khi FR-5 merge `main`)
+**Lý do:** FR-5 hiện tại chat web là single-thread, reload page mất hội thoại trước. Thêm sidebar bên trái liệt kê các phiên cũ — UX giống Claude.ai/ChatGPT.
+**Scope:**
+- Migration mới (017): bảng `web_conversations` (id, user_id, title, created_at, updated_at) + `web_messages` (id, conversation_id, role, text, created_at)
+- `web_conversation_store.py` + Protocol `WebConversationStore`
+- Modify `WebChannelAdapter` để persist inbound + outbound message vào DB theo conversation
+- Modify `web_router.py`: API CRUD conversations, route `/chat/<id>`, search endpoint (LIKE-based)
+- Modify templates: sidebar collapsible (mặc định collapsed trên mobile), conversation list, new chat button, rename inline, search box
+- LLM title generation: 1 call Haiku 4.5 sau message đầu tiên → set title; user có thể rename
+- Admin stealth-read: extend FR-4 ACL cho hội thoại web user under-18, emit audit `stealth_read` với `target_type=web_conversation`
+- Retention: vĩnh viễn, không auto-purge (KHÔNG tích hợp với recycle bin FR-4)
+- Scope hội thoại: chỉ kênh web, KHÔNG gộp lịch sử Telegram (Telegram không persist message; effort không xứng)
+- Search: `LIKE '%query%'` đơn giản trên `web_messages.text`, không dùng FTS5 (scale gia đình ~10 user × vài trăm message → đủ nhanh); migration sang FTS5 sau là additive
+- Tests: store CRUD, conversation isolation per user, title generation flow, search, stealth-read audit
+**Dependencies:** FR-5 (web channel + session infra), FR-4 (audit log cho stealth-read)
+**Note:** Tách riêng khỏi FR-5 vì scope đáng kể (~1.5-2 ngày work); FR-5 đã testable đủ để ship trước. FR-5.5 chỉ là additive — không phá API FR-5.
+
+---
+
 ### FR-6 — Backup / Restore Tooling
 **Status:** PENDING
 **Scope:**
@@ -606,23 +626,31 @@ INDEX (user_id, category_id, occurred_at)
 | 67 | CSRF = SameSite=Lax thay token | Cookie `SameSite=Lax` + `HttpOnly` + `Secure` (non-local); KHÔNG implement explicit CSRF token | Đủ chống CSRF cho gia đình ~10 user; giảm complexity (không cần token rotation, hidden form field, header check); migration path sang token sau này là additive nếu cần | 2026-05-22 |
 | 68 | Admin đặt mật khẩu + force-reset flag | Lệnh `dat web pass: <user>, <pw>` admin-only; set `users.must_change_password=1`; user login lần đầu bị redirect `/setup-password` đổi mật khẩu mới trước khi vào chat | Tránh admin biết password thật của user (admin chỉ biết temp); pattern chuẩn cho first-login setup | 2026-05-22 |
 | 69 | Web `CoreDeps` riêng | `web_deps` instance riêng trên `app.state` với `WebChannelAdapter` thay `TelegramAdapter`; share rest của adapter pool (DB, store, audit, ...) | Channel khác nhau cần channel adapter khác; nhưng auth/storage/audit cùng pool → tách `CoreDeps` riêng là pattern sạch nhất | 2026-05-22 |
+| 70 | FR-5.5 tách riêng khỏi FR-5 | Web chat history sidebar tách thành FR-5.5 riêng, làm sau khi FR-5 merge `main`; KHÔNG gộp vào FR-5 | Scope đáng kể (~1.5-2 ngày: migration mới, store mới, modify channel + router + templates, LLM title, stealth-read); FR-5 đã testable đủ để ship; PR nhỏ dễ review hơn; FR-5.5 chỉ additive | 2026-05-23 |
+| 71 | Web chat history web-only | Sidebar chỉ liệt kê hội thoại từ kênh web, KHÔNG gộp lịch sử Telegram | Telegram hiện không persist message (chỉ webhook → reply); persist từ đầu tốn refactor `core_handler` + không lấy lại được lịch sử cũ; Telegram client đã có UX lịch sử riêng | 2026-05-23 |
+| 72 | Title generation = LLM Haiku | Sau message đầu tiên gọi Haiku 4.5 generate title ~3-7 từ; user có thể rename inline | Cost ~$0.0001/conversation (1000 chat = $0.10) — không đáng kể với gia đình; truncate first message vô dụng khi user gõ "Hi"; pattern chuẩn của Claude.ai/ChatGPT | 2026-05-23 |
+| 73 | Search = LIKE đơn giản v1 | Search lịch sử dùng `WHERE text LIKE '%query%'`, không dùng FTS5 | Scale gia đình ~10 user × vài trăm message → LIKE dưới 50ms; FTS5 thêm virtual table + trigger sync mỗi insert phức tạp không cần thiết; migration sang FTS5 sau là additive | 2026-05-23 |
+| 74 | Retention vĩnh viễn | Hội thoại web giữ vĩnh viễn, không auto-purge, KHÔNG tích hợp với recycle bin FR-4 | User muốn giữ lâu dài làm reference (giống Claude.ai); volume nhỏ với gia đình ~10 user nên không lo storage; user tự delete nếu muốn (sẽ thêm UI delete sau) | 2026-05-23 |
+| 75 | Admin stealth-read hội thoại web | Extend ACL FR-4: admin đọc được hội thoại web của user under-18 không thông báo cho member; emit audit `stealth_read` với `target_type=web_conversation` | Consistent với policy FR-4 cho note/wiki/journal under-18; hội thoại web bản chất là private content; auto-tắt khi user đủ 18 theo runtime check birthdate | 2026-05-23 |
 
 ---
 
 ## 7. Open Questions
 
-### Q1 — Web chat history sidebar (giống Claude.ai)
-**Status:** 🆕 OPEN — chờ thảo luận trong phiên làm việc kế tiếp (mở đầu 2026-05-23)
-**Bối cảnh:** FR-5 đang có chat UI 1 màn hình (single-thread, không lưu lịch sử hiển thị). Sau khi reload page, không xem lại được hội thoại trước. Ý tưởng: thêm thanh menu bên trái liệt kê các phiên chat cũ — click để mở lại — UX giống Claude.ai/ChatGPT.
-**Câu hỏi mở:**
-1. **Storage:** lưu lịch sử ở đâu? Bảng mới `web_conversations` (id, user_id, title, created_at) + `web_messages` (conversation_id, role, text, created_at)? Hay reuse cấu trúc nào sẵn có?
-2. **Scope:** chỉ lưu hội thoại từ kênh web, hay gom luôn lịch sử Telegram của cùng user vào sidebar? (Cross-channel sẽ phức tạp hơn nhưng có giá trị "single inbox")
-3. **Search:** có cần full-text search không? Nếu có → dùng SQLite FTS5?
-4. **Title generation:** auto-gen từ first user message (truncate), hay nhờ LLM tóm tắt? Có rename được không?
-5. **UI:** sidebar collapsible (mặc định collapsed trên mobile), lazy load (vô hạn scroll), pagination, hay load tất cả?
-6. **Retention:** giữ vĩnh viễn hay có retention policy (vd 1 năm)? Tích hợp với recycle bin (FR-4) không?
-7. **Privacy:** hội thoại web có tính là "note private"? Admin có quyền đọc (giống stealth-read FR-4)?
-8. **Scope FR:** đây là sub-task của FR-5 (chưa merge), hay tách ra thành FR mới sau khi FR-5 vào main?
+### Q1 — Web chat history sidebar (giống Claude.ai) — ✅ RESOLVED 2026-05-23
+**Quyết định cuối cùng:** Tách thành **FR-5.5** (xem Section 5), làm sau khi FR-5 merge `main`.
+
+**Tóm tắt chốt:**
+1. **Storage:** Bảng mới `web_conversations` + `web_messages` (migration 017)
+2. **Scope:** Web-only — KHÔNG gộp Telegram (xem Decision #71)
+3. **Search:** LIKE đơn giản v1, không FTS5 (Decision #73)
+4. **Title:** LLM Haiku 4.5 generate sau message đầu + user rename (Decision #72)
+5. **UI:** Sidebar collapsible, mặc định collapsed trên mobile
+6. **Retention:** Vĩnh viễn, không recycle bin (Decision #74)
+7. **Privacy:** Admin stealth-read user under-18, audit `stealth_read` (Decision #75)
+8. **Scope FR:** FR-5.5 riêng, không gộp FR-5 (Decision #70)
+
+Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Section 6 → #70-#75**.
 
 ---
 
@@ -658,11 +686,11 @@ INDEX (user_id, category_id, occurred_at)
 
 ### 🔔 Next session reminder (cho phiên 2026-05-23+)
 
-**Trước khi tiếp tục FR-5 commit/merge hoặc bắt đầu FR-6**, thảo luận với user về:
+**FR-5 sau khi e2e test pass trên staging:** merge `feature/FR5` → `main`, set `WEB_SECRET_KEY` production, cập nhật `docs/architecture_*.md`.
 
-→ **Web chat history sidebar** (giống Claude.ai/ChatGPT) — xem chi tiết & 8 câu hỏi mở ở **Section 7 / Q1**.
-   Hiện chat web là single-thread không lưu lịch sử hiển thị; ý tưởng là thêm sidebar bên trái liệt kê các phiên cũ.
-   Quyết định cần lấy trước khi code: storage schema, cross-channel scope, FTS5, title gen, retention, privacy (vs stealth-read FR-4), và có phải sub-task FR-5 hay FR riêng.
+**Sau khi FR-5 vào main:** bắt đầu **FR-5.5** (Web Chat History Sidebar) — scope đã chốt ngày 2026-05-23 (Section 5 + Decision #70-#75). Lập `docs/FR-5.5-PLAN.md` chi tiết trước khi code.
+
+Q1 (web chat history) đã ✅ RESOLVED — không cần thảo luận lại.
 
 ---
 
@@ -724,7 +752,7 @@ INDEX (user_id, category_id, occurred_at)
 7. Bắt đầu FR-6: Backup / Restore Tooling
 
 ### Pending FRs
-- FR-5 (in progress), FR-6..FR-9 — sequential theo Section 5
+- FR-5 (in progress), **FR-5.5** (scope chốt, chờ FR-5 merge `main`), FR-6..FR-9 — sequential theo Section 5
 
 ---
 
