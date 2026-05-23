@@ -36,6 +36,7 @@ from notification_store import SqliteNotificationStore
 from notification_service import NotificationService
 from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
+from backup_engine import BackupEngine
 
 _REGISTER_PREFIXES = ("dang ky:", "đăng ký:")
 
@@ -59,6 +60,15 @@ audit = SqliteAuditLog()
 web_session_store = SqliteWebSessionStore()
 from web_conversation_store import SqliteWebConversationStore
 web_conv_store = SqliteWebConversationStore()
+backup_engine = BackupEngine(
+    user_store=user_store,
+    note_index=note_index,
+    memory_store=memory_store,
+    web_conversation_store=web_conv_store,
+    audit=audit,
+    notes=notes,
+    wiki=wiki,
+)
 notif_store = SqliteNotificationStore()
 notif_service = NotificationService(
     store=notif_store,
@@ -79,6 +89,7 @@ deps = CoreDeps(
     audit=audit,
     notification_service=notif_service,
     web_session_store=web_session_store,
+    backup_engine=backup_engine,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -94,6 +105,7 @@ web_deps = CoreDeps(
     audit=audit,
     notification_service=notif_service,
     web_session_store=web_session_store,
+    backup_engine=backup_engine,
 )
 
 
@@ -165,6 +177,7 @@ init_web_router(
     audit=audit,
     elevation_store=elevation_store,
     conv_store=web_conv_store,
+    backup_engine=backup_engine,
 )
 
 
