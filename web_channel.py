@@ -42,6 +42,11 @@ class WebChannelAdapter:
     def __init__(self) -> None:
         # Keyed by str(conversation_id) — one queue per active SSE connection.
         self._queues: Dict[str, asyncio.Queue] = {}
+        self._conv_store = None  # injected after startup via set_conv_store()
+
+    def set_conv_store(self, conv_store) -> None:
+        """Wire the conversation store so send() can persist bot replies."""
+        self._conv_store = conv_store
 
     # ── SSE queue management ───────────────────────────────────────────────────
 
@@ -85,9 +90,16 @@ class WebChannelAdapter:
     async def send(self, chat_id: str, text: str, use_markdown: bool = True) -> None:
         """Push a reply to the SSE queue for the given chat_id (= str(conversation_id)).
 
-        If no SSE connection is active for this conversation, the message is
-        dropped and a warning is logged.
+        Also persists the bot reply to the DB if conv_store is wired.
+        If no SSE connection is active, the message is dropped and a warning logged.
         """
+        # Persist bot reply before pushing to queue
+        if self._conv_store is not None:
+            try:
+                self._conv_store.add_message(int(chat_id), "bot", text)
+            except Exception:
+                logger.exception("web send: failed to persist bot message for conv_id=%s", chat_id)
+
         q = self._queues.get(chat_id)
         if q is None:
             logger.warning(

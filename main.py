@@ -57,6 +57,8 @@ memory_store = SqliteMemoryStore()
 elevation_store = SqliteElevationStore()
 audit = SqliteAuditLog()
 web_session_store = SqliteWebSessionStore()
+from web_conversation_store import SqliteWebConversationStore
+web_conv_store = SqliteWebConversationStore()
 notif_store = SqliteNotificationStore()
 notif_service = NotificationService(
     store=notif_store,
@@ -162,6 +164,7 @@ init_web_router(
     user_store=user_store,
     audit=audit,
     elevation_store=elevation_store,
+    conv_store=web_conv_store,
 )
 
 
