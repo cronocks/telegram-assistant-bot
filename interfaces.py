@@ -109,6 +109,14 @@ class LLMClient(Protocol):
         """
         ...
 
+    def generate_chat_title(self, user_msg: str, bot_reply: str) -> tuple[str, int]:
+        """Generate a short title (~3-7 words) for a web conversation from its first exchange.
+
+        Uses a cheap model (Haiku). Returns (title, total_tokens).
+        Caller should use a truncated fallback if this raises.
+        """
+        ...
+
 
 # ─── Note store (raw notes / journal) ────────────────────────────────────────
 
@@ -596,4 +604,69 @@ class WebSessionStore(Protocol):
 
     def revoke_all_for_user(self, user_id: int) -> int:
         """Revoke all active sessions for a user. Returns count revoked."""
+        ...
+
+
+# ─── Web conversation store (FR-5.5) ─────────────────────────────────────────
+
+@runtime_checkable
+class WebConversationStore(Protocol):
+    """Abstract web conversation + message store. Concrete impl: SqliteWebConversationStore.
+
+    Conversations are lazy-created: a row is only inserted when the user sends
+    their first message (not on "New chat" button press). SSE queues are keyed
+    by conversation_id so multi-tab users get replies in the correct tab.
+    """
+
+    def create(self, user_id: int) -> int:
+        """Create an empty conversation for user_id. Returns conversation id."""
+        ...
+
+    def get(self, conv_id: int) -> "dict | None":
+        """Return {id, user_id, title, created_at, updated_at} or None."""
+        ...
+
+    def list_for_user(self, user_id: int) -> "list[dict]":
+        """Return all conversations for user ordered by updated_at DESC."""
+        ...
+
+    def rename(self, conv_id: int, new_title: str) -> bool:
+        """Update title. Returns True if the conversation exists."""
+        ...
+
+    def set_title_if_null(self, conv_id: int, title: str) -> bool:
+        """Set title only when currently NULL (idempotent for async title gen).
+
+        Returns True if the title was actually written (was NULL before).
+        """
+        ...
+
+    def add_message(self, conv_id: int, role: str, text: str) -> int:
+        """Insert a message and bump conversation.updated_at. Returns message id."""
+        ...
+
+    def list_messages(self, conv_id: int) -> "list[dict]":
+        """Return [{id, role, text, created_at}] in chronological order."""
+        ...
+
+    def count_messages(self, conv_id: int) -> int:
+        """Return total message count for a conversation."""
+        ...
+
+    def search(
+        self, user_id: int, query: str, limit: int = 50
+    ) -> "list[dict]":
+        """LIKE-based search across messages for a user.
+
+        Returns [{conv_id, conv_title, message_id, role, snippet, created_at}].
+        query is escaped so % and _ are treated as literals.
+        """
+        ...
+
+    def admin_list_for_user(self, target_user_id: int) -> "list[dict]":
+        """Admin stealth-read path: list conversations of any user.
+
+        Bypasses ownership check. Caller is responsible for verifying admin
+        role and under-18 status before calling this method.
+        """
         ...

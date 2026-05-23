@@ -34,10 +34,12 @@ class TestConnect:
 class TestSend:
     @pytest.mark.anyio
     async def test_send_pushes_to_queue(self, adapter):
+        import json
         q = adapter.connect("1")
         await adapter.send("1", "hello")
         assert not q.empty()
-        assert await q.get() == "hello"
+        event = json.loads(await q.get())
+        assert event == {"type": "message", "text": "hello"}
 
     @pytest.mark.anyio
     async def test_send_no_connection_drops_silently(self, adapter):
@@ -54,10 +56,11 @@ class TestSend:
 
     @pytest.mark.anyio
     async def test_multiple_messages_ordered(self, adapter):
+        import json
         q = adapter.connect("1")
         for msg in ["a", "b", "c"]:
             await adapter.send("1", msg)
-        results = [await q.get() for _ in range(3)]
+        results = [json.loads(await q.get())["text"] for _ in range(3)]
         assert results == ["a", "b", "c"]
 
 
