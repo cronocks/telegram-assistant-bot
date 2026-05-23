@@ -302,6 +302,57 @@ async def logout(web_session: str | None = Cookie(default=None)):
     return redirect
 
 
+@router.get("/settings/password", response_class=HTMLResponse)
+async def settings_password_page(request: Request, web_session: str | None = Cookie(default=None)):
+    """Self-service password change page for logged-in users."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    assert _user_store is not None
+    if _user_store.get_must_change_password(user.id):
+        return RedirectResponse(url="/setup-password", status_code=303)
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "settings_password.html", {"user": user, "error": None, "success": False},
+    )
+
+
+@router.post("/settings/password", response_class=HTMLResponse)
+async def settings_password_post(
+    request: Request,
+    current_password: str = Form(...),
+    new_password: str = Form(...),
+    confirm_password: str = Form(...),
+    web_session: str | None = Cookie(default=None),
+):
+    """Handle self-service password change: verify current → set new → audit."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    assert _user_store is not None
+    assert _audit is not None
+    assert _templates is not None
+
+    def _render(error: str | None = None, success: bool = False):
+        return _templates.TemplateResponse(
+            request, "settings_password.html",
+            {"user": user, "error": error, "success": success},
+            status_code=400 if error else 200,
+        )
+
+    if len(new_password) < 8:
+        return _render("Mật khẩu mới phải có ít nhất 8 ký tự.")
+    if new_password != confirm_password:
+        return _render("Mật khẩu xác nhận không khớp.")
+    if not _user_store.check_password(user.id, current_password):
+        return _render("Mật khẩu hiện tại không đúng.")
+
+    _user_store.set_password(user.id, new_password)
+    _user_store.set_must_change_password(user.id, False)
+    _audit.log(user.id, "web_password_changed", "user", str(user.id))
+    return _render(success=True)
+
+
 @router.get("/setup-password", response_class=HTMLResponse)
 async def setup_password_page(request: Request, web_session: str | None = Cookie(default=None)):
     user = _resolve_user(web_session)
