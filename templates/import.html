@@ -94,6 +94,11 @@
   <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Admin / Import</span></span>
   <div class="actions">
     <span>{{ user.name }}</span>
+    <button class="theme-toggle" type="button" onclick="toggleTheme()"
+            aria-label="Đổi chế độ sáng/tối" title="Đổi chế độ sáng/tối">
+      <span class="icon-dark">🌙</span>
+      <span class="icon-light">☀️</span>
+    </button>
     <a href="/admin/users">Người dùng</a>
     <a href="/chat">Chat</a>
     <form action="/logout" method="post">
@@ -102,6 +107,8 @@
   </div>
 </nav>
 {% endblock %}
+
+{% block theme_toggle %}{% endblock %}
 
 {% block content %}
 <div class="container">
