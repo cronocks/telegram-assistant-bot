@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Chat — Family Bot{% endblock %}
+{% block title %}Chat — Family Assistant{% endblock %}
 
 {% block head %}
 <style>
@@ -67,7 +67,7 @@
 
 {% block nav %}
 <nav>
-  <span class="brand">🏠 Family Bot</span>
+  <span class="brand">🏠 Family Assistant</span>
   <div class="actions">
     <span>{{ user.name }}{% if user.username %} · @{{ user.username }}{% endif %}</span>
     <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Đổi chế độ sáng/tối" title="Đổi chế độ sáng/tối">
