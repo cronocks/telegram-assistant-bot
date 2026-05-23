@@ -1295,6 +1295,7 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`xem thung rac` — Liet ke item da xoa (user/note/wiki) (admin)\n"
         "`khoi phuc: [kind] [id]` — Khoi phuc item (vd `khoi phuc: user 3`) (admin)\n"
         "`xoa han: [kind] [id]` — Xoa han khoi he thong (vd `xoa han: note 12`) (admin)\n"
+        "`doi web pass: [mat khau]` — Tu dat mat khau web cua ban (min 8 ky tu; moi user)\n"
         "`xuat du lieu` — Export du lieu cua ban len Drive (ZIP) (moi user; gioi han 5 phut)\n"
         "`xuat du lieu: [ten]` — Admin export du lieu cua nguoi khac len Drive (admin only)\n"
         "Luu y: tin nhan chua mat khau se duoc bot tu dong xoa khoi chat.",
@@ -2170,6 +2171,58 @@ async def _cmd_dat_web_pass(
     )
 
 
+async def _cmd_doi_web_pass_self(
+    chat_id: str,
+    password: str,
+    user: User,
+    message_id: int | None,
+    deps: CoreDeps,
+) -> None:
+    """doi web pass: <mat_khau> — self-service web password set via Telegram.
+
+    Available to all authenticated users. Telegram channel binding is the
+    identity proof — no current-password check needed. Sets must_change_password=False
+    so the user can log in directly without a force-reset.
+    Auto-deletes the message containing the password.
+    """
+    password = password.strip()
+    if len(password) < 8:
+        await deps.channel.send(
+            chat_id, "Mat khau phai co it nhat 8 ky tu.", use_markdown=False,
+        )
+        return
+
+    try:
+        deps.user_store.set_password(user.id, password)
+        deps.user_store.set_must_change_password(user.id, False)
+    except Exception as e:
+        await deps.channel.send(
+            chat_id, f"Loi khi dat mat khau: {str(e)[:200]}", use_markdown=False,
+        )
+        return
+
+    # Auto-delete the message containing the password.
+    if message_id is not None:
+        try:
+            await deps.channel.delete_message(chat_id, message_id)
+        except Exception as e:
+            print(f"[doi_web_pass] delete_message error (non-fatal): {e}")
+
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="web_password_set_self",
+        target_type="user",
+        target_id=user.id,
+        payload={"channel": "telegram"},
+    )
+    await deps.channel.send(
+        chat_id,
+        "Da dat mat khau web thanh cong. Ban co the dang nhap tai web bang username va mat khau nay.\n"
+        "Tin nhan chua mat khau da bi xoa khoi chat.",
+        use_markdown=False,
+    )
+
+
 async def _cmd_sudo(
     chat_id: str,
     password: str,
@@ -2924,6 +2977,7 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "TOI_LA_AI":          ["toi la ai", "tôi là ai", "tai khoan", "tài khoản", "who am i", "whoami"],
     "DAT_MAT_KHAU":       ["dat mat khau: ", "đặt mật khẩu: ", "set password: "],
     "DAT_WEB_PASS":       ["dat web pass: ", "đặt web pass: "],
+    "DOI_WEB_PASS_SELF":  ["doi web pass: ", "đổi web pass: "],
     "THOAT_SUDO":         ["thoat sudo", "thoát sudo", "exit sudo"],
     "SUDO":               ["sudo: "],
     "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
@@ -2973,7 +3027,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "XEM_THUNG_RAC", "KHOI_PHUC", "XOA_HAN",
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
         "XEM_TRI_NHO", "XEM_HO_SO",
-        "DAT_MAT_KHAU", "SUDO", "THOAT_SUDO",
+        "DAT_MAT_KHAU", "DOI_WEB_PASS_SELF", "SUDO", "THOAT_SUDO",
         "XUAT_DU_LIEU_SELF", "XUAT_DU_LIEU_ADMIN",
     }
     _matched = match_command(text, _COMMAND_TABLE)
@@ -3062,6 +3116,9 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_mat_khau(chat_id, remainder, user, message_id, deps); return
         if cmd_id == "DAT_WEB_PASS":
             await _cmd_dat_web_pass(chat_id, remainder, user, deps); return
+        if cmd_id == "DOI_WEB_PASS_SELF":
+            message_id = msg.raw.get("message_id") if msg.raw else None
+            await _cmd_doi_web_pass_self(chat_id, remainder, user, message_id, deps); return
         if cmd_id == "SUDO":
             message_id = msg.raw.get("message_id") if msg.raw else None
             await _cmd_sudo(chat_id, remainder, user, message_id, deps); return
