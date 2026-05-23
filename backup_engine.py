@@ -402,6 +402,49 @@ class BackupEngine:
             },
         }
 
+    # ── Drive upload (used by Telegram export command) ────────────────────────
+
+    def upload_to_drive(self, filename: str, zip_bytes: bytes) -> tuple[str, str]:
+        """Upload a ZIP file to Drive under Claude-Notes/Backups/.
+
+        Returns (drive_file_id, web_view_link).
+        Creates the Backups subfolder if it does not exist.
+        Raises on Drive API failure.
+        """
+        from googleapiclient.http import MediaInMemoryUpload
+        from drive_client import _get_service, _get_or_create_notes_folder
+
+        service = _get_service()
+        parent_id = _get_or_create_notes_folder()
+
+        # Resolve or create the Backups subfolder.
+        folder_name = "Backups"
+        q = (
+            f"name='{folder_name}' "
+            f"and '{parent_id}' in parents "
+            f"and mimeType='application/vnd.google-apps.folder' "
+            f"and trashed=false"
+        )
+        results = service.files().list(q=q, fields="files(id)").execute()
+        folders = results.get("files", [])
+        if folders:
+            backups_id = folders[0]["id"]
+        else:
+            meta = {
+                "name": folder_name,
+                "mimeType": "application/vnd.google-apps.folder",
+                "parents": [parent_id],
+            }
+            folder = service.files().create(body=meta, fields="id").execute()
+            backups_id = folder["id"]
+
+        media = MediaInMemoryUpload(zip_bytes, mimetype="application/zip", resumable=False)
+        file_meta = {"name": filename, "parents": [backups_id]}
+        file = service.files().create(
+            body=file_meta, media_body=media, fields="id, webViewLink",
+        ).execute()
+        return file["id"], file.get("webViewLink", "")
+
     # ── Import — parse (Sub 6.2) ──────────────────────────────────────────────
 
     def parse_import(self, zip_bytes: bytes) -> ParsedImport:

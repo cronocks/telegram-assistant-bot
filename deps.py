@@ -6,6 +6,10 @@ creating circular imports (core_handler imports cmd_*, cmd_* imports CoreDeps).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from backup_engine import BackupEngine
 
 from interfaces import (
     AuditLog,
@@ -36,3 +40,4 @@ class CoreDeps:
     audit: AuditLog
     notification_service: "NotificationService | None" = None
     web_session_store: "WebSessionStore | None" = None
+    backup_engine: "BackupEngine | None" = None
