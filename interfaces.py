@@ -109,6 +109,14 @@ class LLMClient(Protocol):
         """
         ...
 
+    def generate_chat_title(self, user_msg: str, bot_reply: str) -> tuple[str, int]:
+        """Generate a short title (~3-7 words) for a web conversation from its first exchange.
+
+        Uses a cheap model (Haiku). Returns (title, total_tokens).
+        Caller should use a truncated fallback if this raises.
+        """
+        ...
+
 
 # ─── Note store (raw notes / journal) ────────────────────────────────────────
 

@@ -316,6 +316,38 @@ async def chat_conversation_page(
 
 # ── Chat send routes ───────────────────────────────────────────────────────────
 
+async def _generate_title_bg(conv_id: int, user_text: str, web_deps) -> None:
+    """Background task: generate title after first exchange and push SSE update."""
+    assert _conv_store is not None
+    try:
+        title, _ = web_deps.llm.generate_chat_title(
+            user_text[:300],
+            next(
+                (m["text"] for m in reversed(_conv_store.list_messages(conv_id)) if m["role"] == "bot"),
+                "",
+            ),
+        )
+    except Exception:
+        logger.exception("title gen failed for conv_id=%s, using fallback", conv_id)
+        title = user_text[:40].strip() + ("…" if len(user_text) > 40 else "")
+
+    if not title:
+        return
+
+    written = _conv_store.set_title_if_null(conv_id, title)
+    if written and _web_channel is not None:
+        _web_channel.push_title_update(str(conv_id), title)
+
+
+async def _handle_and_maybe_title(msg, user, web_deps, conv_id: int, user_text: str) -> None:
+    """Wrapper: run handle_message then trigger title gen on first exchange."""
+    from core_handler import handle_message
+    await handle_message(msg, user, web_deps)
+    assert _conv_store is not None
+    if _conv_store.count_messages(conv_id) == 2:  # user msg + first bot reply
+        await _generate_title_bg(conv_id, user_text, web_deps)
+
+
 @router.post("/chat/send")
 async def send_message_new(
     request: Request,
@@ -328,7 +360,6 @@ async def send_message_new(
     and reconnect SSE with the new conversation_id.
     """
     from interfaces import ChannelMessage
-    from core_handler import handle_message
 
     user = _resolve_user(web_session)
     if user is None:
@@ -348,14 +379,14 @@ async def send_message_new(
     # Persist user message
     _conv_store.add_message(conv_id, "user", clean_text)
 
-    # Route through core_handler (chat_id = str(conv_id) for SSE routing)
+    # Route through core_handler; wrap to trigger title gen after first exchange
     msg = ChannelMessage(channel="web", chat_id=str(conv_id), text=clean_text)
     web_deps = getattr(request.app.state, "web_deps", None)
     if web_deps is None:
         logger.error("web_deps not wired — check main.py lifespan")
         return JSONResponse({"error": "server error"}, status_code=500)
 
-    asyncio.create_task(handle_message(msg, user, web_deps))
+    asyncio.create_task(_handle_and_maybe_title(msg, user, web_deps, conv_id, clean_text))
     return JSONResponse({"conversation_id": conv_id}, status_code=200)
 
 

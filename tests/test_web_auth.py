@@ -112,6 +112,10 @@ def app_client(alice, tmp_path):
     templates_dir = os.path.join(os.path.dirname(__file__), "..", "templates")
     templates = Jinja2Templates(directory=templates_dir)
 
+    conv_store = MagicMock()
+    conv_store.list_for_user.return_value = []
+    conv_store.get_must_change_password = MagicMock(return_value=False)
+
     init_web_router(
         templates=templates,
         web_channel=web_ch,
@@ -119,6 +123,7 @@ def app_client(alice, tmp_path):
         user_store=user_store,
         audit=audit,
         elevation_store=elevation_store,
+        conv_store=conv_store,
     )
 
     fast_app = FastAPI()

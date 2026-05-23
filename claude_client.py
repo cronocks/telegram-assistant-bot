@@ -331,6 +331,33 @@ nêu bật những điểm quan trọng nhất:\n\n{notes_text}"""
             print(f"[claude] curate_memory parse error: {e}, raw={text[:200]}")
             raise
 
+    # ─── Web chat title generation ───────────────────────────────────────────
+
+    def generate_chat_title(self, user_msg: str, bot_reply: str) -> tuple[str, int]:
+        """Generate a short title for a web conversation from its first exchange.
+
+        Always uses Haiku (cheap model) regardless of the configured MODEL env var.
+        Returns (title, total_tokens). Title is 3-7 words, no quotes, no punctuation.
+        """
+        _HAIKU_MODEL = "claude-haiku-4-5-20251001"
+        prompt = (
+            "Tạo tiêu đề ngắn gọn (3-7 từ) cho cuộc hội thoại sau.\n"
+            "Yêu cầu: không dấu ngoặc kép, không dấu chấm câu cuối, "
+            "dùng ngôn ngữ giống người dùng (tiếng Việt nếu họ viết tiếng Việt).\n"
+            "Chỉ trả về tiêu đề, không giải thích.\n\n"
+            f"Người dùng: {user_msg[:300]}\n"
+            f"Trợ lý: {bot_reply[:300]}"
+        )
+        response = self._client.messages.create(
+            model=_HAIKU_MODEL,
+            max_tokens=30,
+            system="Bạn chỉ trả về tiêu đề ngắn, không có gì khác.",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        title = response.content[0].text.strip().strip('"').strip("'")
+        total_tokens = response.usage.input_tokens + response.usage.output_tokens
+        return title, total_tokens
+
     # ─── Wiki: Q&A from selected pages ───────────────────────────────────────
 
     def answer_from_wiki(
