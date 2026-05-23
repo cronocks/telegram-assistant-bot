@@ -1,6 +1,6 @@
 # Kiến Trúc Hệ Thống
 
-> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-5.5** (Web Chat History Sidebar).
+> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-6** (Backup / Restore Tooling).
 > Xem lộ trình phát triển đầy đủ tại [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -77,7 +77,9 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; connect/disconnect/send (FR-5, refactor FR-5.5) |
 | `web_router.py` | FastAPI router web: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/<id>`, SSE, API conversations (FR-5, FR-5.5) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — CRUD conversation + message; search LIKE; admin stealth-read path (FR-5.5) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, sidebar collapsible) (FR-5, FR-5.5) |
+| `backup_engine.py` | `BackupEngine` — export ZIP in-memory, parse/apply import transactional, upload Drive `Claude-Notes/Backups/`, rate-limit 5 phút/user (FR-6) |
+| `tools/local_migrate.py` | CLI standalone: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, sidebar collapsible), `import.html` (FR-5, FR-5.5, FR-6) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) dùng bởi các retrieval path |
 | `auth.py` | Argon2id password hashing (hạ tầng từ FR-2; FR-3.5 dùng để verify mật khẩu sudo) |
 | `permissions.py` | Permission helpers theo role |

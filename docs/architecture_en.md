@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-5.5** (Web Chat History Sidebar).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-6** (Backup / Restore Tooling).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -77,7 +77,9 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; connect/disconnect/send (FR-5, refactored FR-5.5) |
 | `web_router.py` | FastAPI web router: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/<id>`, SSE, conversations API (FR-5, FR-5.5) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — conversation + message CRUD; LIKE search; admin stealth-read path (FR-5.5) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, collapsible sidebar) (FR-5, FR-5.5) |
+| `backup_engine.py` | `BackupEngine` — in-memory ZIP export, transactional parse/apply import, Drive upload to `Claude-Notes/Backups/`, 5-min/user rate-limit (FR-6) |
+| `tools/local_migrate.py` | Standalone CLI: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, collapsible sidebar), `import.html` (FR-5, FR-5.5, FR-6) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
