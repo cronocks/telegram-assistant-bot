@@ -186,7 +186,7 @@
 <nav>
   <div style="display:flex; align-items:center; gap:0.6rem;">
     <button class="sidebar-toggle" type="button"
-            onclick="window.dispatchEvent(new CustomEvent('toggle-sidebar'))"
+            onclick="window._chatApp && window._chatApp.toggleSidebar()"
             title="Ẩn/hiện danh sách hội thoại">☰</button>
     <span class="brand">🏠 Family Assistant</span>
   </div>
@@ -215,7 +215,7 @@
      data-user-id="{{ user.id }}">
 </div>
 
-<div class="app-shell" x-data="chatApp()" x-init="init()" @toggle-sidebar.window="toggleSidebar()">
+<div class="app-shell" x-data="chatApp()" x-init="init()">
 
   {# Mobile backdrop #}
   <div class="sidebar-backdrop" :class="{ visible: sidebarOpen && isMobile }"
@@ -302,7 +302,6 @@
         x-ref="input"
         rows="1"
         placeholder="Nhắn tin…"
-        @keydown="onKey($event)"
         @input="autoResize($event.target)"
         :disabled="sending"
       ></textarea>
@@ -338,6 +337,7 @@ function chatApp() {
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
     init() {
+      window._chatApp = this;   // expose for nav sidebar-toggle button
       window.addEventListener('resize', () => {
         this.isMobile = window.innerWidth <= 768;
         if (!this.isMobile) this.sidebarOpen = true;
@@ -346,7 +346,18 @@ function chatApp() {
       this._connectSSE(key);
       this.$nextTick(() => {
         this.scrollBottom();
-        this.$refs.input && this.$refs.input.focus();
+        const input = this.$refs.input;
+        if (input) {
+          input.focus();
+          // Native listener — more reliable than Alpine @keydown on textarea.
+          // Enter sends; Shift+Enter inserts newline; skip during IME composition.
+          input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+              e.preventDefault();
+              this.send();
+            }
+          });
+        }
       });
     },
 
@@ -502,14 +513,6 @@ function chatApp() {
       el.style.height = Math.min(el.scrollHeight, 120) + 'px';
     },
 
-    onKey(e) {
-      // Enter sends; Shift+Enter inserts newline.
-      // Skip while IME is composing (Vietnamese, Japanese, ...).
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
-        e.preventDefault();
-        this.send();
-      }
-    },
   };
 }
 </script>
