@@ -402,20 +402,402 @@ class BackupEngine:
             },
         }
 
-    # ── Import stubs (Sub 6.2) ────────────────────────────────────────────────
+    # ── Import — parse (Sub 6.2) ──────────────────────────────────────────────
 
     def parse_import(self, zip_bytes: bytes) -> ParsedImport:
-        """Validate ZIP structure and parse manifest/data into ParsedImport.
+        """Validate ZIP structure and parse manifest/data.
 
+        Checks performed:
+          - Size <= MAX_IMPORT_BYTES
+          - ZIP is not corrupted
+          - manifest.json present and format_version == 1
+          - data.json present and parseable
+          - No path-traversal filenames
+          - All content files referenced in data.notes / data.wiki_pages exist in ZIP
+          - Warns if the source user name conflicts with an existing active user
+
+        Returns ParsedImport with warnings list.
         Raises ImportFormatError on any structural problem.
-        Implemented in Sub 6.2.
         """
-        raise NotImplementedError("parse_import: implemented in Sub 6.2")
+        if len(zip_bytes) > MAX_IMPORT_BYTES:
+            raise ImportFormatError(
+                f"ZIP is too large ({len(zip_bytes) // (1024*1024)} MB). "
+                f"Maximum allowed is {MAX_IMPORT_BYTES // (1024*1024)} MB."
+            )
+
+        try:
+            zf = zipfile.ZipFile(io.BytesIO(zip_bytes), "r")
+        except zipfile.BadZipFile as exc:
+            raise ImportFormatError(f"Not a valid ZIP file: {exc}") from exc
+
+        with zf:
+            names = set(zf.namelist())
+
+            # Check for path traversal.
+            for name in names:
+                if name.startswith("/") or ".." in name.split("/"):
+                    raise ImportFormatError(
+                        f"ZIP contains unsafe path: '{name}'"
+                    )
+
+            # Read manifest.
+            if "manifest.json" not in names:
+                raise ImportFormatError("manifest.json not found in ZIP.")
+            try:
+                manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+            except Exception as exc:
+                raise ImportFormatError(f"Cannot parse manifest.json: {exc}") from exc
+
+            if manifest.get("format_version") != FORMAT_VERSION:
+                raise ImportFormatError(
+                    f"Unsupported format_version={manifest.get('format_version')}. "
+                    f"Expected {FORMAT_VERSION}."
+                )
+
+            # Read data.
+            if "data.json" not in names:
+                raise ImportFormatError("data.json not found in ZIP.")
+            try:
+                data = json.loads(zf.read("data.json").decode("utf-8"))
+            except Exception as exc:
+                raise ImportFormatError(f"Cannot parse data.json: {exc}") from exc
+
+            # Validate that all Drive content files referenced in data exist in ZIP.
+            warnings: list[str] = []
+            notes_content: dict[str, bytes] = {}
+            wiki_content: dict[str, bytes] = {}
+
+            for note in data.get("notes", []):
+                fid = note.get("drive_file_id", "")
+                path = note.get("content_path") or f"notes/{fid}.md"
+                if path not in names:
+                    warnings.append(
+                        f"Content file missing for note '{note.get('title', fid)}' "
+                        f"(expected '{path}'). Note will be imported with empty content."
+                    )
+                    notes_content[fid] = b""
+                else:
+                    notes_content[fid] = zf.read(path)
+
+            for page in data.get("wiki_pages", []):
+                fid = page.get("drive_file_id", "")
+                slug = page.get("slug", "")
+                path = page.get("content_path") or f"wiki/{slug}.md"
+                if path not in names:
+                    warnings.append(
+                        f"Content file missing for wiki page '{page.get('topic', slug)}' "
+                        f"(expected '{path}'). Page will be imported with empty content."
+                    )
+                    wiki_content[slug] = b""
+                else:
+                    wiki_content[slug] = zf.read(path)
+
+        # Check for name conflict with existing active user.
+        source_name = (data.get("user") or {}).get("name", "")
+        if source_name:
+            conflict = self._conn.execute(
+                "SELECT id FROM users WHERE name = ? AND deleted_at IS NULL",
+                (source_name,),
+            ).fetchone()
+            if conflict:
+                warnings.append(
+                    f"User name '{source_name}' already exists in this system "
+                    f"(id={conflict['id']}). Import will still create a new user row; "
+                    "rename the existing user first if this causes a UNIQUE constraint error."
+                )
+
+        return ParsedImport(
+            manifest=manifest,
+            data=data,
+            notes_content=notes_content,
+            wiki_content=wiki_content,
+            warnings=warnings,
+        )
+
+    # ── Import — apply (Sub 6.2) ──────────────────────────────────────────────
 
     def apply_import(self, parsed: ParsedImport, *, admin_user_id: int) -> ImportResult:
-        """Apply a parsed import — create user + restore all data rows.
+        """Apply a parsed import transactionally.
 
-        Transactional: rolls back Drive uploads and DB on any failure.
-        Implemented in Sub 6.2.
+        Steps (in order):
+          a. INSERT user row (new id assigned by SQLite AUTOINCREMENT)
+          b. INSERT channel_bindings (skip conflicting (channel, chat_id) pairs)
+          c. INSERT user_quotas
+          d. Upload each note content to Drive → INSERT notes index row
+          e. Upload each wiki page content to Drive → INSERT wiki_pages index row
+             + append to wiki index (_index.md)
+          f. INSERT user_memory rows
+          g. INSERT web_conversations + web_messages
+          h. Resolve parent_links by name → INSERT parent_links
+          i. Emit audit data_import
+
+        On any failure: best-effort delete uploaded Drive files, rollback DB
+        transaction, emit data_import_failed.
         """
-        raise NotImplementedError("apply_import: implemented in Sub 6.2")
+        data = parsed.data
+        uploaded_drive_ids: list[str] = []   # track for rollback
+
+        try:
+            with self._conn:
+                new_user_id = self._import_user(data["user"])
+                cb_warnings = self._import_channel_bindings(
+                    data.get("channel_bindings", []), new_user_id
+                )
+                self._import_quota(data.get("quota"), new_user_id)
+
+                note_id_map = self._import_notes(
+                    data.get("notes", []),
+                    parsed.notes_content,
+                    new_user_id,
+                    uploaded_drive_ids,
+                )
+                wiki_id_map = self._import_wiki_pages(
+                    data.get("wiki_pages", []),
+                    parsed.wiki_content,
+                    new_user_id,
+                    uploaded_drive_ids,
+                )
+                self._import_memory(data.get("user_memory", []), new_user_id)
+                conv_count, msg_count = self._import_conversations(
+                    data.get("web_conversations", []), new_user_id
+                )
+                pl_warnings = self._import_parent_links(
+                    data.get("parent_links_as_child", []), new_user_id
+                )
+
+                all_warnings = parsed.warnings + cb_warnings + pl_warnings
+                counts = {
+                    "notes": len(note_id_map),
+                    "wiki_pages": len(wiki_id_map),
+                    "web_conversations": conv_count,
+                    "web_messages": msg_count,
+                }
+                id_map: dict[str, dict] = {
+                    "notes": note_id_map,
+                    "wiki_pages": wiki_id_map,
+                }
+
+                self._audit.log(
+                    actor_user_id=admin_user_id,
+                    action="data_import",
+                    target_type="user",
+                    target_id=new_user_id,
+                    payload={
+                        "source_name": parsed.manifest.get("source_user", {}).get("name"),
+                        "id_map": id_map,
+                        "items_imported": counts,
+                    },
+                )
+
+        except Exception as exc:
+            # Best-effort rollback of uploaded Drive files.
+            for fid in uploaded_drive_ids:
+                try:
+                    self._notes.delete_file(fid)
+                except Exception as del_exc:
+                    logger.warning("Import rollback: cannot delete Drive file %s: %s", fid, del_exc)
+
+            self._audit.log(
+                actor_user_id=admin_user_id,
+                action="data_import_failed",
+                payload={"error": str(exc), "stage": "apply"},
+            )
+            raise
+
+        return ImportResult(
+            new_user_id=new_user_id,
+            counts=counts,
+            id_map=id_map,
+            warnings=all_warnings,
+        )
+
+    # ── Import helpers ────────────────────────────────────────────────────────
+
+    def _import_user(self, user_data: dict) -> int:
+        """Insert a new user row. Returns the new user_id (SQLite AUTOINCREMENT)."""
+        self._conn.execute(
+            """
+            INSERT INTO users (name, role, username, birthdate,
+                               password_hash, must_change_password)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_data.get("name"),
+                user_data.get("role", "member"),
+                user_data.get("username"),
+                user_data.get("birthdate"),
+                user_data.get("password_hash"),
+                user_data.get("must_change_password", 0),
+            ),
+        )
+        return self._conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def _import_channel_bindings(
+        self, bindings: list[dict], new_user_id: int
+    ) -> list[str]:
+        """Insert channel bindings; skip conflicting (channel, chat_id) pairs."""
+        warnings: list[str] = []
+        for cb in bindings:
+            try:
+                self._conn.execute(
+                    "INSERT INTO channel_bindings (user_id, channel, chat_id)"
+                    " VALUES (?, ?, ?)",
+                    (new_user_id, cb.get("channel"), cb.get("chat_id")),
+                )
+            except sqlite3.IntegrityError:
+                warnings.append(
+                    f"Channel binding ({cb.get('channel')}, {cb.get('chat_id')}) "
+                    "already bound to another user — skipped."
+                )
+        return warnings
+
+    def _import_quota(self, quota: dict | None, new_user_id: int) -> None:
+        """Insert user_quotas row if present in the export."""
+        if quota is None:
+            return
+        self._conn.execute(
+            """
+            INSERT OR IGNORE INTO user_quotas
+                (user_id, monthly_token_limit, used_tokens, month)
+            VALUES (?, ?, 0, ?)
+            """,
+            (
+                new_user_id,
+                quota.get("monthly_token_limit", 0),
+                quota.get("month") or datetime.now(timezone.utc).strftime("%Y-%m"),
+            ),
+        )
+
+    def _import_notes(
+        self,
+        notes: list[dict],
+        notes_content: dict[str, bytes],
+        new_user_id: int,
+        uploaded_ids: list[str],
+    ) -> dict[str, str]:
+        """Upload each note to Drive and insert a notes index row.
+
+        Returns {old_drive_file_id: new_drive_file_id}.
+        """
+        id_map: dict[str, str] = {}
+        for note in notes:
+            old_fid = note.get("drive_file_id", "")
+            content_bytes = notes_content.get(old_fid, b"")
+            content_str = content_bytes.decode("utf-8", errors="replace")
+            title = note.get("title") or "Imported note"
+
+            _filename, new_fid = self._notes.save_note(title, content_str)
+            uploaded_ids.append(new_fid)
+
+            self._note_index.add_note(
+                drive_file_id=new_fid,
+                owner_user_id=new_user_id,
+                kind=note.get("kind", "note"),
+                title=note.get("title"),
+                scope=note.get("scope", "private"),
+            )
+            id_map[old_fid] = new_fid
+        return id_map
+
+    def _import_wiki_pages(
+        self,
+        pages: list[dict],
+        wiki_content: dict[str, bytes],
+        new_user_id: int,
+        uploaded_ids: list[str],
+    ) -> dict[str, str]:
+        """Upload each wiki page to Drive, insert wiki_pages index row, and update index.
+
+        Returns {old_drive_file_id: new_drive_file_id}.
+        """
+        id_map: dict[str, str] = {}
+        for page in pages:
+            old_fid = page.get("drive_file_id", "")
+            slug = page.get("slug", "")
+            topic = page.get("topic", slug)
+            content_bytes = wiki_content.get(slug, b"")
+            content_str = content_bytes.decode("utf-8", errors="replace")
+
+            _filename, new_fid = self._wiki.save_page(topic, content_str)
+            uploaded_ids.append(new_fid)
+
+            self._note_index.add_wiki_page(
+                drive_file_id=new_fid,
+                owner_user_id=new_user_id,
+                topic=topic,
+                slug=slug,
+                scope=page.get("scope", "everyone"),
+            )
+            # Register in wiki _index.md with empty TLDR (admin can regenerate).
+            try:
+                self._wiki.add_to_index(topic, slug, "other", "")
+            except Exception as exc:
+                logger.warning("Import: cannot update wiki index for '%s': %s", slug, exc)
+
+            id_map[old_fid] = new_fid
+        return id_map
+
+    def _import_memory(self, memory_rows: list[dict], new_user_id: int) -> None:
+        """Upsert user_memory rows for the new user."""
+        for row in memory_rows:
+            kind = row.get("kind", "memory")
+            content = row.get("content", "")
+            self._memory_store.set(new_user_id, kind, content)
+
+    def _import_conversations(
+        self, conversations: list[dict], new_user_id: int
+    ) -> tuple[int, int]:
+        """Insert web_conversations + web_messages. Returns (conv_count, msg_count)."""
+        conv_count = 0
+        msg_count = 0
+        for conv in conversations:
+            new_conv_id = self._web_conv_store.create(new_user_id)
+            title = conv.get("title")
+            if title:
+                self._web_conv_store.rename(new_conv_id, title)
+            for msg in conv.get("messages", []):
+                self._web_conv_store.add_message(
+                    new_conv_id,
+                    role=msg.get("role", "user"),
+                    text=msg.get("text", ""),
+                )
+                msg_count += 1
+            conv_count += 1
+        return conv_count, msg_count
+
+    def _import_parent_links(
+        self, links_as_child: list[dict], new_user_id: int
+    ) -> list[str]:
+        """Resolve parent links by name and insert active ones.
+
+        Only imports currently-active links (active=1) to avoid cluttering history.
+        Warns and skips if the named parent cannot be found.
+        """
+        warnings: list[str] = []
+        for link in links_as_child:
+            if not link.get("active"):
+                continue  # skip historical inactive links
+            parent_name = link.get("parent_name", "")
+            if not parent_name:
+                continue
+            parent_row = self._conn.execute(
+                "SELECT id FROM users WHERE name = ? AND deleted_at IS NULL",
+                (parent_name,),
+            ).fetchone()
+            if parent_row is None:
+                warnings.append(
+                    f"Parent '{parent_name}' not found in this system — "
+                    "parent link skipped."
+                )
+                continue
+            parent_id = parent_row["id"]
+            try:
+                self._conn.execute(
+                    "INSERT INTO parent_links (user_id, parent_id, set_by) VALUES (?, ?, ?)",
+                    (new_user_id, parent_id, new_user_id),
+                )
+            except sqlite3.IntegrityError as exc:
+                warnings.append(
+                    f"Cannot insert parent link to '{parent_name}': {exc}"
+                )
+        return warnings
