@@ -4,15 +4,131 @@
 
 {% block head %}
 <style>
-  .chat-wrap {
-    display: flex; flex-direction: column;
+  /* ── Layout ───────────────────────────────────────────────────────────────── */
+  .app-shell {
+    display: flex;
     height: calc(100vh - 60px);
-    max-width: 820px; margin: 0 auto; width: 100%;
+    overflow: hidden;
+  }
+
+  /* ── Sidebar ──────────────────────────────────────────────────────────────── */
+  .sidebar {
+    width: 260px; min-width: 260px;
+    display: flex; flex-direction: column;
+    background: var(--surface-glass);
+    backdrop-filter: blur(16px) saturate(140%);
+    -webkit-backdrop-filter: blur(16px) saturate(140%);
+    border-right: 1px solid var(--border);
+    transition: width .2s ease, min-width .2s ease, opacity .2s ease;
+    overflow: hidden;
+  }
+  .sidebar.collapsed { width: 0; min-width: 0; opacity: 0; pointer-events: none; }
+
+  .sidebar-header {
+    padding: 0.75rem 0.75rem 0.5rem;
+    display: flex; gap: 0.5rem; align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .btn-new {
+    flex: 1; display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.5rem 0.75rem; border: 1px solid var(--border-strong);
+    border-radius: 8px; background: var(--surface); color: var(--text);
+    font-size: 0.875rem; font-weight: 500; cursor: pointer;
+    transition: background .15s ease;
+  }
+  .btn-new:hover { background: var(--surface-alt); }
+
+  .sidebar-search {
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .sidebar-search input {
+    width: 100%; padding: 0.45rem 0.7rem;
+    border: 1px solid var(--border-strong); border-radius: 8px;
+    font-size: 0.85rem; background: var(--surface); color: var(--text);
+  }
+  .sidebar-search input:focus {
+    outline: none; border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-ring);
+  }
+
+  .conv-list {
+    flex: 1; overflow-y: auto; padding: 0.4rem 0.5rem;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .conv-item {
+    display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.5rem 0.6rem; border-radius: 8px;
+    cursor: pointer; font-size: 0.875rem; color: var(--text-muted);
+    transition: background .12s ease;
+    min-width: 0;
+  }
+  .conv-item:hover { background: var(--nav-hover); color: var(--text); }
+  .conv-item.active {
+    background: var(--primary-ring); color: var(--text);
+    font-weight: 500;
+  }
+  .conv-title {
+    flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .conv-rename-input {
+    flex: 1; font-size: 0.875rem; padding: 0 0.2rem;
+    border: 1px solid var(--primary); border-radius: 4px;
+    background: var(--surface); color: var(--text);
+  }
+  .conv-rename-input:focus { outline: none; }
+
+  /* Search results use same conv-item style */
+  .search-result-meta {
+    font-size: 0.75rem; color: var(--text-faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .search-result-snippet {
+    font-size: 0.82rem; color: var(--text-muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .sidebar-toggle {
+    width: 28px; height: 28px; border-radius: 6px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface); color: var(--text-muted);
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 0.85rem; flex-shrink: 0;
+    transition: background .12s ease;
+  }
+  .sidebar-toggle:hover { background: var(--surface-alt); color: var(--text); }
+
+  /* ── Mobile overlay ───────────────────────────────────────────────────────── */
+  @media (max-width: 768px) {
+    .sidebar {
+      position: absolute; top: 60px; left: 0; bottom: 0; z-index: 50;
+      box-shadow: 4px 0 20px rgba(0,0,0,0.15);
+    }
+    .sidebar.collapsed { width: 0; min-width: 0; }
+    .sidebar-backdrop {
+      display: none; position: fixed; inset: 0; z-index: 40;
+      background: rgba(0,0,0,0.3);
+    }
+    .sidebar-backdrop.visible { display: block; }
+  }
+
+  /* ── Main chat area ───────────────────────────────────────────────────────── */
+  .chat-main {
+    flex: 1; display: flex; flex-direction: column; overflow: hidden;
   }
   .messages {
     flex: 1; overflow-y: auto; padding: 1.5rem 1rem;
     display: flex; flex-direction: column; gap: 0.85rem;
   }
+  .empty-state {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    color: var(--text-faint); gap: 0.5rem; padding: 2rem;
+    text-align: center;
+  }
+  .empty-state .icon { font-size: 2.5rem; }
+  .empty-state p { font-size: 0.95rem; }
+
   .bubble {
     max-width: 72%; padding: 0.7rem 1rem; border-radius: 18px;
     font-size: 0.95rem; line-height: 1.55;
@@ -21,7 +137,7 @@
   }
   @keyframes bubbleIn {
     from { opacity: 0; transform: translateY(4px); }
-    to { opacity: 1; transform: translateY(0); }
+    to   { opacity: 1; transform: translateY(0); }
   }
   .bubble.user {
     align-self: flex-end;
@@ -43,6 +159,7 @@
     align-self: flex-start; background: var(--surface-alt); color: var(--text-faint);
     font-style: italic; font-size: 0.88rem; border-bottom-left-radius: 6px;
   }
+
   .input-bar {
     background: var(--surface-glass);
     backdrop-filter: blur(16px) saturate(140%);
@@ -67,10 +184,16 @@
 
 {% block nav %}
 <nav>
-  <span class="brand">🏠 Family Assistant</span>
+  <div style="display:flex; align-items:center; gap:0.6rem;">
+    <button class="sidebar-toggle" type="button"
+            onclick="document.querySelector('[x-data]').__x.$data.toggleSidebar()"
+            title="Ẩn/hiện danh sách hội thoại">☰</button>
+    <span class="brand">🏠 Family Assistant</span>
+  </div>
   <div class="actions">
     <span>{{ user.name }}{% if user.username %} · @{{ user.username }}{% endif %}</span>
-    <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Đổi chế độ sáng/tối" title="Đổi chế độ sáng/tối">
+    <button class="theme-toggle" type="button" onclick="toggleTheme()"
+            aria-label="Đổi chế độ sáng/tối" title="Đổi chế độ sáng/tối">
       <span class="icon-dark">🌙</span>
       <span class="icon-light">☀️</span>
     </button>
@@ -84,51 +207,176 @@
 {% block theme_toggle %}{% endblock %}
 
 {% block content %}
-<div class="chat-wrap" x-data="chatApp()" x-init="init()">
+{# Pass server-side data to Alpine via data attributes #}
+<div id="app-root"
+     data-conversations="{{ conversations | tojson | e }}"
+     data-active-conv="{{ active_conv | tojson | e }}"
+     data-messages="{{ messages | tojson | e }}"
+     data-user-id="{{ user.id }}">
+</div>
 
-  <div class="messages" id="messages" x-ref="messages">
-    <template x-for="(m, i) in messages" :key="i">
-      <div class="bubble" :class="m.role"><span x-text="m.text"></span></div>
-    </template>
+<div class="app-shell" x-data="chatApp()" x-init="init()">
+
+  {# Mobile backdrop #}
+  <div class="sidebar-backdrop" :class="{ visible: sidebarOpen && isMobile }"
+       @click="sidebarOpen = false"></div>
+
+  {# ── Sidebar ── #}
+  <aside class="sidebar" :class="{ collapsed: !sidebarOpen }">
+    <div class="sidebar-header">
+      <button class="btn-new" type="button" @click="newChat()">
+        <span>✏️</span> Mới
+      </button>
+    </div>
+
+    <div class="sidebar-search">
+      <input type="search" placeholder="Tìm kiếm…"
+             x-model="searchQuery"
+             @input.debounce.300ms="doSearch()"
+             @keydown.escape="clearSearch()">
+    </div>
+
+    <div class="conv-list">
+      {# Search results #}
+      <template x-if="searchResults !== null">
+        <template x-if="searchResults.length === 0">
+          <div style="padding:0.5rem 0.6rem; font-size:0.85rem; color:var(--text-faint);">
+            Không tìm thấy kết quả
+          </div>
+        </template>
+      </template>
+      <template x-if="searchResults !== null && searchResults.length > 0">
+        <template x-for="r in searchResults" :key="r.message_id">
+          <div class="conv-item" @click="switchConversation(r.conv_id)">
+            <div style="min-width:0; flex:1;">
+              <div class="conv-title" x-text="r.conv_title || 'New chat'"></div>
+              <div class="search-result-snippet" x-text="r.snippet"></div>
+            </div>
+          </div>
+        </template>
+      </template>
+
+      {# Conversation list (shown when not searching) #}
+      <template x-if="searchResults === null">
+        <template x-for="c in conversations" :key="c.id">
+          <div class="conv-item" :class="{ active: c.id === activeConvId }"
+               @dblclick="startRename(c.id, c.title || 'New chat')"
+               @click="renamingId !== c.id && switchConversation(c.id)">
+            <template x-if="renamingId === c.id">
+              <input class="conv-rename-input"
+                     x-model="renameDraft"
+                     @keydown.enter.prevent="commitRename(c.id)"
+                     @keydown.escape="renamingId = null"
+                     @blur="commitRename(c.id)"
+                     x-ref="renameInput"
+                     @click.stop>
+            </template>
+            <template x-if="renamingId !== c.id">
+              <span class="conv-title" x-text="c.title || 'New chat'"></span>
+            </template>
+          </div>
+        </template>
+      </template>
+    </div>
+  </aside>
+
+  {# ── Main chat ── #}
+  <div class="chat-main">
+    <div class="messages" x-ref="messages">
+      {# Empty state when no active conversation #}
+      <template x-if="messages.length === 0 && !sending">
+        <div class="empty-state">
+          <div class="icon">💬</div>
+          <p>Bắt đầu cuộc hội thoại mới hoặc chọn một cuộc trò chuyện từ danh sách bên trái.</p>
+        </div>
+      </template>
+
+      <template x-for="(m, i) in messages" :key="i">
+        <div class="bubble" :class="m.role"><span x-text="m.text"></span></div>
+      </template>
+    </div>
+
+    <form class="input-bar" @submit.prevent="send()">
+      <textarea
+        x-model="draft"
+        x-ref="input"
+        rows="1"
+        placeholder="Nhắn tin…"
+        @keydown="onKey($event)"
+        @input="autoResize($event.target)"
+        :disabled="sending"
+      ></textarea>
+      <button type="submit" class="btn" :disabled="sending || !draft.trim()">Gửi</button>
+    </form>
   </div>
 
-  <form class="input-bar" @submit.prevent="send()">
-    <textarea
-      x-model="draft"
-      x-ref="input"
-      rows="1"
-      placeholder="Nhắn tin..."
-      @keydown="onKey($event)"
-      @input="autoResize($event.target)"
-      :disabled="sending"
-    ></textarea>
-    <button type="submit" class="btn" :disabled="sending || !draft.trim()">Gửi</button>
-  </form>
 </div>
 
 <script>
 function chatApp() {
-  return {
-    messages: [],
-    draft: '',
-    sending: false,
-    _es: null,
+  const root = document.getElementById('app-root');
+  const _convs    = JSON.parse(root.dataset.conversations || '[]');
+  const _activeConv = JSON.parse(root.dataset.activeConv || 'null');
+  const _messages = JSON.parse(root.dataset.messages || '[]');
+  const _userId   = root.dataset.userId;
 
+  return {
+    // ── State ──────────────────────────────────────────────────────────────
+    conversations: _convs,
+    activeConvId:  _activeConv ? _activeConv.id : null,
+    messages:      _messages.map(m => ({ role: m.role, text: m.text })),
+    draft:         '',
+    sending:       false,
+    sidebarOpen:   window.innerWidth > 768,
+    isMobile:      window.innerWidth <= 768,
+    searchQuery:   '',
+    searchResults: null,   // null = not searching; [] = no results; [...] = results
+    renamingId:    null,
+    renameDraft:   '',
+    _es:           null,
+    _sseKey:       null,   // current SSE queue key
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
     init() {
-      this._es = new EventSource('/chat/stream');
-      this._es.onmessage = (e) => {
-        // Remove the "thinking…" placeholder if present
-        this.messages = this.messages.filter(m => m.role !== 'thinking');
-        this.messages.push({ role: 'bot', text: e.data });
-        this.sending = false;
-        this.$nextTick(() => this.scrollBottom());
-      };
-      this._es.onerror = () => {
-        // EventSource auto-reconnects; nothing to do here
-      };
-      this.$nextTick(() => this.$refs.input.focus());
+      window.addEventListener('resize', () => {
+        this.isMobile = window.innerWidth <= 768;
+        if (!this.isMobile) this.sidebarOpen = true;
+      });
+      const key = this.activeConvId
+        ? `?conversation_id=${this.activeConvId}`
+        : `?conversation_id=pending_${_userId}`;
+      this._connectSSE(key);
+      this.$nextTick(() => {
+        this.scrollBottom();
+        this.$refs.input && this.$refs.input.focus();
+      });
     },
 
+    // ── SSE ────────────────────────────────────────────────────────────────
+    _connectSSE(queryString) {
+      if (this._es) { this._es.close(); this._es = null; }
+      this._sseKey = queryString;
+      this._es = new EventSource('/chat/stream' + queryString);
+      this._es.onmessage = (e) => this._onSseEvent(e);
+      this._es.onerror = () => { /* EventSource auto-reconnects */ };
+    },
+
+    _onSseEvent(e) {
+      let data;
+      try { data = JSON.parse(e.data); } catch { return; }
+
+      if (data.type === 'message') {
+        this.messages = this.messages.filter(m => m.role !== 'thinking');
+        this.messages.push({ role: 'bot', text: data.text });
+        this.sending = false;
+        this.$nextTick(() => this.scrollBottom());
+      } else if (data.type === 'title_update') {
+        const c = this.conversations.find(c => c.id === this.activeConvId);
+        if (c) c.title = data.title;
+      }
+    },
+
+    // ── Send ───────────────────────────────────────────────────────────────
     async send() {
       const text = this.draft.trim();
       if (!text || this.sending) return;
@@ -144,13 +392,111 @@ function chatApp() {
 
       const fd = new FormData();
       fd.append('text', text);
-      await fetch('/chat/send', { method: 'POST', body: fd });
-      // Reply arrives via SSE → onmessage above
+
+      if (this.activeConvId) {
+        // Existing conversation
+        await fetch(`/chat/${this.activeConvId}/send`, { method: 'POST', body: fd });
+      } else {
+        // Lazy-create: POST to /chat/send, get back conversation_id
+        const res = await fetch('/chat/send', { method: 'POST', body: fd });
+        if (res.ok) {
+          const json = await res.json();
+          const convId = json.conversation_id;
+          this.activeConvId = convId;
+          // Add to sidebar list (title = null until LLM generates)
+          this.conversations.unshift({ id: convId, title: null, updated_at: new Date().toISOString() });
+          // Update URL without page reload
+          window.history.pushState({}, '', `/chat/${convId}`);
+          // Reconnect SSE with the real conv_id
+          this._connectSSE(`?conversation_id=${convId}`);
+        }
+      }
     },
 
+    // ── Navigation ─────────────────────────────────────────────────────────
+    async switchConversation(convId) {
+      if (convId === this.activeConvId) return;
+      if (this.isMobile) this.sidebarOpen = false;
+
+      this.activeConvId = convId;
+      this.messages = [];
+      this.sending = false;
+      window.history.pushState({}, '', `/chat/${convId}`);
+      this._connectSSE(`?conversation_id=${convId}`);
+
+      // Fetch messages for this conversation
+      const res = await fetch(`/api/conversations/${convId}/messages`);
+      if (res.ok) {
+        const data = await res.json();
+        this.messages = data.map(m => ({ role: m.role, text: m.text }));
+      }
+      this.$nextTick(() => {
+        this.scrollBottom();
+        this.$refs.input && this.$refs.input.focus();
+      });
+    },
+
+    newChat() {
+      this.activeConvId = null;
+      this.messages = [];
+      this.sending = false;
+      this.searchQuery = '';
+      this.searchResults = null;
+      window.history.pushState({}, '', '/chat');
+      // SSE with pending key so title_update can still reach us after lazy create
+      this._connectSSE(`?conversation_id=pending_${_userId}`);
+      if (this.isMobile) this.sidebarOpen = false;
+      this.$nextTick(() => this.$refs.input && this.$refs.input.focus());
+    },
+
+    toggleSidebar() {
+      this.sidebarOpen = !this.sidebarOpen;
+    },
+
+    // ── Rename ────────────────────────────────────────────────────────────
+    startRename(id, currentTitle) {
+      this.renamingId = id;
+      this.renameDraft = currentTitle;
+      this.$nextTick(() => {
+        const el = this.$refs.renameInput;
+        if (el) { el.focus(); el.select(); }
+      });
+    },
+
+    async commitRename(id) {
+      const title = this.renameDraft.trim();
+      this.renamingId = null;
+      if (!title) return;
+      const res = await fetch(`/api/conversations/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title }),
+      });
+      if (res.ok) {
+        const c = this.conversations.find(c => c.id === id);
+        if (c) c.title = title;
+      }
+    },
+
+    // ── Search ────────────────────────────────────────────────────────────
+    async doSearch() {
+      const q = this.searchQuery.trim();
+      if (!q) { this.searchResults = null; return; }
+      const res = await fetch(`/api/conversations/search?q=${encodeURIComponent(q)}`);
+      if (res.ok) {
+        this.searchResults = await res.json();
+      }
+    },
+
+    clearSearch() {
+      this.searchQuery = '';
+      this.searchResults = null;
+    },
+
+    // ── Helpers ────────────────────────────────────────────────────────────
     scrollBottom() {
       const el = this.$refs.messages;
-      el.scrollTop = el.scrollHeight;
+      if (el) el.scrollTop = el.scrollHeight;
     },
 
     autoResize(el) {
@@ -160,8 +506,7 @@ function chatApp() {
 
     onKey(e) {
       // Enter sends; Shift+Enter inserts newline.
-      // Skip while IME is composing (Vietnamese, Japanese, ...) so the
-      // Enter that confirms a candidate doesn't accidentally submit.
+      // Skip while IME is composing (Vietnamese, Japanese, ...).
       if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
         e.preventDefault();
         this.send();
