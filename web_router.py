@@ -292,6 +292,55 @@ async def chat_page(request: Request, web_session: str | None = Cookie(default=N
     )
 
 
+# ── SSE stream — must be declared before /chat/{conv_id} to prevent ambiguous match ──
+
+@router.get("/chat/stream")
+async def chat_stream(
+    request: Request,
+    conversation_id: int | None = Query(default=None),
+    web_session: str | None = Cookie(default=None),
+):
+    """SSE endpoint: streams JSON events to the browser via EventSource.
+
+    conversation_id query param is required for FR-5.5 (queue per conv).
+    If omitted (legacy / pre-conv-id state), a temporary key is used.
+    """
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    assert _web_channel is not None
+    assert _conv_store is not None
+
+    # Determine SSE key
+    if conversation_id is not None:
+        conv = _get_conv_or_403(conversation_id, user)
+        if conv is None:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        queue_key = str(conversation_id)
+    else:
+        # Pending new conversation — use a temporary user-scoped key until
+        # the frontend receives conversation_id from /chat/send and reconnects.
+        queue_key = f"pending_{user.id}"
+
+    q = _web_channel.connect(queue_key)
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    raw = await asyncio.wait_for(q.get(), timeout=30.0)
+                    yield {"data": raw}
+                except asyncio.TimeoutError:
+                    yield {"comment": "keepalive"}
+        finally:
+            _web_channel.disconnect(queue_key)
+
+    return EventSourceResponse(event_generator())
+
+
 @router.get("/chat/{conv_id}", response_class=HTMLResponse)
 async def chat_conversation_page(
     conv_id: int,
@@ -430,55 +479,6 @@ async def send_message(
 
     asyncio.create_task(handle_message(msg, user, web_deps))
     return HTMLResponse("", status_code=204)
-
-
-# ── SSE stream ─────────────────────────────────────────────────────────────────
-
-@router.get("/chat/stream")
-async def chat_stream(
-    request: Request,
-    conversation_id: int | None = Query(default=None),
-    web_session: str | None = Cookie(default=None),
-):
-    """SSE endpoint: streams JSON events to the browser via EventSource.
-
-    conversation_id query param is required for FR-5.5 (queue per conv).
-    If omitted (legacy / pre-conv-id state), a temporary key is used.
-    """
-    user = _resolve_user(web_session)
-    if user is None:
-        return RedirectResponse(url="/login", status_code=303)
-
-    assert _web_channel is not None
-    assert _conv_store is not None
-
-    # Determine SSE key
-    if conversation_id is not None:
-        conv = _get_conv_or_403(conversation_id, user)
-        if conv is None:
-            return JSONResponse({"error": "not found"}, status_code=404)
-        queue_key = str(conversation_id)
-    else:
-        # Pending new conversation — use a temporary user-scoped key until
-        # the frontend receives conversation_id from /chat/send and reconnects.
-        queue_key = f"pending_{user.id}"
-
-    q = _web_channel.connect(queue_key)
-
-    async def event_generator():
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    raw = await asyncio.wait_for(q.get(), timeout=30.0)
-                    yield {"data": raw}
-                except asyncio.TimeoutError:
-                    yield {"comment": "keepalive"}
-        finally:
-            _web_channel.disconnect(queue_key)
-
-    return EventSourceResponse(event_generator())
 
 
 # ── REST API ───────────────────────────────────────────────────────────────────
