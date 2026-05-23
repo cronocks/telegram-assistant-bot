@@ -209,9 +209,9 @@
 {% block content %}
 {# Pass server-side data to Alpine via data attributes #}
 <div id="app-root"
-     data-conversations="{{ conversations | tojson | e }}"
-     data-active-conv="{{ active_conv | tojson | e }}"
-     data-messages="{{ messages | tojson | e }}"
+     data-conversations='{{ conversations | tojson }}'
+     data-active-conv='{{ active_conv | tojson }}'
+     data-messages='{{ messages | tojson }}'
      data-user-id="{{ user.id }}">
 </div>
 
