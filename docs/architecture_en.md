@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-4** (Audit Log + Stealth-read + Recycle Bin + Notifications).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-5.5** (Web Chat History Sidebar).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -73,6 +73,11 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `notification_service.py` | `NotificationService` — bridges store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
 | `scheduled_jobs.py` | APScheduler job definitions: 180d purge, purge-at-18, notification flush (FR-4) |
 | `deps.py` | `CoreDeps` dataclass — collects all dependencies injected into `core_handler` (FR-4 refactor) |
+| `web_session_store.py` | `SqliteWebSessionStore` — DB-revocable web sessions (no JWT); find/revoke/create (FR-5) |
+| `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; connect/disconnect/send (FR-5, refactored FR-5.5) |
+| `web_router.py` | FastAPI web router: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/<id>`, SSE, conversations API (FR-5, FR-5.5) |
+| `web_conversation_store.py` | `SqliteWebConversationStore` — conversation + message CRUD; LIKE search; admin stealth-read path (FR-5.5) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, collapsible sidebar) (FR-5, FR-5.5) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
@@ -123,7 +128,8 @@ Core identity table. One row per registered user. Soft-deleted users have `delet
 | `username` | TEXT UNIQUE NOCASE | Optional handle; CHECK regex `[A-Za-z0-9_.-]{3,32}` |
 | `role` | TEXT NOT NULL | `admin` \| `manager` \| `member` \| `readonly` |
 | `birthdate` | DATE | ISO date, nullable |
-| `password_hash` | TEXT | Argon2id hash; NULL until set (web auth — not yet exposed via Telegram) |
+| `password_hash` | TEXT | Argon2id hash; NULL until set |
+| `must_change_password` | INTEGER | 0 = normal; 1 = force-reset on next web login (FR-5) |
 | `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
 | `deleted_at` | DATETIME | Soft-delete marker; NULL = active |
 
@@ -288,6 +294,46 @@ Persistent notification queue. Survives restarts (no in-memory queue). The `flus
 
 Partial index: `(status, next_retry_at) WHERE status = 'pending'` — retry job scans only pending rows.
 
+#### `web_sessions` *(FR-5)*
+Server-side DB-revocable web sessions. One row per login; logout sets `revoked_at`. The cookie holds a 32-byte hex opaque token (256-bit entropy) — JWT is avoided so sessions can be force-invalidated immediately.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `token` | TEXT UNIQUE NOT NULL | 32-byte random hex |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+| `expires_at` | DATETIME NOT NULL | `created_at + WEB_SESSION_TTL_DAYS` (default 7 days) |
+| `revoked_at` | DATETIME | NULL = active; set on logout or password change |
+
+Indexes: `(token)`, `(user_id)`.
+
+#### `web_conversations` *(FR-5.5)*
+Each web chat session is one conversation. Created lazily when the user sends the first message — opening "New chat" and navigating away does not pollute the DB.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | Conversation owner |
+| `title` | TEXT | NULL until LLM generates; frontend shows "New chat" |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+| `updated_at` | DATETIME | Bumped on every new message |
+
+Index: `(user_id, updated_at DESC)`.
+
+#### `web_messages` *(FR-5.5)*
+Each chat turn (user or bot) is one row. Retained indefinitely — no auto-purge (Decision #74).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `conversation_id` | INTEGER FK → web_conversations | |
+| `role` | TEXT NOT NULL | `user` \| `bot` |
+| `text` | TEXT NOT NULL | Message content |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+
+Indexes: `(conversation_id, created_at)`, `(conversation_id, text)` — text index supports LIKE search.
+
 ---
 
 ## 6. Permission Model
@@ -360,6 +406,13 @@ Soft-delete has been present since earlier FRs via `deleted_at` on `notes`, `wik
 | `notification_delivered` | `notification` | Successfully sent |
 | `notification_retry` | `notification` | Intermediate retry (attempts < 5) |
 | `notification_failed` | `notification` | Reached max 5 attempts — no further retries |
+| `web_login` | `user` | Successful web login *(FR-5)* |
+| `web_logout` | `user` | Web logout *(FR-5)* |
+| `web_login_failed` | `user` | Failed web login — wrong password *(FR-5)* |
+| `web_password_set` | `user` | Admin sets web password for a user *(FR-5)* |
+| `web_conversation_created` | `web_conversation` | Lazy create on first message *(FR-5.5)* |
+| `web_conversation_renamed` | `web_conversation` | User renames a conversation *(FR-5.5)* |
+| `stealth_read_web_conversation` | `web_conversation` | Admin views web conversation of an under-18 user *(FR-5.5)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -488,6 +541,40 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | `xem thung rac` | List items currently in the recycle bin (soft-deleted) | admin |
 | `khoi phuc: <kind> <id>` | Restore an item (e.g. `khoi phuc: note 12`) | admin |
 | `xoa han: <kind> <id>` | Hard delete immediately, bypassing 180-day retention | admin |
+
+### Web UI — administration *(FR-5)*
+| Telegram Command | Description | Who |
+|-----------------|-------------|-----|
+| `dat web pass: <username>, <password>` | Set web password for a user + `must_change_password=1` → user is forced to reset on first login | admin |
+
+**Web flows (via browser):**
+- `/login` — log in; sets `web_session` cookie HttpOnly + SameSite=Lax + Secure
+- `/setup-password` — force-reset password when `must_change_password=1`
+- `/logout` — server-side session revocation, immediate
+- Brute-force: 5 failures → 15-minute lockout (reuses `sudo_attempts` table with `channel="web"`)
+
+### Web Chat History *(FR-5.5)*
+**Routes:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/chat` | New chat lazy; render sidebar + empty messages |
+| GET | `/chat/<id>` | Open a specific conversation |
+| POST | `/chat/send` | Send message with no existing conversation (lazy create) |
+| POST | `/chat/<id>/send` | Send message into an existing conversation |
+| GET | `/chat/stream?conversation_id=<id>` | SSE stream per conversation |
+| GET | `/api/conversations` | JSON list of user's conversations |
+| GET | `/api/conversations/<id>/messages` | JSON messages for a conversation |
+| PATCH | `/api/conversations/<id>` | Rename conversation |
+| GET | `/api/conversations/search?q=...` | LIKE search across messages |
+| GET | `/admin/users/<id>/conversations` | Admin views conversations of an under-18 user |
+| GET | `/admin/conversations/<id>` | Admin views messages (emits audit `stealth_read_web_conversation`) |
+
+**Sidebar features:**
+- Collapsible (collapsed by default on mobile)
+- Inline rename (double-click title → editable input → Enter/blur to save)
+- Search box with 300ms debounce
+- New chat button — lazy conversation create on first message
 
 ### Registration (pre-auth)
 | Command | Description |

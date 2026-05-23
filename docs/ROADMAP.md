@@ -426,8 +426,8 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-5 — Web UI + Password Auth
-**Status:** 🟡 IN PROGRESS — code hoàn tất trên `feature/FR5` (chưa commit), 40/40 unit tests pass, login flow tested local OK; **pending:** commit + manual e2e test + set `WEB_SECRET_KEY` trên Render staging/production + merge → `main`. Plan chi tiết tại `docs/FR-5-PLAN.md`.
-**Scope delivered (trên branch):**
+**Status:** ✅ DONE — merged to `main`; commits `b80e836` → `2cc9833`; 40/40 tests passing. Plan chi tiết tại `docs/FR-5-PLAN.md`.
+**Scope delivered:**
 - Migration 016 (`web_sessions` + `users.must_change_password`); `web_session_store.py` (SqliteWebSessionStore, DB-revocable, không JWT)
 - `web_channel.py` — `WebChannelAdapter` channel mới, in-memory `asyncio.Queue` per-user cho SSE push
 - `web_router.py` — FastAPI router: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/send`, `/chat/stream` (SSE qua `sse-starlette`); cookie `web_session` HttpOnly + SameSite=Lax + Secure (non-local)
@@ -441,7 +441,7 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-5.5 — Web Chat History Sidebar
-**Status:** PENDING (chốt scope 2026-05-23, sẽ start sau khi FR-5 merge `main`)
+**Status:** ✅ DONE — merged to `main` 2026-05-23; commits `1c6373d` → `8d3d19f`; 58 tests passing. Plan chi tiết tại `docs/FR-5.5-PLAN.md`.
 **Lý do:** FR-5 hiện tại chat web là single-thread, reload page mất hội thoại trước. Thêm sidebar bên trái liệt kê các phiên cũ — UX giống Claude.ai/ChatGPT.
 **Scope:**
 - Migration mới (017): bảng `web_conversations` (id, user_id, title, created_at, updated_at) + `web_messages` (id, conversation_id, role, text, created_at)
@@ -656,7 +656,7 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-22)
+### Right now (2026-05-23)
 - ✅ **FR-1** merged to `main` (production)
 - ✅ **FR-2** merged to `main` (production) 2026-05-18 — 11 commits, 148 tests passing
 - ✅ **FR-3** merged to `main` (production) 2026-05-19 — Scope (private/everyone), ACL, L1 Memory, `/help [nhom]`
@@ -671,26 +671,25 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
   - Auto-purge scheduled jobs (APScheduler daily): purge recycle bin >180d + check tuổi 18
   - Notification queue persistent (`pending_notifications` + flush job retry)
   - Refactor `deps.py` (tách `CoreDeps` ra file riêng)
-- 🟡 **FR-5** IN PROGRESS — Web UI + Password Auth trên `feature/FR5` (chưa commit)
-  - **Code complete:** migration 016, `web_session_store`, `web_channel` (SSE), `web_router` (FastAPI), templates Jinja2 + HTMX + Alpine, glass UI + dark mode toggle, `dat web pass` admin command, `web_deps` riêng trên `app.state`
-  - **Tests:** 40/40 PASS (`test_web_session.py` 14, `test_web_channel.py` 16, `test_web_auth.py` 10), 0 warnings
-  - **Local manual test:** đăng nhập `Bot Owner` / `demo1234` qua `http://localhost:8000/login` OK; UI glass + dark mode toggle hoạt động; Enter gửi (IME-aware) / Shift+Enter xuống dòng
-  - **Pending:**
-    1. Commit toàn bộ FR-5 work (10 untracked + 7 modified files)
-    2. Manual e2e test đầy đủ: force-reset flow, brute-force lockout, SSE streaming, logout → revoke session
-    3. Set `WEB_SECRET_KEY` env var trên Render staging + production (fail-fast nếu thiếu)
-    4. Cập nhật `docs/architecture_vn.md` + `architecture_en.md` cho FR-5
-    5. Merge `feature/FR5` → `main`
+- ✅ **FR-5** merged to `main` 2026-05-23 — Web UI + Password Auth; commits `b80e836` → `2cc9833`; 40 tests passing
+  - Migration 016, `web_session_store`, `web_channel` (SSE per user), `web_router` (FastAPI)
+  - Templates Jinja2 + HTMX + Alpine.js, glass/dark mode UI, IME-aware Enter-to-send
+  - `dat web pass` admin command, force-reset on first login, brute-force lockout
+  - `web_deps` instance riêng trên `app.state` với `WebChannelAdapter`
+- ✅ **FR-5.5** merged to `main` 2026-05-23 — Web Chat History Sidebar; commits `1c6373d` → `8d3d19f`; 58 tests passing
+  - Migration 017: `web_conversations` + `web_messages`; `SqliteWebConversationStore`
+  - SSE queue refactor: keyed by `conversation_id` (không phải `user_id`)
+  - Sidebar collapsible, conversation list, rename inline, search (LIKE), new chat lazy create
+  - LLM title generation async (Haiku 4.5) sau message đầu; SSE `title_update` event
+  - Admin stealth-read hội thoại web của user under-18; audit `stealth_read_web_conversation`
 
 ---
 
-### 🔔 Next session reminder (cho phiên 2026-05-23+)
+### 🔔 Next session reminder (cho phiên tiếp theo)
 
-**FR-5 sau khi e2e test pass trên staging:** merge `feature/FR5` → `main`, set `WEB_SECRET_KEY` production, cập nhật `docs/architecture_*.md`.
+**FR-5 + FR-5.5 đã hoàn thành và merged to `main` 2026-05-23.**
 
-**Sau khi FR-5 vào main:** bắt đầu **FR-5.5** (Web Chat History Sidebar) — scope đã chốt ngày 2026-05-23 (Section 5 + Decision #70-#75). Lập `docs/FR-5.5-PLAN.md` chi tiết trước khi code.
-
-Q1 (web chat history) đã ✅ RESOLVED — không cần thảo luận lại.
+**Tiếp theo:** bắt đầu **FR-6** (Backup / Restore Tooling) — xem scope tại Section 5. Branch off từ `main`, lập plan chi tiết trước khi code.
 
 ---
 
@@ -742,17 +741,14 @@ Q1 (web chat history) đã ✅ RESOLVED — không cần thảo luận lại.
 
 ---
 
-### Immediate next steps (2026-05-22)
-1. **Thảo luận trước:** Web chat history sidebar (Section 7 / Q1) — chốt scope trước khi commit FR-5
-2. Commit FR-5 work trên branch `feature/FR5` (chia commit hợp lý: migration → store → channel → router → templates → admin command → tests)
-3. Manual e2e test FR-5: force-reset flow, brute-force lockout, SSE streaming, logout revoke, IME Enter handling
-4. Set `WEB_SECRET_KEY` env var trên Render staging + production
-5. Cập nhật `docs/architecture_vn.md` + `architecture_en.md` cho FR-4 đã merge + FR-5 (nếu merge xong trong phiên)
-6. Merge `feature/FR5` → `main`; xóa branch sau khi vào `main`
-7. Bắt đầu FR-6: Backup / Restore Tooling
+### Immediate next steps
+1. Bắt đầu **FR-6**: Backup / Restore Tooling
+   - Branch off từ `main`
+   - Lập `docs/FR-6-PLAN.md` chi tiết trước khi code
+   - Scope: export data user (JSON + attachments), import/restore, migration tool local mode
 
 ### Pending FRs
-- FR-5 (in progress), **FR-5.5** (scope chốt, chờ FR-5 merge `main`), FR-6..FR-9 — sequential theo Section 5
+- **FR-6** (next), FR-7..FR-9 — sequential theo Section 5
 
 ---
 

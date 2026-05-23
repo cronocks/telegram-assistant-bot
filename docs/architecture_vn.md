@@ -1,6 +1,6 @@
 # Kiến Trúc Hệ Thống
 
-> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-4** (Audit Log + Stealth-read + Recycle Bin + Notifications).
+> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-5.5** (Web Chat History Sidebar).
 > Xem lộ trình phát triển đầy đủ tại [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -73,6 +73,11 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
 | `notification_service.py` | `NotificationService` — bridge store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
 | `scheduled_jobs.py` | Định nghĩa APScheduler jobs: purge 180d, purge-at-18, flush notifications (FR-4) |
 | `deps.py` | `CoreDeps` dataclass — gom tất cả dependency inject vào `core_handler` (FR-4 refactor) |
+| `web_session_store.py` | `SqliteWebSessionStore` — session web DB-revocable (không JWT); find/revoke/create (FR-5) |
+| `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; connect/disconnect/send (FR-5, refactor FR-5.5) |
+| `web_router.py` | FastAPI router web: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/<id>`, SSE, API conversations (FR-5, FR-5.5) |
+| `web_conversation_store.py` | `SqliteWebConversationStore` — CRUD conversation + message; search LIKE; admin stealth-read path (FR-5.5) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, sidebar collapsible) (FR-5, FR-5.5) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) dùng bởi các retrieval path |
 | `auth.py` | Argon2id password hashing (hạ tầng từ FR-2; FR-3.5 dùng để verify mật khẩu sudo) |
 | `permissions.py` | Permission helpers theo role |
@@ -123,7 +128,8 @@ Bảng định danh cốt lõi. Mỗi người dùng đã đăng ký là một r
 | `username` | TEXT UNIQUE NOCASE | Handle tùy chọn; CHECK regex `[A-Za-z0-9_.-]{3,32}` |
 | `role` | TEXT NOT NULL | `admin` \| `manager` \| `member` \| `readonly` |
 | `birthdate` | DATE | Ngày ISO, nullable |
-| `password_hash` | TEXT | Hash Argon2id; NULL cho tới khi được set (web auth — chưa expose qua Telegram) |
+| `password_hash` | TEXT | Hash Argon2id; NULL cho tới khi được set |
+| `must_change_password` | INTEGER | 0 = bình thường; 1 = force-reset lần đăng nhập web tiếp theo (FR-5) |
 | `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
 | `deleted_at` | DATETIME | Mốc soft-delete; NULL = đang active |
 
@@ -288,6 +294,46 @@ Hàng đợi thông báo persistent. Survive restart (không dùng in-memory que
 
 Partial index: `(status, next_retry_at) WHERE status = 'pending'` — job retry chỉ scan rows đang pending.
 
+#### `web_sessions` *(FR-5)*
+Session web server-side DB-revocable. Mỗi login tạo 1 row; logout set `revoked_at`. Cookie chứa opaque token 32 byte hex (256-bit entropy) — không dùng JWT để hỗ trợ force-logout ngay lập tức.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `token` | TEXT UNIQUE NOT NULL | 32-byte random hex |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+| `expires_at` | DATETIME NOT NULL | `created_at + WEB_SESSION_TTL_DAYS` (default 7 ngày) |
+| `revoked_at` | DATETIME | NULL = active; set khi logout hoặc đổi mật khẩu |
+
+Index: `(token)`, `(user_id)`.
+
+#### `web_conversations` *(FR-5.5)*
+Mỗi phiên chat web là một conversation. Tạo lazy khi user gửi message đầu tiên — mở "New chat" rồi rời đi không tạo rác DB.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | Chủ conversation |
+| `title` | TEXT | NULL cho tới khi LLM gen xong; FE hiển thị "New chat" |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+| `updated_at` | DATETIME | Bump mỗi khi có message mới |
+
+Index: `(user_id, updated_at DESC)`.
+
+#### `web_messages` *(FR-5.5)*
+Mỗi turn chat (user hoặc bot) là một row. Lưu toàn bộ, không giới hạn — retention vĩnh viễn theo Decision #74.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `conversation_id` | INTEGER FK → web_conversations | |
+| `role` | TEXT NOT NULL | `user` \| `bot` |
+| `text` | TEXT NOT NULL | Nội dung tin nhắn |
+| `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
+
+Index: `(conversation_id, created_at)`, `(conversation_id, text)` — index text cho LIKE search.
+
 ---
 
 ## 6. Mô Hình Phân Quyền
@@ -360,6 +406,13 @@ Soft-delete đã có từ trước qua cột `deleted_at` trên `notes`, `wiki_p
 | `notification_delivered` | `notification` | Gửi thành công |
 | `notification_retry` | `notification` | Lần gửi lại trung gian (attempts < 5) |
 | `notification_failed` | `notification` | Đạt max 5 attempts — không retry nữa |
+| `web_login` | `user` | Đăng nhập web thành công *(FR-5)* |
+| `web_logout` | `user` | Đăng xuất web *(FR-5)* |
+| `web_login_failed` | `user` | Đăng nhập web thất bại — sai mật khẩu *(FR-5)* |
+| `web_password_set` | `user` | Admin đặt mật khẩu web cho user *(FR-5)* |
+| `web_conversation_created` | `web_conversation` | Lazy create khi user gửi message đầu *(FR-5.5)* |
+| `web_conversation_renamed` | `web_conversation` | User đổi tên conversation *(FR-5.5)* |
+| `stealth_read_web_conversation` | `web_conversation` | Admin xem hội thoại web của user under-18 *(FR-5.5)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -488,6 +541,40 @@ Lệnh được match qua prefix matcher không phân biệt dấu tiếng Việ
 | `xem thung rac` | Liệt kê items đang trong recycle bin (soft-deleted) | admin |
 | `khoi phuc: <kind> <id>` | Khôi phục item (vd `khoi phuc: note 12`) | admin |
 | `xoa han: <kind> <id>` | Hard delete ngay, bỏ qua retention 180 ngày | admin |
+
+### Web UI — quản trị *(FR-5)*
+| Lệnh Telegram | Mô tả | Ai dùng |
+|---------------|-------|---------|
+| `dat web pass: <tên_user>, <mật_khẩu>` | Đặt mật khẩu web cho user + set `must_change_password=1` → user bị force-reset lần đăng nhập đầu | admin |
+
+**Luồng web (qua browser):**
+- `/login` — đăng nhập; cookie `web_session` HttpOnly + SameSite=Lax + Secure
+- `/setup-password` — force-reset mật khẩu nếu `must_change_password=1`
+- `/logout` — revoke session server-side ngay lập tức
+- Brute-force: 5 fail → khóa 15 phút (tái dùng bảng `sudo_attempts` với `channel="web"`)
+
+### Web Chat History *(FR-5.5)*
+**Các route:**
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/chat` | New chat lazy; render sidebar + empty messages |
+| GET | `/chat/<id>` | Mở conversation cụ thể |
+| POST | `/chat/send` | Gửi message khi chưa có conversation (lazy create) |
+| POST | `/chat/<id>/send` | Gửi message vào conversation hiện có |
+| GET | `/chat/stream?conversation_id=<id>` | SSE stream per conversation |
+| GET | `/api/conversations` | JSON list conversations của user |
+| GET | `/api/conversations/<id>/messages` | JSON messages của conversation |
+| PATCH | `/api/conversations/<id>` | Đổi tên conversation |
+| GET | `/api/conversations/search?q=...` | LIKE search trong messages |
+| GET | `/admin/users/<id>/conversations` | Admin xem conversations của user under-18 |
+| GET | `/admin/conversations/<id>` | Admin xem messages (emit audit `stealth_read_web_conversation`) |
+
+**Tính năng sidebar:**
+- Collapsible (mặc định collapsed trên mobile)
+- Rename inline (double-click tên → input → Enter/blur save)
+- Search box với debounce 300ms
+- New chat button — lazy create conversation khi user gửi message đầu
 
 ### Đăng ký (trước khi xác thực)
 | Lệnh | Mô tả |

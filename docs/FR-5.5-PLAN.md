@@ -1,9 +1,10 @@
 # FR-5.5 — Web Chat History Sidebar — Detailed Implementation Plan
 
-> **Status:** PENDING
+> **Status:** ✅ DONE — merged to `main` 2026-05-23
 > **Created:** 2026-05-23
 > **Branch:** `feature/FR5_5` (branch off từ `main` sau khi FR-5 merge)
 > **Approach:** 1 PR duy nhất `feature/FR5_5` → `main`
+> **Commits:** `1c6373d` → `8d3d19f`; 58 tests passing
 
 ---
 
