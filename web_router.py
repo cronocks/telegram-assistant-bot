@@ -39,14 +39,17 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Cookie, Depends, Form, Query, Request, Response
+from fastapi import APIRouter, Cookie, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sse_starlette.sse import EventSourceResponse
 
 import config
+from backup_engine import BackupEngine, ExportError, ImportFormatError, ParsedImport
 from interfaces import (
     AuditLog, ElevationStore, User, UserStore,
     WebConversationStore, WebSessionStore,
@@ -65,6 +68,11 @@ _user_store: UserStore | None = None
 _audit: AuditLog | None = None
 _elevation_store: ElevationStore | None = None
 _conv_store: WebConversationStore | None = None
+_backup_engine: BackupEngine | None = None
+
+# Import preview token store: token → {parsed: ParsedImport, expires_at: datetime}
+_import_tokens: dict[str, dict] = {}
+_IMPORT_TOKEN_TTL = timedelta(minutes=5)
 
 _COOKIE_NAME = "web_session"
 _SESSION_MAX_AGE = config.WEB_SESSION_TTL_DAYS * 86_400  # seconds
@@ -78,10 +86,11 @@ def init_web_router(
     audit: AuditLog,
     elevation_store: ElevationStore,
     conv_store: WebConversationStore,
+    backup_engine: BackupEngine | None = None,
 ) -> None:
     """Wire dependencies into this router (called once from main.py lifespan)."""
     global _templates, _web_channel, _session_store, _user_store
-    global _audit, _elevation_store, _conv_store
+    global _audit, _elevation_store, _conv_store, _backup_engine
     _templates = templates
     _web_channel = web_channel
     _session_store = session_store
@@ -89,8 +98,40 @@ def init_web_router(
     _audit = audit
     _elevation_store = elevation_store
     _conv_store = conv_store
+    _backup_engine = backup_engine
     # Also inject conv_store into the channel adapter for bot-reply persistence
     web_channel.set_conv_store(conv_store)
+
+
+# ── Import token helpers ───────────────────────────────────────────────────────
+
+def _cleanup_expired_tokens() -> None:
+    """Remove stale import tokens (called before issuing new ones)."""
+    now = datetime.now(timezone.utc)
+    expired = [t for t, v in _import_tokens.items() if v["expires_at"] < now]
+    for t in expired:
+        del _import_tokens[t]
+
+
+def _store_import_token(parsed: ParsedImport) -> str:
+    """Store a ParsedImport keyed by a fresh UUID token. Returns the token."""
+    _cleanup_expired_tokens()
+    token = str(uuid.uuid4())
+    _import_tokens[token] = {
+        "parsed": parsed,
+        "expires_at": datetime.now(timezone.utc) + _IMPORT_TOKEN_TTL,
+    }
+    return token
+
+
+def _consume_import_token(token: str) -> ParsedImport | None:
+    """Retrieve and remove a ParsedImport by token. Returns None if expired/missing."""
+    entry = _import_tokens.pop(token, None)
+    if entry is None:
+        return None
+    if entry["expires_at"] < datetime.now(timezone.utc):
+        return None
+    return entry["parsed"]
 
 
 # ── Cookie helpers ─────────────────────────────────────────────────────────────
@@ -681,4 +722,201 @@ async def admin_conversation_view(
     return _templates.TemplateResponse(
         request, "admin_conversation_view.html",
         {"user": admin, "target_user": target_user, "conv": conv, "messages": messages},
+    )
+
+
+# ── Export routes (FR-6) ───────────────────────────────────────────────────────
+
+def _zip_response(zip_bytes: bytes, filename: str) -> Response:
+    """Return a file-download Response for a ZIP archive."""
+    safe_name = filename.replace('"', "_")
+    return Response(
+        content=zip_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+    )
+
+
+def _export_filename(user_name: str) -> str:
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user_name)
+    return f"export_{safe}_{ts}.zip"
+
+
+@router.get("/settings/export")
+async def self_export(web_session: str | None = Cookie(default=None)):
+    """Self-export: the authenticated user downloads their own data as a ZIP."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    if _backup_engine is None:
+        return HTMLResponse("Backup chưa được cấu hình.", status_code=503)
+
+    remaining = _backup_engine.export_cooldown_remaining(user.id)
+    if remaining > 0:
+        return HTMLResponse(
+            f"Rate limit: chờ {remaining} giây trước khi export lần tiếp theo.",
+            status_code=429,
+        )
+
+    try:
+        zip_bytes, _manifest = _backup_engine.generate_export(user.id)
+    except ExportError as exc:
+        logger.warning("Self export failed for user %s: %s", user.id, exc)
+        return HTMLResponse(f"Export thất bại: {exc}", status_code=500)
+
+    return _zip_response(zip_bytes, _export_filename(user.name))
+
+
+@router.get("/admin/users/{target_id}/export")
+async def admin_export_user(
+    target_id: int,
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: export data for any user by ID."""
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+    admin = result
+
+    if _backup_engine is None:
+        return HTMLResponse("Backup chưa được cấu hình.", status_code=503)
+
+    assert _user_store is not None
+    target = _user_store.get_user_by_id(target_id)
+    if target is None:
+        return HTMLResponse("404 User không tồn tại.", status_code=404)
+
+    remaining = _backup_engine.export_cooldown_remaining(target_id)
+    if remaining > 0:
+        return HTMLResponse(
+            f"Rate limit: chờ {remaining} giây (cooldown chung với mọi export của user này).",
+            status_code=429,
+        )
+
+    try:
+        zip_bytes, manifest = _backup_engine.generate_export(target_id)
+    except ExportError as exc:
+        logger.warning("Admin export failed for user %s by admin %s: %s", target_id, admin.id, exc)
+        return HTMLResponse(f"Export thất bại: {exc}", status_code=500)
+
+    # Override audit delivery field to reflect admin-triggered export.
+    assert _audit is not None
+    _audit.log(
+        actor_user_id=admin.id,
+        action="data_export",
+        target_type="user",
+        target_id=target_id,
+        payload={"size_bytes": len(zip_bytes), "delivery": "web_admin"},
+    )
+
+    return _zip_response(zip_bytes, _export_filename(target.name))
+
+
+# ── Import routes (FR-6) ───────────────────────────────────────────────────────
+
+@router.get("/admin/import", response_class=HTMLResponse)
+async def admin_import_page(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: render import form."""
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "import.html",
+        {"user": result, "state": "upload", "preview": None, "result": None, "error": None},
+    )
+
+
+@router.post("/admin/import/preview", response_class=HTMLResponse)
+async def admin_import_preview(
+    request: Request,
+    zip_file: UploadFile = File(...),
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: upload a ZIP, parse it, and render a preview with stats + warnings."""
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+
+    if _backup_engine is None:
+        return HTMLResponse("Backup chưa được cấu hình.", status_code=503)
+
+    assert _templates is not None
+
+    zip_bytes = await zip_file.read()
+    if len(zip_bytes) > 100 * 1024 * 1024:
+        return _templates.TemplateResponse(
+            request, "import.html",
+            {"user": result, "state": "upload", "preview": None, "result": None,
+             "error": "File quá lớn (tối đa 100 MB)."},
+            status_code=413,
+        )
+
+    try:
+        parsed = _backup_engine.parse_import(zip_bytes)
+    except ImportFormatError as exc:
+        return _templates.TemplateResponse(
+            request, "import.html",
+            {"user": result, "state": "upload", "preview": None, "result": None,
+             "error": f"ZIP không hợp lệ: {exc}"},
+            status_code=400,
+        )
+
+    token = _store_import_token(parsed)
+    preview = {
+        "manifest": parsed.manifest,
+        "warnings": parsed.warnings,
+        "token": token,
+    }
+    return _templates.TemplateResponse(
+        request, "import.html",
+        {"user": result, "state": "preview", "preview": preview, "result": None, "error": None},
+    )
+
+
+@router.post("/admin/import/apply", response_class=HTMLResponse)
+async def admin_import_apply(
+    request: Request,
+    token: str = Form(...),
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: apply a previously-previewed import using the one-time token."""
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+
+    if _backup_engine is None:
+        return HTMLResponse("Backup chưa được cấu hình.", status_code=503)
+
+    assert _templates is not None
+
+    parsed = _consume_import_token(token)
+    if parsed is None:
+        return _templates.TemplateResponse(
+            request, "import.html",
+            {"user": result, "state": "upload", "preview": None, "result": None,
+             "error": "Token hết hạn hoặc không hợp lệ. Vui lòng upload lại file ZIP."},
+            status_code=400,
+        )
+
+    try:
+        import_result = _backup_engine.apply_import(parsed, admin_user_id=result.id)
+    except Exception as exc:
+        logger.exception("Import apply failed: %s", exc)
+        return _templates.TemplateResponse(
+            request, "import.html",
+            {"user": result, "state": "upload", "preview": None, "result": None,
+             "error": f"Import thất bại: {exc}"},
+            status_code=500,
+        )
+
+    return _templates.TemplateResponse(
+        request, "import.html",
+        {"user": result, "state": "result", "preview": None, "result": import_result, "error": None},
     )

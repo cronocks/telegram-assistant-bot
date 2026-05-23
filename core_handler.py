@@ -1295,6 +1295,8 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`xem thung rac` — Liet ke item da xoa (user/note/wiki) (admin)\n"
         "`khoi phuc: [kind] [id]` — Khoi phuc item (vd `khoi phuc: user 3`) (admin)\n"
         "`xoa han: [kind] [id]` — Xoa han khoi he thong (vd `xoa han: note 12`) (admin)\n"
+        "`xuat du lieu` — Export du lieu cua ban len Drive (ZIP) (moi user; gioi han 5 phut)\n"
+        "`xuat du lieu: [ten]` — Admin export du lieu cua nguoi khac len Drive (admin only)\n"
         "Luu y: tin nhan chua mat khau se duoc bot tu dong xoa khoi chat.",
     ),
     "he thong": (
@@ -2753,6 +2755,125 @@ def _is_over_quota(user: User, deps: CoreDeps) -> bool:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Backup / export commands (FR-6)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _export_zip_filename(user_name: str) -> str:
+    from datetime import datetime
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in user_name)
+    return f"export_{safe}_{ts}.zip"
+
+
+async def _cmd_xuat_du_lieu_self(chat_id: str, user: "User", deps: CoreDeps) -> None:
+    """xuat du lieu — export caller's own data; upload ZIP to Drive; reply with link."""
+    if deps.backup_engine is None:
+        await deps.channel.send(chat_id, "Tinh nang backup chua duoc cau hinh.", use_markdown=False)
+        return
+
+    remaining = deps.backup_engine.export_cooldown_remaining(user.id)
+    if remaining > 0:
+        await deps.channel.send(
+            chat_id,
+            f"Vui long doi {remaining} giay truoc khi export lan tiep theo.",
+            use_markdown=False,
+        )
+        return
+
+    await deps.channel.send(chat_id, "Dang tao backup, vui long cho...", use_markdown=False)
+    try:
+        zip_bytes, manifest = deps.backup_engine.generate_export(user.id)
+        filename = _export_zip_filename(user.name)
+        _file_id, link = deps.backup_engine.upload_to_drive(filename, zip_bytes)
+    except Exception as exc:
+        await deps.channel.send(
+            chat_id,
+            f"Export that bai: {str(exc)[:300]}",
+            use_markdown=False,
+        )
+        return
+
+    stats = manifest.get("stats", {})
+    await deps.channel.send(
+        chat_id,
+        f"Da tao backup thanh cong!\n"
+        f"  Ghi chu: {stats.get('notes', 0)}\n"
+        f"  Wiki: {stats.get('wiki_pages', 0)}\n"
+        f"  Cuoc tro chuyen: {stats.get('web_conversations', 0)}\n"
+        f"Link: {link}",
+        use_markdown=False,
+    )
+
+
+async def _cmd_xuat_du_lieu_admin(
+    chat_id: str, remainder: str, user: "User", deps: CoreDeps,
+) -> None:
+    """xuat du lieu: <ten> — admin exports data for a named user; uploads to Drive."""
+    if not user.is_admin:
+        await deps.channel.send(chat_id, "Chi admin moi co the xuat du lieu cho nguoi khac.", use_markdown=False)
+        return
+
+    if deps.backup_engine is None:
+        await deps.channel.send(chat_id, "Tinh nang backup chua duoc cau hinh.", use_markdown=False)
+        return
+
+    target_name = remainder.strip()
+    if not target_name:
+        await deps.channel.send(chat_id, "Cu phap: xuat du lieu: <ten>", use_markdown=False)
+        return
+
+    target = deps.user_store.find_by_username_or_name(target_name)
+    if target is None or not target.is_active:
+        await deps.channel.send(
+            chat_id, f"Khong tim thay user: {target_name}", use_markdown=False,
+        )
+        return
+
+    remaining = deps.backup_engine.export_cooldown_remaining(target.id)
+    if remaining > 0:
+        await deps.channel.send(
+            chat_id,
+            f"Rate limit: doi {remaining} giay (cooldown cua user {target.name}).",
+            use_markdown=False,
+        )
+        return
+
+    await deps.channel.send(
+        chat_id, f"Dang tao backup cho {target.name}, vui long cho...", use_markdown=False,
+    )
+    try:
+        zip_bytes, manifest = deps.backup_engine.generate_export(target.id)
+        # Override audit delivery field logged by generate_export.
+        deps.audit.log(
+            actor_user_id=user.id,
+            action="data_export",
+            target_type="user",
+            target_id=target.id,
+            payload={"size_bytes": len(zip_bytes), "delivery": "telegram_drive"},
+        )
+        filename = _export_zip_filename(target.name)
+        _file_id, link = deps.backup_engine.upload_to_drive(filename, zip_bytes)
+    except Exception as exc:
+        await deps.channel.send(
+            chat_id,
+            f"Export that bai: {str(exc)[:300]}",
+            use_markdown=False,
+        )
+        return
+
+    stats = manifest.get("stats", {})
+    await deps.channel.send(
+        chat_id,
+        f"Da tao backup cho {target.name}!\n"
+        f"  Ghi chu: {stats.get('notes', 0)}\n"
+        f"  Wiki: {stats.get('wiki_pages', 0)}\n"
+        f"  Cuoc tro chuyen: {stats.get('web_conversations', 0)}\n"
+        f"Link: {link}",
+        use_markdown=False,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Main dispatcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2801,6 +2922,9 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "TIM":                ["tìm ", "tim ", "search "],
     "XEM":                ["xem "],
     "TOM_TAT_TUAN":       ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
+    # Longer prefix first: "xuat du lieu: <ten>" must match before "xuat du lieu"
+    "XUAT_DU_LIEU_ADMIN": ["xuat du lieu: ", "xuất dữ liệu: "],
+    "XUAT_DU_LIEU_SELF":  ["xuat du lieu", "xuất dữ liệu"],
 }
 
 
@@ -2841,6 +2965,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "CHIA_SE_FILE", "BO_CHIA_SE_FILE",
         "XEM_TRI_NHO", "XEM_HO_SO",
         "DAT_MAT_KHAU", "SUDO", "THOAT_SUDO",
+        "XUAT_DU_LIEU_SELF", "XUAT_DU_LIEU_ADMIN",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -2941,6 +3066,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_cap_nhat_tri_nho(chat_id, user, deps); return
         if cmd_id == "TOM_TAT_TUAN":
             await _cmd_tom_tat_tuan(chat_id, user, deps); return
+        if cmd_id == "XUAT_DU_LIEU_ADMIN":
+            await _cmd_xuat_du_lieu_admin(chat_id, remainder, user, deps); return
+        if cmd_id == "XUAT_DU_LIEU_SELF":
+            await _cmd_xuat_du_lieu_self(chat_id, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)

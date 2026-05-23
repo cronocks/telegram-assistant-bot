@@ -1,0 +1,263 @@
+{% extends "base.html" %}
+
+{% block title %}Admin — Import dữ liệu — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .admin-header {
+    display: flex; align-items: center; gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+  .admin-header h2 { margin: 0; }
+  .admin-badge {
+    display: inline-flex; align-items: center;
+    padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600;
+    background: rgba(79, 70, 229, 0.12); color: var(--primary);
+    border: 1px solid rgba(79, 70, 229, 0.2);
+  }
+  .section-title {
+    font-size: 0.78rem; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-muted); margin-bottom: 0.75rem;
+  }
+  .file-input-wrap {
+    border: 2px dashed var(--border-strong); border-radius: 12px;
+    padding: 2.5rem 1.5rem; text-align: center;
+    cursor: pointer; transition: border-color .15s ease, background .15s ease;
+  }
+  .file-input-wrap:hover { border-color: var(--primary); background: var(--primary-ring); }
+  .file-input-wrap input[type=file] { display: none; }
+  .file-icon { font-size: 2.2rem; margin-bottom: 0.5rem; }
+  .file-hint { font-size: 0.88rem; color: var(--text-muted); margin-top: 0.35rem; }
+  .selected-name {
+    margin-top: 0.75rem; font-size: 0.9rem; font-weight: 500; color: var(--primary);
+  }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 0.75rem; margin: 1rem 0;
+  }
+  .stat-box {
+    background: var(--surface-alt); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.85rem 1rem; text-align: center;
+  }
+  .stat-num { font-size: 1.6rem; font-weight: 700; color: var(--primary); line-height: 1; }
+  .stat-label { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.2rem; }
+  .user-info {
+    background: var(--surface-alt); border: 1px solid var(--border);
+    border-radius: 10px; padding: 0.9rem 1.1rem; margin: 0.75rem 0;
+  }
+  .user-info strong { color: var(--text); }
+  .user-info span { color: var(--text-muted); font-size: 0.85rem; }
+  .warn-list {
+    list-style: none; margin: 0.75rem 0; padding: 0;
+    display: flex; flex-direction: column; gap: 0.4rem;
+  }
+  .warn-item {
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    border-radius: 8px; padding: 0.55rem 0.85rem;
+    font-size: 0.85rem; color: #92400e;
+  }
+  [data-theme="dark"] .warn-item { color: #fbbf24; background: rgba(245, 158, 11, 0.1); }
+  .success-box {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    border-radius: 12px; padding: 1.5rem; text-align: center; margin-bottom: 1.25rem;
+  }
+  .success-icon { font-size: 2rem; margin-bottom: 0.5rem; }
+  .success-box h3 { color: #065f46; margin: 0 0 0.25rem; }
+  [data-theme="dark"] .success-box h3 { color: #6ee7b7; }
+  .new-user-id {
+    font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem;
+  }
+  .btn-row {
+    display: flex; gap: 0.75rem; margin-top: 1.5rem; flex-wrap: wrap;
+  }
+  .btn-secondary {
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0.65rem 1.4rem; border: 1px solid var(--border-strong);
+    border-radius: 10px; font-size: 0.95rem; font-weight: 600; cursor: pointer;
+    background: var(--surface); color: var(--text);
+    transition: background .15s ease;
+  }
+  .btn-secondary:hover { background: var(--surface-alt); }
+  .notice {
+    font-size: 0.83rem; color: var(--text-muted);
+    padding: 0.7rem 1rem; border-radius: 8px;
+    background: var(--surface-alt); border: 1px solid var(--border);
+    margin: 0.75rem 0;
+  }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Admin / Import</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/admin/users">Người dùng</a>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post">
+      <button type="submit">Đăng xuất</button>
+    </form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="card">
+    <div class="admin-header">
+      <h2>Import dữ liệu</h2>
+      <span class="admin-badge">Admin</span>
+    </div>
+
+    {% if error %}
+    <div class="error" style="margin-bottom:1.25rem">{{ error }}</div>
+    {% endif %}
+
+    {# ── State: upload form ── #}
+    {% if state == "upload" %}
+    <p style="color:var(--text-muted);font-size:0.9rem;margin-bottom:1.25rem">
+      Upload file ZIP đã export từ hệ thống. Bước 1/2: xem trước trước khi áp dụng.
+    </p>
+
+    <form method="post" action="/admin/import/preview" enctype="multipart/form-data"
+          x-data="{ fileName: '' }">
+      <div class="section-title">Chọn file ZIP</div>
+      <label class="file-input-wrap" for="zip_input">
+        <div class="file-icon">📦</div>
+        <div style="font-weight:600">Nhấp để chọn file hoặc kéo thả vào đây</div>
+        <div class="file-hint">Chỉ chấp nhận .zip — tối đa 100 MB</div>
+        <div class="selected-name" x-text="fileName || ''"></div>
+        <input type="file" id="zip_input" name="zip_file" accept=".zip" required
+               @change="fileName = $event.target.files[0]?.name || ''">
+      </label>
+
+      <p class="notice" style="margin-top:1rem">
+        ⚠️ File backup chứa Argon2id password hash. Giữ kín như password gốc.
+        Import sẽ tạo user MỚI với ID mới — không ghi đè user hiện tại.
+      </p>
+
+      <div class="btn-row">
+        <button type="submit" class="btn">Xem trước →</button>
+        <a href="/admin/users" class="btn-secondary">Hủy</a>
+      </div>
+    </form>
+    {% endif %}
+
+    {# ── State: preview ── #}
+    {% if state == "preview" %}
+    {% set src = preview.manifest.source_user %}
+    {% set stats = preview.manifest.stats %}
+
+    <p style="color:var(--text-muted);font-size:0.9rem;margin-bottom:1rem">
+      Bước 2/2: xem lại thông tin rồi xác nhận import.
+    </p>
+
+    <div class="section-title">Người dùng nguồn</div>
+    <div class="user-info">
+      <strong>{{ src.name }}</strong>
+      <span style="margin-left:0.5rem">@{{ src.username or '—' }}</span>
+      <span style="margin-left:0.5rem;padding:0.1rem 0.45rem;border-radius:4px;background:var(--surface);border:1px solid var(--border);font-size:0.75rem">{{ src.role }}</span>
+      <div style="margin-top:0.3rem;font-size:0.82rem;color:var(--text-faint)">
+        Exported at: {{ preview.manifest.exported_at }}
+      </div>
+    </div>
+
+    <div class="section-title" style="margin-top:1rem">Thống kê</div>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-num">{{ stats.notes }}</div>
+        <div class="stat-label">Ghi chú</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ stats.wiki_pages }}</div>
+        <div class="stat-label">Wiki pages</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ stats.web_conversations }}</div>
+        <div class="stat-label">Conversations</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ stats.web_messages }}</div>
+        <div class="stat-label">Tin nhắn</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ stats.memory_kinds }}</div>
+        <div class="stat-label">Memory slots</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ (stats.size_bytes_uncompressed / 1024 / 1024) | round(1) }} MB</div>
+        <div class="stat-label">Uncompressed</div>
+      </div>
+    </div>
+
+    {% if preview.warnings %}
+    <div class="section-title" style="margin-top:1rem">Cảnh báo ({{ preview.warnings | length }})</div>
+    <ul class="warn-list">
+      {% for w in preview.warnings %}
+      <li class="warn-item">⚠️ {{ w }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <p class="notice">
+      Import sẽ tạo user mới với ID mới. Audit log trong ZIP chỉ để tham khảo — không được restore.
+      Token có hiệu lực 5 phút. Nếu hết hạn, upload lại file ZIP.
+    </p>
+
+    <form method="post" action="/admin/import/apply">
+      <input type="hidden" name="token" value="{{ preview.token }}">
+      <div class="btn-row">
+        <button type="submit" class="btn">Xác nhận import</button>
+        <a href="/admin/import" class="btn-secondary">Hủy</a>
+      </div>
+    </form>
+    {% endif %}
+
+    {# ── State: result ── #}
+    {% if state == "result" %}
+    <div class="success-box">
+      <div class="success-icon">✅</div>
+      <h3>Import thành công!</h3>
+      <div class="new-user-id">User ID mới: <strong>{{ result.new_user_id }}</strong></div>
+    </div>
+
+    <div class="section-title">Kết quả</div>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-num">{{ result.counts.get('notes', 0) }}</div>
+        <div class="stat-label">Ghi chú</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ result.counts.get('wiki_pages', 0) }}</div>
+        <div class="stat-label">Wiki pages</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ result.counts.get('web_conversations', 0) }}</div>
+        <div class="stat-label">Conversations</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-num">{{ result.counts.get('web_messages', 0) }}</div>
+        <div class="stat-label">Tin nhắn</div>
+      </div>
+    </div>
+
+    {% if result.warnings %}
+    <div class="section-title" style="margin-top:1rem">Cảnh báo trong quá trình import</div>
+    <ul class="warn-list">
+      {% for w in result.warnings %}
+      <li class="warn-item">⚠️ {{ w }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <div class="btn-row">
+      <a href="/admin/users" class="btn">Xem danh sách người dùng</a>
+      <a href="/admin/import" class="btn-secondary">Import thêm</a>
+    </div>
+    {% endif %}
+
+  </div>
+</div>
+{% endblock %}
