@@ -10,6 +10,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from backup_engine import BackupEngine
+    from interfaces import ReminderStore, TaskStore
+    from reminder_engine import ReminderEngine
+    from task_parser import TaskParser
 
 from interfaces import (
     AuditLog,
@@ -41,3 +44,7 @@ class CoreDeps:
     notification_service: "NotificationService | None" = None
     web_session_store: "WebSessionStore | None" = None
     backup_engine: "BackupEngine | None" = None
+    task_store: "TaskStore | None" = None
+    reminder_store: "ReminderStore | None" = None
+    reminder_engine: "ReminderEngine | None" = None
+    task_parser: "TaskParser | None" = None
