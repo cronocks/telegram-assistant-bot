@@ -1,0 +1,112 @@
+{% extends "base.html" %}
+
+{% block title %}Admin — Chat của {{ target_user.name }} — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .stealth-banner {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.65rem 0.9rem; border-radius: 10px; margin-bottom: 1.25rem;
+    background: rgba(245, 158, 11, 0.08); color: #b45309;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+    font-size: 0.85rem; font-weight: 500;
+  }
+  [data-theme="dark"] .stealth-banner { color: #fbbf24; background: rgba(245, 158, 11, 0.06); }
+  .back-link {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;
+    transition: color .15s ease;
+  }
+  .back-link:hover { color: var(--primary); text-decoration: none; }
+  .admin-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem; }
+  .admin-header h2 { margin: 0; }
+  .admin-badge {
+    display: inline-flex; align-items: center;
+    padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600;
+    background: rgba(79, 70, 229, 0.12); color: var(--primary);
+    border: 1px solid rgba(79, 70, 229, 0.2);
+  }
+  .count-note { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1.25rem; }
+  .conv-list { display: flex; flex-direction: column; gap: 0.5rem; }
+  .conv-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0.75rem 0.9rem; border-radius: 10px;
+    background: var(--surface-alt); border: 1px solid var(--border);
+    transition: border-color .15s ease, background .15s ease;
+  }
+  .conv-item:hover { border-color: var(--primary); background: rgba(79, 70, 229, 0.04); }
+  .conv-title {
+    font-size: 0.9rem; font-weight: 500; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 480px;
+  }
+  .conv-title.untitled { color: var(--text-faint); font-style: italic; }
+  .conv-meta { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.2rem; }
+  .view-link {
+    display: inline-flex; align-items: center; gap: 0.3rem; flex-shrink: 0;
+    font-size: 0.83rem; font-weight: 500; color: var(--primary);
+    padding: 0.3rem 0.65rem; border-radius: 7px;
+    border: 1px solid var(--primary-ring);
+    transition: background .15s ease;
+  }
+  .view-link:hover { background: var(--primary-ring); text-decoration: none; }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Admin</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post">
+      <button type="submit">Đăng xuất</button>
+    </form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="card">
+    <a class="back-link" href="/admin/users">
+      &#8592; Danh sách người dùng
+    </a>
+
+    <div class="admin-header">
+      <h2>Chat của {{ target_user.name }}</h2>
+      <span class="admin-badge">Stealth Read</span>
+    </div>
+
+    <div class="stealth-banner">
+      &#9888;&#xFE0F; Bạn đang xem lịch sử chat với tư cách admin. Mọi thao tác xem đều được ghi audit log.
+    </div>
+
+    <p class="count-note">{{ conversations | length }} cuộc hội thoại</p>
+
+    {% if conversations %}
+    <div class="conv-list">
+      {% for conv in conversations %}
+      <div class="conv-item">
+        <div style="overflow:hidden">
+          <div class="conv-title {{ 'untitled' if not conv.title else '' }}">
+            {{ conv.title or 'Chưa đặt tên' }}
+          </div>
+          <div class="conv-meta">
+            Tạo: {{ conv.created_at[:16].replace('T', ' ') if conv.created_at else '—' }}
+            &nbsp;·&nbsp;
+            Cập nhật: {{ conv.updated_at[:16].replace('T', ' ') if conv.updated_at else '—' }}
+          </div>
+        </div>
+        <a class="view-link" href="/admin/conversations/{{ conv.id }}">
+          Xem &#8594;
+        </a>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:var(--text-muted);text-align:center;padding:2rem 0">Người dùng này chưa có cuộc hội thoại nào.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

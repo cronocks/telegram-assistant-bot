@@ -22,11 +22,17 @@ Routes:
   PATCH /api/conversations/<id>               → rename conversation
   GET   /api/conversations/search?q=          → LIKE search across user's messages
 
+  -- Admin stealth-read (FR-5.5.6) --
+  GET  /admin/users                           → list all users (admin only)
+  GET  /admin/users/<id>/conversations        → conversations of a minor child (admin only)
+  GET  /admin/conversations/<id>              → read-only view + stealth_read audit (admin only)
+
 Security:
   - HttpOnly + SameSite=Lax cookies (+ Secure in staging/production)
   - Brute-force: reuses sudo_attempts table (channel="web"), 5 fails → 15-min lock
   - Audit: web_login / web_logout / web_login_failed / web_password_set
            web_conversation_created / web_conversation_renamed
+           stealth_read_web_conversation
 """
 from __future__ import annotations
 
@@ -562,3 +568,117 @@ async def api_rename_conversation(
         {"old": old_title, "new": new_title},
     )
     return JSONResponse({"ok": True, "title": new_title})
+
+
+# ── Admin stealth-read routes (FR-5.5.6) ──────────────────────────────────────
+
+def _require_admin(web_session: str | None) -> "User | HTMLResponse":
+    """Return the authenticated admin User or a 403/redirect response."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if not user.is_admin:
+        return HTMLResponse("403 Forbidden", status_code=403)
+    return user
+
+
+@router.get("/admin/users", response_class=HTMLResponse)
+async def admin_users_list(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: list all users, annotated with minor-child eligibility."""
+    from acl import _is_minor_child
+
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+    admin = result
+
+    assert _user_store is not None
+    assert _templates is not None
+
+    all_users = _user_store.list_users()
+    users_annotated = [
+        {"user": u, "is_minor_child": _is_minor_child(u.id, _user_store)}
+        for u in all_users
+    ]
+    return _templates.TemplateResponse(
+        request, "admin_users.html",
+        {"user": admin, "users": users_annotated},
+    )
+
+
+@router.get("/admin/users/{target_id}/conversations", response_class=HTMLResponse)
+async def admin_user_conversations(
+    target_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: list conversations of a minor child (ACL-gated)."""
+    from acl import _is_minor_child
+
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+    admin = result
+
+    assert _user_store is not None
+    assert _conv_store is not None
+    assert _templates is not None
+
+    target_user = _user_store.get_user_by_id(target_id)
+    if target_user is None:
+        return HTMLResponse("404 Not found", status_code=404)
+
+    if not _is_minor_child(target_id, _user_store):
+        return HTMLResponse("403 Forbidden — target is not an eligible minor child", status_code=403)
+
+    conversations = _conv_store.admin_list_for_user(target_id)
+    return _templates.TemplateResponse(
+        request, "admin_conversations.html",
+        {"user": admin, "target_user": target_user, "conversations": conversations},
+    )
+
+
+@router.get("/admin/conversations/{conv_id}", response_class=HTMLResponse)
+async def admin_conversation_view(
+    conv_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    """Admin: read-only view of a conversation. Emits stealth_read audit log."""
+    from acl import _is_minor_child
+
+    result = _require_admin(web_session)
+    if not isinstance(result, User):
+        return result
+    admin = result
+
+    assert _conv_store is not None
+    assert _user_store is not None
+    assert _audit is not None
+    assert _templates is not None
+
+    conv = _conv_store.get(conv_id)
+    if conv is None:
+        return HTMLResponse("404 Not found", status_code=404)
+
+    if not _is_minor_child(conv["user_id"], _user_store):
+        return HTMLResponse("403 Forbidden — conversation owner is not an eligible minor child", status_code=403)
+
+    target_user = _user_store.get_user_by_id(conv["user_id"])
+    messages = _conv_store.list_messages(conv_id)
+
+    _audit.log(
+        admin.id,
+        "stealth_read_web_conversation",
+        "web_conversation",
+        str(conv_id),
+        {"target_user_id": conv["user_id"]},
+    )
+
+    return _templates.TemplateResponse(
+        request, "admin_conversation_view.html",
+        {"user": admin, "target_user": target_user, "conv": conv, "messages": messages},
+    )

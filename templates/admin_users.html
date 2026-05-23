@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+
+{% block title %}Admin — Người dùng — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .admin-header {
+    display: flex; align-items: center; gap: 0.75rem;
+    margin-bottom: 1.5rem;
+  }
+  .admin-header h2 { margin: 0; }
+  .admin-badge {
+    display: inline-flex; align-items: center;
+    padding: 0.2rem 0.6rem; border-radius: 6px; font-size: 0.75rem; font-weight: 600;
+    background: rgba(79, 70, 229, 0.12); color: var(--primary);
+    border: 1px solid rgba(79, 70, 229, 0.2);
+  }
+  .user-table { width: 100%; border-collapse: collapse; }
+  .user-table th {
+    text-align: left; font-size: 0.78rem; font-weight: 600;
+    color: var(--text-muted); padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--border-light); letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .user-table td {
+    padding: 0.7rem 0.75rem; font-size: 0.9rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  .user-table tr:last-child td { border-bottom: none; }
+  .user-table tr:hover td { background: rgba(79, 70, 229, 0.04); }
+  .badge-role {
+    display: inline-flex; align-items: center;
+    padding: 0.15rem 0.5rem; border-radius: 5px; font-size: 0.75rem; font-weight: 600;
+    background: var(--surface-alt); color: var(--text-muted);
+    border: 1px solid var(--border);
+  }
+  .badge-role.admin { background: rgba(79, 70, 229, 0.1); color: var(--primary); border-color: rgba(79, 70, 229, 0.2); }
+  .badge-minor {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.15rem 0.55rem; border-radius: 5px; font-size: 0.75rem; font-weight: 600;
+    background: rgba(245, 158, 11, 0.1); color: #d97706;
+    border: 1px solid rgba(245, 158, 11, 0.25);
+  }
+  [data-theme="dark"] .badge-minor { color: #fbbf24; }
+  .view-link {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    font-size: 0.83rem; font-weight: 500; color: var(--primary);
+    padding: 0.3rem 0.65rem; border-radius: 7px;
+    border: 1px solid var(--primary-ring);
+    transition: background .15s ease;
+  }
+  .view-link:hover { background: var(--primary-ring); text-decoration: none; }
+  .no-access {
+    font-size: 0.82rem; color: var(--text-faint); font-style: italic;
+  }
+  .count-note {
+    font-size: 0.82rem; color: var(--text-muted); margin-bottom: 1rem;
+  }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Admin</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post">
+      <button type="submit">Đăng xuất</button>
+    </form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="container">
+  <div class="card">
+    <div class="admin-header">
+      <h2>Danh sách người dùng</h2>
+      <span class="admin-badge">Admin</span>
+    </div>
+    <p class="count-note">{{ users | length }} người dùng — admin có thể xem lịch sử chat của trẻ nhỏ (có parent_link và tuổi &lt; 18)</p>
+
+    {% if users %}
+    <table class="user-table">
+      <thead>
+        <tr>
+          <th>Tên</th>
+          <th>Username</th>
+          <th>Vai trò</th>
+          <th>Trạng thái</th>
+          <th>Xem chat</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for item in users %}
+        <tr>
+          <td><strong>{{ item.user.name }}</strong></td>
+          <td style="color:var(--text-muted)">{{ item.user.username or '—' }}</td>
+          <td>
+            <span class="badge-role {{ 'admin' if item.user.role == 'admin' else '' }}">
+              {{ item.user.role }}
+            </span>
+          </td>
+          <td>
+            {% if item.is_minor_child %}
+            <span class="badge-minor">&#x1F9D2; Trẻ nhỏ</span>
+            {% else %}
+            <span style="color:var(--text-faint);font-size:0.82rem">—</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.is_minor_child %}
+            <a class="view-link" href="/admin/users/{{ item.user.id }}/conversations">
+              Xem lịch sử
+            </a>
+            {% else %}
+            <span class="no-access">Không có quyền</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <p style="color:var(--text-muted);text-align:center;padding:2rem 0">Chưa có người dùng nào.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
