@@ -2765,8 +2765,17 @@ def _export_zip_filename(user_name: str) -> str:
     return f"export_{safe}_{ts}.zip"
 
 
-async def _cmd_xuat_du_lieu_self(chat_id: str, user: "User", deps: CoreDeps) -> None:
+async def _cmd_xuat_du_lieu_self(chat_id: str, remainder: str, user: "User", deps: CoreDeps) -> None:
     """xuat du lieu — export caller's own data; upload ZIP to Drive; reply with link."""
+    if remainder.strip():
+        await deps.channel.send(
+            chat_id,
+            f"De export du lieu cua nguoi khac, dung: xuat du lieu: <ten>\n"
+            f"Vi du: xuat du lieu: {remainder.strip()}",
+            use_markdown=False,
+        )
+        return
+
     if deps.backup_engine is None:
         await deps.channel.send(chat_id, "Tinh nang backup chua duoc cau hinh.", use_markdown=False)
         return
@@ -3069,7 +3078,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         if cmd_id == "XUAT_DU_LIEU_ADMIN":
             await _cmd_xuat_du_lieu_admin(chat_id, remainder, user, deps); return
         if cmd_id == "XUAT_DU_LIEU_SELF":
-            await _cmd_xuat_du_lieu_self(chat_id, user, deps); return
+            await _cmd_xuat_du_lieu_self(chat_id, remainder, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)
