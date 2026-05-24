@@ -1,6 +1,6 @@
 # Kiến Trúc Hệ Thống
 
-> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-6** (Backup / Restore Tooling).
+> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-7** (Tasks + Reminders + Daily Summary).
 > Xem lộ trình phát triển đầy đủ tại [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -19,7 +19,7 @@ Hệ thống **quản lý kiến thức cá nhân và gia đình** đa kênh, gi
 
 ## 2. Kiến Trúc — Hexagonal (Ports & Adapters)
 
-Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ business logic nằm trong `core_handler.py` và chỉ phụ thuộc vào *Protocols* (interfaces), không bao giờ phụ thuộc vào concrete adapter. Các adapter được kết nối (wire) tại `main.py`.
+Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business logic được tổ chức trong các module `cmd_*.py` và chỉ phụ thuộc vào *Protocols* (interfaces), không bao giờ phụ thuộc vào concrete adapter. `core_handler.py` đóng vai trò dispatcher — route lệnh tới đúng `cmd_*` handler. Các adapter được kết nối (wire) tại `main.py`.
 
 ```
                   ┌──────────────────────┐
@@ -39,7 +39,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
        (tương lai: OllamaLLM, LocalFSNoteStore, DiscordAdapter, WebAdapter)
 ```
 
-**Nguyên tắc quan trọng:** `core_handler.py` không bao giờ import concrete class. Toàn bộ việc kết nối adapter xảy ra tại `main.py`.
+**Nguyên tắc quan trọng:** Các `cmd_*.py` module không bao giờ import concrete class. Toàn bộ việc kết nối adapter xảy ra tại `main.py`.
 
 **Tại sao chọn Modular Monolith (không phải Microservice):**
 
@@ -59,27 +59,38 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
 |------|---------|
 | `main.py` | Wiring layer — khởi tạo adapter, route webhook, health check |
 | `interfaces.py` | Protocols + `ChannelMessage` dataclass — lớp contract |
-| `core_handler.py` | Business logic, command dispatch, pending state machine |
-| `channel_telegram.py` | `TelegramAdapter` — parse Telegram webhook payload, gửi reply |
+| `core_handler.py` | Command dispatcher + `/start` + `/help`; route message tới `cmd_*` handlers (FR-7 refactor) |
+| `deps.py` | `CoreDeps` dataclass — gom tất cả dependency inject vào handlers (FR-4 refactor) |
+| `cmd_utils.py` | Shared helpers: pending state machine, ACL filter helpers, parsing utilities (FR-7) |
+| `cmd_user.py` | User management handlers: `them user`, `xoa user`, `doi role`, `dat birthdate`, `dat cha`, v.v. (FR-7) |
+| `cmd_audit.py` | Audit + recycle bin handlers: `xem audit`, `xem thung rac`, `khoi phuc`, `xoa han` (FR-7) |
+| `cmd_notes.py` | Note/journal handlers: `ghi nho`, `nhat ky`, `xem`, `liet ke`, `tim`, `chia se` (FR-7) |
+| `cmd_sudo.py` | Sudo handlers: `sudo`, `thoat sudo`, `dat mat khau`, `dat web pass` (FR-7) |
+| `cmd_wiki.py` | Wiki + memory handlers: `wiki`, `hoi wiki`, `xem tri nho`, `cap nhat tri nho` (FR-7) |
+| `cmd_task.py` | Task + study schedule handlers + inline keyboard callback dispatcher (FR-7) |
+| `channel_telegram.py` | `TelegramAdapter` — parse Telegram webhook payload, gửi reply, `send_with_inline_keyboard` |
 | `claude_client.py` | `AnthropicLLM` — wrapper Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — lưu trữ ghi chú trên Google Drive |
 | `wiki_client.py` | `DriveWikiStore` — wiki trên Google Drive, dùng LLM qua DI |
-| `user_store.py` | `UserStore` — registry người dùng SQLite, quota, parent links, password |
+| `user_store.py` | `UserStore` — registry người dùng SQLite, quota, parent links, password, task prefs |
 | `note_index.py` | `SqliteNoteIndex` — lớp ACL/index SQLite ánh xạ Drive file ID → owner + scope |
 | `memory_store.py` | `SqliteMemoryStore` — L1 memory (2 slot `memory` và `user` mỗi user) |
+| `task_store.py` | `SqliteTaskStore` — CRUD task, query by user/status/category, soft-delete (FR-7) |
+| `reminder_store.py` | `SqliteReminderStore` — CRUD reminder, ready-to-fire query, cancel by task (FR-7) |
+| `reminder_engine.py` | `ReminderEngine` — scan + emit + lazy recurring expansion + parent mirror + grace window (FR-7) |
+| `task_parser.py` | `TaskParser` — Haiku 4.5 tool-use; parse free-form Vietnamese → `{title, deadline, recurring_rule}` (FR-7) |
 | `elevation_store.py` | `SqliteElevationStore` — phiên nâng quyền sudo + rate-limit thất bại (FR-3.5) |
 | `audit.py` | `SqliteAuditLog` — ghi sự kiện audit append-only; Protocol `AuditLog` (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — CRUD hàng đợi thông báo persistent (FR-4) |
 | `notification_service.py` | `NotificationService` — bridge store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
-| `scheduled_jobs.py` | Định nghĩa APScheduler jobs: purge 180d, purge-at-18, flush notifications (FR-4) |
-| `deps.py` | `CoreDeps` dataclass — gom tất cả dependency inject vào `core_handler` (FR-4 refactor) |
+| `scheduled_jobs.py` | APScheduler jobs: purge 180d, purge-at-18, flush notifications, scan_reminders, daily_summary, parent_digest (FR-4, FR-7) |
 | `web_session_store.py` | `SqliteWebSessionStore` — session web DB-revocable (không JWT); find/revoke/create (FR-5) |
-| `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; connect/disconnect/send (FR-5, refactor FR-5.5) |
-| `web_router.py` | FastAPI router web: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/<id>`, SSE, API conversations (FR-5, FR-5.5) |
+| `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
+| `web_router.py` | FastAPI router web: auth, chat, conversations API, task CRUD routes (FR-5, FR-5.5, FR-7) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — CRUD conversation + message; search LIKE; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — export ZIP in-memory, parse/apply import transactional, upload Drive `Claude-Notes/Backups/`, rate-limit 5 phút/user (FR-6) |
 | `tools/local_migrate.py` | CLI standalone: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, sidebar collapsible), `import.html` (FR-5, FR-5.5, FR-6) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html` (FR-5 → FR-7) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) dùng bởi các retrieval path |
 | `auth.py` | Argon2id password hashing (hạ tầng từ FR-2; FR-3.5 dùng để verify mật khẩu sudo) |
 | `permissions.py` | Permission helpers theo role |
@@ -90,7 +101,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Toàn bộ
 | `config.py` | Load biến môi trường |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | Migration runner idempotent dựa trên file |
-| `db/migrations/*.sql` | File SQL migration (001–015) |
+| `db/migrations/*.sql` | File SQL migration (001–020) |
 
 ---
 
@@ -134,6 +145,8 @@ Bảng định danh cốt lõi. Mỗi người dùng đã đăng ký là một r
 | `must_change_password` | INTEGER | 0 = bình thường; 1 = force-reset lần đăng nhập web tiếp theo (FR-5) |
 | `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
 | `deleted_at` | DATETIME | Mốc soft-delete; NULL = đang active |
+| `daily_summary_time` | TEXT | `NULL` = 21:00 mặc định; `'off'` = tắt; `'HH:MM'` = tùy chỉnh *(FR-7)* |
+| `morning_default_time` | TEXT | `NULL` = 09:00 mặc định; `'HH:MM'` = tùy chỉnh — dùng khi task không có giờ cụ thể *(FR-7)* |
 
 #### `channel_bindings`
 Ánh xạ `chat_id` Telegram (hoặc định danh kênh khác) tới user.
@@ -336,6 +349,44 @@ Mỗi turn chat (user hoặc bot) là một row. Lưu toàn bộ, không giới 
 
 Index: `(conversation_id, created_at)`, `(conversation_id, text)` — index text cho LIKE search.
 
+#### `tasks` *(FR-7)*
+Task CRUD. Category `study` dùng cho lịch học định kỳ của trẻ. Soft-delete qua `deleted_at`.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `title` | TEXT NOT NULL | Tên task ngắn gọn |
+| `description` | TEXT | Chi tiết tùy chọn |
+| `deadline` | TEXT NOT NULL | ISO datetime +07:00 |
+| `category` | TEXT | `task` \| `study` \| `reminder` — default `task` |
+| `scope` | TEXT | `private` (v1 chỉ private) |
+| `recurring_rule` | TEXT | NULL = one-shot; vd `weekly:MON,WED@07:00` hoặc `daily@21:00` |
+| `reminder_offsets` | TEXT | CSV giây: default `7200,3600,1800,900` (2h/1h/30m/15m) |
+| `status` | TEXT | `pending` \| `completed` \| `cancelled` |
+| `completed_at` | TEXT | ISO datetime; NULL nếu chưa done |
+| `snooze_count` | INTEGER | Số lần đã hoãn |
+| `source` | TEXT | `telegram` \| `web` |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Index: `(user_id, status)`, `(deadline)` WHERE pending, `(recurring_rule)` WHERE not null.
+
+#### `task_reminders` *(FR-7)*
+Mỗi mốc nhắc của một task là một row. Khi task recurring fire xong → engine tính next occurrence + insert rows mới (lazy expansion).
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `task_id` | INTEGER FK → tasks | |
+| `fire_at` | TEXT NOT NULL | ISO datetime +07:00 — thời điểm cần fire |
+| `offset_seconds` | INTEGER | Khoảng cách với deadline (ví dụ 7200 = 2h trước) |
+| `kind` | TEXT | `scheduled` \| `snoozed` |
+| `status` | TEXT | `pending` \| `fired` \| `missed` \| `cancelled` |
+| `fired_at` | TEXT | ISO datetime; NULL nếu chưa fire |
+| `created_at` | TEXT | ISO timestamp |
+
+Index: `(fire_at, status)` WHERE pending — job `scan_reminders` chỉ scan rows đang pending.
+
 ---
 
 ## 6. Mô Hình Phân Quyền
@@ -415,6 +466,15 @@ Soft-delete đã có từ trước qua cột `deleted_at` trên `notes`, `wiki_p
 | `web_conversation_created` | `web_conversation` | Lazy create khi user gửi message đầu *(FR-5.5)* |
 | `web_conversation_renamed` | `web_conversation` | User đổi tên conversation *(FR-5.5)* |
 | `stealth_read_web_conversation` | `web_conversation` | Admin xem hội thoại web của user under-18 *(FR-5.5)* |
+| `task_created` | `task` | Tạo task mới *(FR-7)* |
+| `task_updated` | `task` | Sửa task (tiêu đề, deadline, recurring) *(FR-7)* |
+| `task_completed` | `task` | User đánh dấu hoàn thành *(FR-7)* |
+| `task_deleted` | `task` | Soft-delete task *(FR-7)* |
+| `task_snoozed` | `task` | User hoãn reminder *(FR-7)* |
+| `reminder_fired` | `task` | Reminder gửi thành công *(FR-7)* |
+| `reminder_missed` | `task` | Reminder quá hạn grace 1h — bỏ qua *(FR-7)* |
+| `daily_summary_sent` | `user` | Daily summary gửi cuối ngày *(FR-7)* |
+| `parent_digest_sent` | `user` | Parent digest gửi theo tần suất cấu hình *(FR-7)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -577,6 +637,37 @@ Lệnh được match qua prefix matcher không phân biệt dấu tiếng Việ
 - Rename inline (double-click tên → input → Enter/blur save)
 - Search box với debounce 300ms
 - New chat button — lazy create conversation khi user gửi message đầu
+
+### Task & Lịch học *(FR-7)*
+| Lệnh | Mô tả |
+|------|-------|
+| `tao task: <mô tả>` | Tạo task mới — LLM parse deadline từ mô tả tự nhiên |
+| `task: <mô tả>` | Tương đương `tao task:` |
+| `xong task: <id>` | Đánh dấu task hoàn thành |
+| `huy task: <id>` | Hủy task |
+| `task <id>` | Xem chi tiết task |
+| `danh sach task` | Liệt kê task đang chờ |
+| `lich hoc: <mô tả>` | Tạo lịch học định kỳ (category=study, recurring) |
+| `danh sach lich hoc` | Xem tất cả lịch học đang hoạt động |
+| `sua lich hoc: <id> <mô tả mới>` | Cập nhật lịch học (LLM re-parse + reschedule) |
+| `huy lich hoc: <id>` | Hủy một lịch học |
+| `hoan task: <id> <phút>` | Hoãn task thêm N phút |
+| `tom tat hom nay` | Tổng kết task hôm nay |
+| `cau hinh tong ket: <HH:MM\|tat>` | Đổi giờ gửi tổng kết hàng ngày (hoặc tắt) |
+| `cau hinh gio mac dinh: <HH:MM>` | Đổi giờ mặc định cho task không có giờ cụ thể |
+
+**Web routes *(FR-7)*:**
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/tasks` | Danh sách task (filter `?status=pending\|completed\|all`) |
+| GET | `/tasks/new` | Form tạo task |
+| POST | `/tasks` | Tạo task |
+| GET | `/tasks/{id}` | Chi tiết + lịch sử reminder |
+| GET | `/tasks/{id}/edit` | Form sửa task |
+| POST | `/tasks/{id}` | Cập nhật task |
+| POST | `/tasks/{id}/complete` | Đánh dấu hoàn thành |
+| POST | `/tasks/{id}/delete` | Soft-delete |
 
 ### Đăng ký (trước khi xác thực)
 | Lệnh | Mô tả |

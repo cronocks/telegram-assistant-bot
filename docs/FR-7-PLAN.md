@@ -1,6 +1,6 @@
 # FR-7 — Tasks + Reminders + Daily Summary + Parent Digest — Detailed Implementation Plan
 
-> **Status:** DRAFT — chờ review trước khi execute
+> **Status:** ✅ DONE — 2026-05-24, branch `feature/FR7`, 867 tests passing
 > **Created:** 2026-05-23
 > **Branch:** `feature/FR7` (branch off từ `main` theo Git workflow Section 3.5)
 > **Approach:** 1 PR duy nhất `feature/FR7` → `main`; sub-tasks 7.1 → 7.8 commit tuần tự trên cùng branch
@@ -562,3 +562,33 @@ For each `parent_links` active:
 ---
 
 **End of plan.** Chờ user review + chốt Open Questions (Section 3) trước khi bắt đầu sub-task 7.1.
+
+---
+
+## 17. Implementation Notes (post-completion)
+
+### Deviations from original plan
+
+| Item | Plan gốc | Thực tế |
+|------|----------|---------|
+| Study schedule commands | Chỉ `lich hoc: <mo ta>` để tạo | Bổ sung thêm `danh sach lich hoc`, `sua lich hoc: <id> <mo ta moi>`, `huy lich hoc: <id>` (Decision #84) |
+| `core_handler.py` | Sửa thêm dispatch | Refactor toàn bộ → 7 cmd_* modules; `core_handler.py` còn ~600 dòng (dispatcher + help) (Decision #83) |
+| `WebChannelAdapter` | TBD trong 7.6 | Thêm `send_with_inline_keyboard` fallback (gọi `send()`, bỏ buttons) để fix crash production khi tạo task qua web |
+| `task_parser.py` system prompt | Prompt sketch cơ bản | Bổ sung bảng quy đổi buổi → giờ đầy đủ + ví dụ phong phú cho `10h tối`, `22h`, `chiều thứ 3` (Decision #85) |
+| `task_store.list_for_user` | `status` filter | Thêm `category` filter để `danh sach lich hoc` query đúng `category='study'` |
+
+### Files thực tế tạo/sửa (ngoài plan Section 5)
+
+| File | Ghi chú |
+|------|---------|
+| `cmd_utils.py` | Mới — pending state, ACL helpers, parsing utilities (tách từ core_handler) |
+| `cmd_user.py` | Mới — user management handlers |
+| `cmd_audit.py` | Mới — audit + recycle bin handlers |
+| `cmd_notes.py` | Mới — note/journal handlers |
+| `cmd_sudo.py` | Mới — sudo handlers |
+| `cmd_wiki.py` | Mới — wiki + memory handlers |
+| `cmd_task.py` | Mới — task handlers + study schedule + callback dispatcher |
+| `web_channel.py` | Sửa — thêm `send_with_inline_keyboard` fallback |
+
+### Test count thực tế
+867 tests passing (mục tiêu plan ~95 test cases mới cho FR-7; tổng cộng tích lũy từ FR-1 → FR-7).
