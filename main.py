@@ -37,6 +37,10 @@ from notification_service import NotificationService
 from user_store import SqliteUserStore
 from wiki_client import DriveWikiStore
 from backup_engine import BackupEngine
+from task_store import SqliteTaskStore
+from reminder_store import SqliteReminderStore
+from reminder_engine import ReminderEngine
+from task_parser import TaskParser
 
 _REGISTER_PREFIXES = ("dang ky:", "đăng ký:")
 
@@ -76,6 +80,16 @@ notif_service = NotificationService(
     user_store=user_store,
     channels={"telegram": channel},
 )
+task_store = SqliteTaskStore()
+reminder_store = SqliteReminderStore()
+reminder_engine = ReminderEngine(
+    task_store=task_store,
+    reminder_store=reminder_store,
+    user_store=user_store,
+    notification_service=notif_service,
+    audit=audit,
+)
+task_parser = TaskParser()
 
 deps = CoreDeps(
     llm=llm,
@@ -90,6 +104,10 @@ deps = CoreDeps(
     notification_service=notif_service,
     web_session_store=web_session_store,
     backup_engine=backup_engine,
+    task_store=task_store,
+    reminder_store=reminder_store,
+    reminder_engine=reminder_engine,
+    task_parser=task_parser,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -106,6 +124,10 @@ web_deps = CoreDeps(
     notification_service=notif_service,
     web_session_store=web_session_store,
     backup_engine=backup_engine,
+    task_store=task_store,
+    reminder_store=reminder_store,
+    reminder_engine=reminder_engine,
+    task_parser=task_parser,
 )
 
 
@@ -178,6 +200,7 @@ init_web_router(
     elevation_store=elevation_store,
     conv_store=web_conv_store,
     backup_engine=backup_engine,
+    task_store=task_store,
 )
 
 
