@@ -42,6 +42,12 @@ class WebChannelAdapter:
     def __init__(self) -> None:
         # Keyed by str(conversation_id) — one queue per active SSE connection.
         self._queues: Dict[str, asyncio.Queue] = {}
+        # Buffer for messages sent before the SSE connection is established.
+        # Race condition: POST /chat/send creates the conv and spawns the handler
+        # task immediately; the bot reply may arrive before the frontend reconnects
+        # SSE with the new conversation_id. Messages are held here and flushed
+        # into the queue as soon as connect() is called.
+        self._pending: Dict[str, list] = {}
         self._conv_store = None  # injected after startup via set_conv_store()
 
     def set_conv_store(self, conv_store) -> None:
@@ -51,8 +57,16 @@ class WebChannelAdapter:
     # ── SSE queue management ───────────────────────────────────────────────────
 
     def connect(self, conv_id: str) -> asyncio.Queue:
-        """Register an SSE connection for conv_id. Returns the queue to drain."""
+        """Register an SSE connection for conv_id. Returns the queue to drain.
+
+        Any messages buffered in _pending (sent before this SSE connection was
+        established) are flushed into the queue immediately so the client
+        receives them without delay.
+        """
         q: asyncio.Queue = asyncio.Queue()
+        # Drain any buffered messages before handing the queue to the SSE route.
+        for event in self._pending.pop(conv_id, []):
+            q.put_nowait(event)
         self._queues[conv_id] = q
         logger.debug("web SSE connected: conv_id=%s", conv_id)
         return q
@@ -101,12 +115,14 @@ class WebChannelAdapter:
                 logger.exception("web send: failed to persist bot message for conv_id=%s", chat_id)
 
         q = self._queues.get(chat_id)
+        event = json.dumps({"type": "message", "text": text})
         if q is None:
-            logger.warning(
-                "web send: no active SSE connection for conv_id=%s, dropping", chat_id
+            # SSE not yet connected — buffer the event; connect() will flush it.
+            self._pending.setdefault(chat_id, []).append(event)
+            logger.debug(
+                "web send: SSE not ready for conv_id=%s, buffering message", chat_id
             )
             return
-        event = json.dumps({"type": "message", "text": text})
         await q.put(event)
 
     async def delete_message(self, chat_id: str, message_id: int) -> bool:
