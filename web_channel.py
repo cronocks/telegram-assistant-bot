@@ -125,6 +125,12 @@ class WebChannelAdapter:
             return
         await q.put(event)
 
+    async def send_with_inline_keyboard(
+        self, chat_id: str, text: str, buttons: list, use_markdown: bool = True
+    ) -> None:
+        """Fallback: web UI has no inline keyboards, so just send the text."""
+        await self.send(chat_id, text, use_markdown=use_markdown)
+
     async def delete_message(self, chat_id: str, message_id: int) -> bool:
         # Web UI does not support message deletion.
         return False
