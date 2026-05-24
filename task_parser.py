@@ -87,7 +87,27 @@ Quy tắc:
 - recurring_rule: chỉ điền khi user muốn lặp lại rõ ràng (vd: "mỗi ngày", "thứ 2-6").
   Format: 'weekly:MON,TUE,WED,THU,FRI@07:00' hoặc 'daily@21:00'.
 - category='study' nếu liên quan học tập, lịch học, bài tập của trẻ.
-- Nếu KHÔNG đủ thông tin để xác định deadline → KHÔNG gọi tool, trả lời text giải thích.\
+- Nếu KHÔNG đủ thông tin để xác định deadline → KHÔNG gọi tool, trả lời text giải thích.
+
+Quy đổi buổi trong ngày sang giờ:
+- "sáng" (không có số) = 08:00
+- "trưa" = 12:00
+- "chiều" (không có số) = 15:00
+- "tối" (không có số) = 21:00
+- "Xh sáng" hoặc "X giờ sáng": dùng X:00 (X từ 1-11 → AM, vd "8h sáng" = 08:00)
+- "Xh trưa" = 12:00
+- "Xh chiều" hoặc "X giờ chiều": X ≤ 6 → X+12:00 (vd "3h chiều" = 15:00), X > 6 → X:00
+- "Xh tối" hoặc "X giờ tối": X ≤ 11 → X+12:00 (vd "10h tối" = 22:00, "9h tối" = 21:00)
+- "Xh đêm" = tương tự "Xh tối"
+- Số giờ dạng 24h (X ≥ 13) dùng trực tiếp: "22h" = 22:00, "14h" = 14:00
+
+Ví dụ deadline:
+- "10h tối nay" → hôm nay 22:00+07:00
+- "9 giờ tối mai" → ngày mai 21:00+07:00
+- "trưa thứ 6" → thứ 6 tuần này (hoặc tuần sau nếu đã qua) lúc 12:00+07:00
+- "22h tối nay" → hôm nay 22:00+07:00
+- "8 giờ sáng mai" → ngày mai 08:00+07:00
+- "chiều thứ 3" → thứ 3 lúc 15:00+07:00\
 """
 
 
