@@ -69,6 +69,7 @@ _audit: AuditLog | None = None
 _elevation_store: ElevationStore | None = None
 _conv_store: WebConversationStore | None = None
 _backup_engine: BackupEngine | None = None
+_task_store = None  # SqliteTaskStore | None — injected at startup
 
 # Import preview token store: token → {parsed: ParsedImport, expires_at: datetime}
 _import_tokens: dict[str, dict] = {}
@@ -92,10 +93,11 @@ def init_web_router(
     elevation_store: ElevationStore,
     conv_store: WebConversationStore,
     backup_engine: BackupEngine | None = None,
+    task_store=None,
 ) -> None:
     """Wire dependencies into this router (called once from main.py lifespan)."""
     global _templates, _web_channel, _session_store, _user_store
-    global _audit, _elevation_store, _conv_store, _backup_engine
+    global _audit, _elevation_store, _conv_store, _backup_engine, _task_store
     _templates = templates
     _web_channel = web_channel
     _session_store = session_store
@@ -104,6 +106,7 @@ def init_web_router(
     _elevation_store = elevation_store
     _conv_store = conv_store
     _backup_engine = backup_engine
+    _task_store = task_store
     # Also inject conv_store into the channel adapter for bot-reply persistence
     web_channel.set_conv_store(conv_store)
 
@@ -698,6 +701,130 @@ async def api_rename_conversation(
         {"old": old_title, "new": new_title},
     )
     return JSONResponse({"ok": True, "title": new_title})
+
+
+# ── Task REST API (FR-7.7) ────────────────────────────────────────────────────
+
+from pydantic import BaseModel  # noqa: E402 — placed here to keep imports grouped by feature
+
+
+class _TaskCreate(BaseModel):
+    title: str
+    deadline: str | None = None
+
+
+@router.get("/api/tasks")
+async def api_list_tasks(
+    date: str | None = Query(default=None),
+    web_session: str | None = Cookie(default=None),
+):
+    """Return JSON list of pending tasks for the current user.
+
+    Optional ?date=YYYY-MM-DD limits the deadline upper bound to end of that day.
+    Defaults to end of today (VN_TZ).
+    """
+    user = _resolve_user(web_session)
+    if user is None:
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    if _task_store is None:
+        return JSONResponse([])
+
+    vn_tz = timezone(timedelta(hours=7))
+    if date:
+        before_iso = f"{date}T23:59:59+07:00"
+    else:
+        today = datetime.now(vn_tz).strftime("%Y-%m-%d")
+        before_iso = f"{today}T23:59:59+07:00"
+
+    tasks = _task_store.list_pending_due(before_iso, user_id=user.id)
+    return JSONResponse(tasks)
+
+
+@router.post("/api/tasks", status_code=201)
+async def api_create_task(
+    body: _TaskCreate,
+    web_session: str | None = Cookie(default=None),
+):
+    """Create a task for the current user. Returns the created task dict."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    if _task_store is None:
+        return JSONResponse({"error": "task store not available"}, status_code=503)
+
+    task = _task_store.create_task(
+        user_id=user.id,
+        title=body.title,
+        deadline=body.deadline,
+    )
+    return JSONResponse(task, status_code=201)
+
+
+@router.patch("/api/tasks/{task_id}/complete")
+async def api_complete_task(
+    task_id: int,
+    web_session: str | None = Cookie(default=None),
+):
+    """Mark a task as completed. Returns the updated task dict."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    if _task_store is None:
+        return JSONResponse({"error": "task store not available"}, status_code=503)
+
+    updated = _task_store.complete_task(task_id)
+    if updated is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(updated)
+
+
+@router.delete("/api/tasks/{task_id}")
+async def api_cancel_task(
+    task_id: int,
+    web_session: str | None = Cookie(default=None),
+):
+    """Cancel (soft-delete) a task. Returns the updated task dict."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return JSONResponse({"error": "unauthenticated"}, status_code=401)
+    if _task_store is None:
+        return JSONResponse({"error": "task store not available"}, status_code=503)
+
+    updated = _task_store.cancel_task(task_id)
+    if updated is None:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return JSONResponse(updated)
+
+
+@router.get("/tasks", response_class=HTMLResponse)
+async def tasks_page(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    """Render the task list page for the current user."""
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+
+    assert _templates is not None
+    vn_tz = timezone(timedelta(hours=7))
+    now = datetime.now(vn_tz)
+    today_str = now.strftime("%Y-%m-%d")
+    today_end = f"{today_str}T23:59:59+07:00"
+
+    pending = _task_store.list_pending_due(today_end, user_id=user.id) if _task_store else []
+    completed = _task_store.list_completed_on(user.id, today_str) if _task_store else []
+
+    return _templates.TemplateResponse(
+        request,
+        "tasks.html",
+        {
+            "user": user,
+            "pending": pending,
+            "completed": completed,
+            "today": today_str,
+        },
+    )
 
 
 # ── Admin stealth-read routes (FR-5.5.6) ──────────────────────────────────────
