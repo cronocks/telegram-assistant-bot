@@ -422,6 +422,21 @@ class ChannelAdapter(Protocol):
         """Send a message to the given conversation."""
         ...
 
+    async def send_with_inline_keyboard(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: list[list[dict]],
+        use_markdown: bool = False,
+    ) -> None:
+        """Send a message with an inline keyboard attached.
+
+        buttons is a list of rows; each row is a list of button dicts with
+        keys 'text' and 'callback_data'. Adapters that don't support inline
+        keyboards should fall back to a plain send().
+        """
+        ...
+
     async def delete_message(self, chat_id: str, message_id: int) -> bool:
         """Best-effort delete of a previously-sent message. Returns True on success.
 
@@ -670,3 +685,85 @@ class WebConversationStore(Protocol):
         role and under-18 status before calling this method.
         """
         ...
+
+
+# ─── Task store (FR-7) ───────────────────────────────────────────────────────
+
+@runtime_checkable
+class TaskStore(Protocol):
+    """Abstract task store. Concrete impl: SqliteTaskStore (task_store.py).
+
+    Covers CRUD for tasks and the helpers used by daily summary / reminder engine.
+    """
+
+    def create_task(
+        self,
+        user_id: int,
+        title: str,
+        deadline: str,
+        *,
+        description: "str | None" = None,
+        category: str = "task",
+        scope: str = "private",
+        recurring_rule: "str | None" = None,
+        reminder_offsets: str = "7200,3600,1800,900",
+        source: str = "telegram",
+    ) -> dict: ...
+
+    def get_task(self, task_id: int) -> "dict | None": ...
+
+    def list_for_user(
+        self,
+        user_id: int,
+        *,
+        status: "str | None" = None,
+        include_deleted: bool = False,
+    ) -> "list[dict]": ...
+
+    def list_pending_due(
+        self,
+        before_iso: str,
+        *,
+        user_id: "int | None" = None,
+    ) -> "list[dict]": ...
+
+    def list_completed_on(self, user_id: int, date_prefix: str) -> "list[dict]": ...
+
+    def update_task(self, task_id: int, **fields) -> "dict | None": ...
+    def complete_task(self, task_id: int, completed_at: "str | None" = None) -> "dict | None": ...
+    def cancel_task(self, task_id: int) -> "dict | None": ...
+    def increment_snooze(self, task_id: int) -> int: ...
+    def soft_delete_task(self, task_id: int) -> bool: ...
+    def restore_task(self, task_id: int) -> bool: ...
+
+
+# ─── Reminder store (FR-7) ───────────────────────────────────────────────────
+
+@runtime_checkable
+class ReminderStore(Protocol):
+    """Abstract reminder store. Concrete impl: SqliteReminderStore (reminder_store.py).
+
+    Covers per-task reminder row lifecycle used by reminder engine and task CRUD.
+    """
+
+    def bulk_create_for_task(
+        self,
+        task_id: int,
+        deadline_iso: str,
+        offset_seconds_list: "list[int]",
+    ) -> "list[dict]": ...
+
+    def create_snoozed(self, task_id: int, fire_at_iso: str) -> dict: ...
+    def get_reminder(self, reminder_id: int) -> "dict | None": ...
+    def list_for_task(self, task_id: int) -> "list[dict]": ...
+
+    def list_ready_to_fire(
+        self,
+        now_iso: "str | None" = None,
+        limit: int = 200,
+    ) -> "list[dict]": ...
+
+    def count_pending_for_task(self, task_id: int) -> int: ...
+    def mark_fired(self, reminder_id: int, fired_at: "str | None" = None) -> bool: ...
+    def mark_missed(self, reminder_id: int) -> bool: ...
+    def cancel_for_task(self, task_id: int) -> int: ...

@@ -16,6 +16,7 @@ them as regular functions, not coroutines.
 """
 from __future__ import annotations
 
+import calendar
 import logging
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -38,6 +39,11 @@ RECYCLE_RETENTION_DAYS = 180
 JOB_ID_180D = "fr4_purge_180d"
 JOB_ID_TURN_18 = "fr4_purge_children_18"
 JOB_ID_NOTIF_FLUSH = "fr4_flush_notifications"
+JOB_ID_SCAN_REMINDERS = "fr7_scan_reminders"
+JOB_ID_DAILY_SUMMARY = "fr7_daily_summary"
+JOB_ID_PARENT_DIGEST = "fr7_parent_digest"
+
+_DOW_MAP = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -224,8 +230,254 @@ async def flush_pending_notifications(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Job 4 — Reminder scan (every 1 minute)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def scan_reminders(deps: "CoreDeps") -> dict:
+    """Call reminder_engine.tick() and return its stats.
+
+    Returns {} if no reminder_engine is wired (safe no-op so the job
+    can be registered even before the engine is configured).
+    """
+    if deps.reminder_engine is None:
+        return {}
+    try:
+        return deps.reminder_engine.tick()
+    except Exception:
+        logger.exception("scan_reminders: unexpected error in tick()")
+        return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 5 — Daily summary (every minute, fires per user at their configured time)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def send_daily_summary(deps: "CoreDeps", now: datetime | None = None) -> dict:
+    """Send a daily task summary to each user whose configured time matches now.
+
+    Per-user logic:
+      - daily_summary_time NULL  → use system default "21:00"
+      - daily_summary_time "off" → skip
+      - daily_summary_time HH:MM → fire when now matches that minute
+
+    Skips users with no tasks today (completed + pending) to avoid spam.
+    Returns {"sent": N, "skipped": M}.
+    """
+    if deps.task_store is None or deps.notification_service is None:
+        return {"sent": 0, "skipped": 0}
+
+    now = now or datetime.now(VN_TZ)
+    now_hhmm = now.strftime("%H:%M")
+    today_str = now.strftime("%Y-%m-%d")
+    today_end = f"{today_str}T23:59:59+07:00"
+
+    sent = 0
+    skipped = 0
+
+    for user in deps.user_store.list_users():
+        configured = deps.user_store.get_daily_summary_time(user.id)
+
+        if configured == "off":
+            skipped += 1
+            continue
+
+        effective_time = configured if configured else "21:00"
+        if effective_time != now_hhmm:
+            skipped += 1
+            continue
+
+        completed = deps.task_store.list_completed_on(user.id, today_str)
+        pending = deps.task_store.list_pending_due(today_end, user_id=user.id)
+
+        if not completed and not pending:
+            skipped += 1
+            continue
+
+        date_display = now.strftime("%d/%m")
+        text = "\n".join([
+            f"Tổng kết hôm nay [{date_display}]:",
+            f"✅ Đã xong: {len(completed)} task",
+            f"⏰ Còn lại: {len(pending)} task",
+            "",
+            "Gõ 'danh sach task' để xem chi tiết.",
+        ])
+
+        deps.notification_service.enqueue(user.id, "telegram", {"kind": "daily_summary", "text": text})
+        deps.audit.log(
+            actor_user_id=None,
+            action="daily_summary_sent",
+            target_type="user",
+            target_id=user.id,
+            payload={"completed": len(completed), "pending": len(pending), "date": today_str},
+        )
+        sent += 1
+
+    if sent:
+        logger.info("send_daily_summary: sent=%d skipped=%d", sent, skipped)
+    return {"sent": sent, "skipped": skipped}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 6 — Parent digest (every minute, fires per parent-child link on schedule)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def send_parent_digest(deps: "CoreDeps", now: datetime | None = None) -> dict:
+    """Send a digest of the child's task activity to each configured parent.
+
+    Per parent_link logic:
+      - digest_frequency 'off'     → skip
+      - digest_frequency 'daily'   → digest_time 'HH:MM'; NULL → '21:00'
+      - digest_frequency 'weekly'  → digest_time 'DOW HH:MM' (e.g. 'SUN 20:00')
+      - digest_frequency 'monthly' → digest_time 'DAY HH:MM' or 'LAST HH:MM'
+
+    Runtime age-18 check: if child >= 18 → skip (emit audit digest_disabled_at_18
+    once per firing; no DB mutation — Decision D7).
+    Skips links with no tasks for the child today.
+    Returns {"sent": N, "skipped": M}.
+    """
+    if deps.task_store is None or deps.notification_service is None:
+        return {"sent": 0, "skipped": 0}
+
+    now = now or datetime.now(VN_TZ)
+    today_str = now.strftime("%Y-%m-%d")
+    today_end = f"{today_str}T23:59:59+07:00"
+
+    sent = 0
+    skipped = 0
+
+    for link in deps.user_store.list_active_parent_links():
+        parent_id = link["parent_id"]
+        child_id = link["child_id"]
+        freq = link["digest_frequency"] or "daily"
+        time_str = link["digest_time"]
+
+        if freq == "off":
+            skipped += 1
+            continue
+
+        # Runtime age-18 check — no DB mutation
+        child = deps.user_store.get_user_by_id(child_id)
+        if child and child.birthdate:
+            age = _calc_age(child.birthdate, now.date() if hasattr(now, "date") else now)
+            if age >= 18:
+                deps.audit.log(
+                    actor_user_id=None,
+                    action="digest_disabled_at_18",
+                    target_type="user",
+                    target_id=child_id,
+                    payload={"parent_id": parent_id},
+                )
+                skipped += 1
+                continue
+
+        if not _should_fire_digest(freq, time_str, now):
+            skipped += 1
+            continue
+
+        completed = deps.task_store.list_completed_on(child_id, today_str)
+        pending = deps.task_store.list_pending_due(today_end, user_id=child_id)
+
+        if not completed and not pending:
+            skipped += 1
+            continue
+
+        child_name = child.name if child else f"user#{child_id}"
+        date_display = now.strftime("%d/%m")
+        top3 = pending[:3]
+        top3_lines = [f"  • {t['title']}" for t in top3]
+        text_parts = [
+            f"Tổng kết của {child_name} [{date_display}]:",
+            f"✅ Đã xong: {len(completed)} task",
+            f"⏰ Còn lại: {len(pending)} task",
+        ]
+        if top3_lines:
+            text_parts.append("")
+            text_parts.extend(top3_lines)
+
+        deps.notification_service.enqueue(
+            parent_id, "telegram",
+            {"kind": "parent_digest", "text": "\n".join(text_parts)},
+        )
+        deps.audit.log(
+            actor_user_id=None,
+            action="parent_digest_sent",
+            target_type="user",
+            target_id=parent_id,
+            payload={
+                "child_id": child_id,
+                "completed": len(completed),
+                "pending": len(pending),
+                "date": today_str,
+            },
+        )
+        deps.user_store.set_last_digest_at(parent_id, child_id, now.isoformat())
+        sent += 1
+
+    if sent:
+        logger.info("send_parent_digest: sent=%d skipped=%d", sent, skipped)
+    return {"sent": sent, "skipped": skipped}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
+
+
+def _calc_age(birthdate: date, today: date) -> int:
+    """Return age in full years as of today."""
+    age = today.year - birthdate.year
+    if (today.month, today.day) < (birthdate.month, birthdate.day):
+        age -= 1
+    return age
+
+
+def _should_fire_digest(freq: str, time_str: str | None, now: datetime) -> bool:
+    """Return True if the digest should fire right now for this link.
+
+    Formats:
+      daily   → time_str = 'HH:MM' or None (default '21:00')
+      weekly  → time_str = 'DOW HH:MM'  e.g. 'SUN 20:00'
+      monthly → time_str = 'DAY HH:MM'  e.g. '1 20:00' or 'LAST 20:00'
+    """
+    now_hhmm = now.strftime("%H:%M")
+
+    if freq == "daily":
+        effective = time_str if time_str else "21:00"
+        return now_hhmm == effective
+
+    if freq == "weekly":
+        if not time_str:
+            return False
+        parts = time_str.split()
+        if len(parts) != 2:
+            return False
+        dow_str, hhmm = parts
+        expected_dow = _DOW_MAP.get(dow_str.upper())
+        if expected_dow is None:
+            return False
+        return now.weekday() == expected_dow and now_hhmm == hhmm
+
+    if freq == "monthly":
+        if not time_str:
+            return False
+        parts = time_str.split()
+        if len(parts) != 2:
+            return False
+        day_str, hhmm = parts
+        if now_hhmm != hhmm:
+            return False
+        if day_str.upper() == "LAST":
+            last_day = calendar.monthrange(now.year, now.month)[1]
+            return now.day == last_day
+        try:
+            return now.day == int(day_str)
+        except ValueError:
+            return False
+
+    return False
 
 
 def _try_drive_delete(adapter, drive_file_id: str | None) -> bool:
@@ -270,5 +522,29 @@ def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
         trigger="interval",
         seconds=30,
         id=JOB_ID_NOTIF_FLUSH,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scan_reminders,
+        args=[deps],
+        trigger="interval",
+        seconds=60,
+        id=JOB_ID_SCAN_REMINDERS,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_daily_summary,
+        args=[deps],
+        trigger="interval",
+        seconds=60,
+        id=JOB_ID_DAILY_SUMMARY,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_parent_digest,
+        args=[deps],
+        trigger="interval",
+        seconds=60,
+        id=JOB_ID_PARENT_DIGEST,
         replace_existing=True,
     )

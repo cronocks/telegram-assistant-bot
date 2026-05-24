@@ -611,6 +611,37 @@ class SqliteUserStore:
             )
         return cur.rowcount > 0
 
+    def list_active_parent_links(self) -> list[dict]:
+        """Return all active parent_links rows with digest config columns.
+
+        Each dict contains: parent_id, child_id, digest_frequency,
+        digest_time, last_digest_at.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT parent_id,
+                   user_id         AS child_id,
+                   digest_frequency,
+                   digest_time,
+                   last_digest_at
+            FROM   parent_links
+            WHERE  active = 1
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_last_digest_at(self, parent_id: int, child_id: int, ts: str) -> None:
+        """Record the timestamp of the most-recently-sent parent digest."""
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE parent_links
+                SET    last_digest_at = ?
+                WHERE  parent_id = ? AND user_id = ? AND active = 1
+                """,
+                (ts, parent_id, child_id),
+            )
+
     # ── Password ──────────────────────────────────────────────────────────────
 
     def set_password(self, user_id: int, plain: str) -> None:
@@ -683,6 +714,70 @@ class SqliteUserStore:
         ).fetchone()
         return _row_to_user(row) if row else None
 
+    # ── FR-7 task preferences ─────────────────────────────────────────────────
+
+    def get_daily_summary_time(self, user_id: int) -> str | None:
+        """Return daily_summary_time for user_id.
+
+        Returns:
+            None if the column is NULL (meaning use system default 21:00).
+            'off' if the user has disabled daily summary.
+            'HH:MM' if the user has a custom time set.
+        """
+        row = self._conn.execute(
+            "SELECT daily_summary_time FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row["daily_summary_time"]
+
+    def set_daily_summary_time(self, user_id: int, value: str | None) -> None:
+        """Set daily_summary_time for user_id.
+
+        Args:
+            value: None to reset to system default; 'off' to disable;
+                   'HH:MM' to set a custom time (validated).
+        Raises:
+            ValueError if value is not None, 'off', or a valid 'HH:MM' string.
+        """
+        if value is not None and value != "off":
+            _validate_hhmm(value)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE users SET daily_summary_time = ? WHERE id = ?",
+                (value, user_id),
+            )
+
+    def get_morning_default_time(self, user_id: int) -> str | None:
+        """Return morning_default_time for user_id.
+
+        Returns:
+            None if the column is NULL (meaning use system default 09:00).
+            'HH:MM' if the user has a custom morning default time.
+        """
+        row = self._conn.execute(
+            "SELECT morning_default_time FROM users WHERE id = ?", (user_id,)
+        ).fetchone()
+        if row is None:
+            return None
+        return row["morning_default_time"]
+
+    def set_morning_default_time(self, user_id: int, value: str | None) -> None:
+        """Set morning_default_time for user_id.
+
+        Args:
+            value: None to reset to system default; 'HH:MM' to set a custom time.
+        Raises:
+            ValueError if value is not None and not a valid 'HH:MM' string.
+        """
+        if value is not None:
+            _validate_hhmm(value)
+        with self._conn:
+            self._conn.execute(
+                "UPDATE users SET morning_default_time = ? WHERE id = ?",
+                (value, user_id),
+            )
+
     # ── Bootstrap ─────────────────────────────────────────────────────────────
 
     def bootstrap_admin(self) -> User | None:
@@ -729,6 +824,19 @@ def _row_to_user(row: sqlite3.Row) -> User:
         created_at=datetime.fromisoformat(row["created_at"]),
         deleted_at=datetime.fromisoformat(row["deleted_at"]) if row["deleted_at"] else None,
     )
+
+
+def _validate_hhmm(value: str) -> None:
+    """Raise ValueError if value is not a valid 'HH:MM' string (00:00 – 23:59)."""
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise ValueError(f"Invalid time format '{value}': expected 'HH:MM'")
+    try:
+        hh, mm = int(parts[0]), int(parts[1])
+    except ValueError:
+        raise ValueError(f"Invalid time format '{value}': expected 'HH:MM'")
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(f"Time '{value}' out of range: hours 0-23, minutes 0-59")
 
 
 def _age_in_years_local(birthdate: date, today: date) -> int:
