@@ -611,6 +611,37 @@ class SqliteUserStore:
             )
         return cur.rowcount > 0
 
+    def list_active_parent_links(self) -> list[dict]:
+        """Return all active parent_links rows with digest config columns.
+
+        Each dict contains: parent_id, child_id, digest_frequency,
+        digest_time, last_digest_at.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT parent_id,
+                   user_id         AS child_id,
+                   digest_frequency,
+                   digest_time,
+                   last_digest_at
+            FROM   parent_links
+            WHERE  active = 1
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_last_digest_at(self, parent_id: int, child_id: int, ts: str) -> None:
+        """Record the timestamp of the most-recently-sent parent digest."""
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE parent_links
+                SET    last_digest_at = ?
+                WHERE  parent_id = ? AND user_id = ? AND active = 1
+                """,
+                (ts, parent_id, child_id),
+            )
+
     # ── Password ──────────────────────────────────────────────────────────────
 
     def set_password(self, user_id: int, plain: str) -> None:
