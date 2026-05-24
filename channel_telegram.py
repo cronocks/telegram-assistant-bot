@@ -21,23 +21,42 @@ class TelegramAdapter:
     def parse_webhook(self, payload: dict) -> ChannelMessage | None:
         """Convert a Telegram webhook payload into a ChannelMessage.
 
-        Returns None if the payload should be ignored (no message body, no text).
+        Handles two update types:
+        - message / edited_message  → normal text message
+        - callback_query            → inline keyboard button tap; raw contains
+                                      'callback_data' and 'callback_query_id'
+
+        Returns None if the payload should be ignored.
         """
         message = payload.get("message") or payload.get("edited_message")
-        if not message:
-            return None
+        if message:
+            chat_id = str(message["chat"]["id"])
+            text = message.get("text", "")
+            if not text:
+                return None
+            return ChannelMessage(
+                channel="telegram",
+                chat_id=chat_id,
+                text=text,
+                raw=message,
+            )
 
-        chat_id = str(message["chat"]["id"])
-        text = message.get("text", "")
-        if not text:
-            return None
+        cq = payload.get("callback_query")
+        if cq:
+            chat_id = str(cq["message"]["chat"]["id"])
+            return ChannelMessage(
+                channel="telegram",
+                chat_id=chat_id,
+                text="",
+                raw={
+                    "callback_data": cq.get("data", ""),
+                    "callback_query_id": cq["id"],
+                    "message_id": cq["message"]["message_id"],
+                    "from_user": cq.get("from", {}),
+                },
+            )
 
-        return ChannelMessage(
-            channel="telegram",
-            chat_id=chat_id,
-            text=text,
-            raw=message,
-        )
+        return None
 
     def is_authorized(self, msg: ChannelMessage) -> bool:
         """Single-user authorization: chat_id must match the configured allowlist.
@@ -64,6 +83,52 @@ class TelegramAdapter:
                     print(f"[telegram] Send failed {resp.status_code}: {resp.text[:300]}")
             except Exception as e:
                 print(f"[telegram] Send error: {e}")
+
+    async def send_with_inline_keyboard(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: list[list[dict]],
+        use_markdown: bool = False,
+    ) -> None:
+        """Send a message with a Telegram inline keyboard (reply_markup)."""
+        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+        payload: dict = {
+            "chat_id": chat_id,
+            "text": text,
+            "reply_markup": {"inline_keyboard": buttons},
+        }
+        if use_markdown:
+            payload["parse_mode"] = "Markdown"
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, json=payload, timeout=15)
+                if resp.status_code != 200:
+                    print(
+                        f"[telegram] send_with_inline_keyboard failed "
+                        f"{resp.status_code}: {resp.text[:300]}"
+                    )
+            except Exception as e:
+                print(f"[telegram] send_with_inline_keyboard error: {e}")
+
+    async def answer_callback_query(
+        self, callback_query_id: str, text: str = ""
+    ) -> None:
+        """Answer a callback_query to stop the loading spinner on the button."""
+        url = f"https://api.telegram.org/bot{self._token}/answerCallbackQuery"
+        payload: dict = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        async with httpx.AsyncClient() as client:
+            try:
+                resp = await client.post(url, json=payload, timeout=15)
+                if resp.status_code != 200:
+                    print(
+                        f"[telegram] answerCallbackQuery failed "
+                        f"{resp.status_code}: {resp.text[:300]}"
+                    )
+            except Exception as e:
+                print(f"[telegram] answerCallbackQuery error: {e}")
 
     async def delete_message(self, chat_id: str, message_id: int) -> bool:
         """Delete a message via Telegram deleteMessage API. Returns True on success.

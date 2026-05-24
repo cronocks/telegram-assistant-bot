@@ -42,9 +42,18 @@ FUTURE_DL = "2099-01-01T09:00:00+07:00"
 class FakeChannel:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
+        self.inline_sent: list[tuple[str, str, list]] = []
+        self.answered_callbacks: list[str] = []
 
     async def send(self, chat_id, text, use_markdown=True):
         self.sent.append((chat_id, text))
+
+    async def send_with_inline_keyboard(self, chat_id, text, buttons, use_markdown=False):
+        self.inline_sent.append((chat_id, text, buttons))
+        self.sent.append((chat_id, text))
+
+    async def answer_callback_query(self, callback_query_id, text=""):
+        self.answered_callbacks.append(callback_query_id)
 
     async def delete_message(self, chat_id, message_id):
         return True
@@ -461,3 +470,54 @@ class TestCmdHoanTask:
         )
         _run(_cmd_hoan_task("c1", f"{task['id']} 15", user, deps))
         assert "max snooze" in deps.channel.last_text
+
+
+# ── Inline keyboard — tao task ────────────────────────────────────────────────
+
+
+class TestCmdTaoTaskInlineButtons:
+    @pytest.fixture()
+    def setup(self, db_conn):
+        us = SqliteUserStore(conn=db_conn)
+        u = us.create_user(name="Test", role="member")
+        user = FakeUser(u.id)
+        ts = SqliteTaskStore(conn=db_conn)
+        parsed = ParsedTask("Mua sữa", FUTURE_DL, None, "task")
+        parser = _make_parser(parsed)
+        deps = _make_deps(db_conn, us, task_store=ts, task_parser=parser)
+        return deps, user
+
+    def test_reply_uses_inline_keyboard(self, setup):
+        deps, user = setup
+        _run(_cmd_tao_task("c1", "mua sua 5h chieu mai", user, deps))
+        assert len(deps.channel.inline_sent) == 1
+
+    def test_buttons_contain_done_action(self, setup):
+        deps, user = setup
+        _run(_cmd_tao_task("c1", "mua sua 5h chieu mai", user, deps))
+        buttons = deps.channel.inline_sent[0][2]
+        flat = [btn for row in buttons for btn in row]
+        assert any(btn["callback_data"].startswith("done:") for btn in flat)
+
+    def test_buttons_contain_snooze_options(self, setup):
+        deps, user = setup
+        _run(_cmd_tao_task("c1", "mua sua 5h chieu mai", user, deps))
+        buttons = deps.channel.inline_sent[0][2]
+        flat = [btn for row in buttons for btn in row]
+        assert any("snooze:" in btn["callback_data"] for btn in flat)
+
+
+# ── Inline keyboard — lich hoc ────────────────────────────────────────────────
+
+
+class TestCmdLichHocInlineButtons:
+    def test_reply_uses_inline_keyboard(self, db_conn):
+        us = SqliteUserStore(conn=db_conn)
+        u = us.create_user(name="T", role="member")
+        user = FakeUser(u.id)
+        ts = SqliteTaskStore(conn=db_conn)
+        parsed = ParsedTask("Học toán", FUTURE_DL, None, "study")
+        parser = _make_parser(parsed)
+        deps = _make_deps(db_conn, us, task_store=ts, task_parser=parser)
+        _run(_cmd_lich_hoc("c1", "toan thu 2 luc 7h", user, deps))
+        assert len(deps.channel.inline_sent) == 1

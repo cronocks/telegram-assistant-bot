@@ -518,6 +518,6 @@ class TestRegisterJobs:
             # Second call should not raise (replace_existing=True replaces
             # rather than duplicating).
             scheduled_jobs.register_jobs(scheduler, deps)
-            assert len(scheduler.get_jobs()) == 3
+            assert len(scheduler.get_jobs()) == 5  # 3 FR-4 jobs + 2 FR-7 jobs
         finally:
             scheduler.shutdown(wait=False)

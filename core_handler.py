@@ -3031,7 +3031,12 @@ async def _cmd_tao_task(
     reply_lines = [f"✅ Đã tạo task #{task['id']}: *{parsed.title}*", f"📅 {dl_display}"]
     if parsed.recurring_rule:
         reply_lines.append(f"🔁 {parsed.recurring_rule}")
-    await deps.channel.send(chat_id, "\n".join(reply_lines))
+    buttons = [[
+        {"text": "✅ Xong", "callback_data": f"done:{task['id']}"},
+        {"text": "😴 Hoãn 15p", "callback_data": f"snooze:{task['id']}:15"},
+        {"text": "⏰ Hoãn 1h", "callback_data": f"snooze:{task['id']}:60"},
+    ]]
+    await deps.channel.send_with_inline_keyboard(chat_id, "\n".join(reply_lines), buttons)
 
 
 async def _cmd_xong_task(
@@ -3188,7 +3193,12 @@ async def _cmd_lich_hoc(
     reply_lines = [f"📚 Đã thêm lịch học #{task['id']}: *{parsed.title}*", f"📅 {dl_display}"]
     if parsed.recurring_rule:
         reply_lines.append(f"🔁 {parsed.recurring_rule}")
-    await deps.channel.send(chat_id, "\n".join(reply_lines))
+    buttons = [[
+        {"text": "✅ Xong", "callback_data": f"done:{task['id']}"},
+        {"text": "😴 Hoãn 15p", "callback_data": f"snooze:{task['id']}:15"},
+        {"text": "⏰ Hoãn 1h", "callback_data": f"snooze:{task['id']}:60"},
+    ]]
+    await deps.channel.send_with_inline_keyboard(chat_id, "\n".join(reply_lines), buttons)
 
 
 async def _cmd_hoan_task(
@@ -3231,6 +3241,173 @@ async def _cmd_hoan_task(
         f"😴 Đã hoãn task #{task_id}: {task['title']} thêm {minutes} phút.",
         use_markdown=False,
     )
+
+
+async def _cmd_tom_tat_hom_nay(chat_id: str, user, deps: CoreDeps) -> None:
+    """tom tat hom nay — on-demand daily task summary for the current user."""
+    if deps.task_store is None:
+        await deps.channel.send(chat_id, "Tính năng task chưa được kích hoạt.", use_markdown=False)
+        return
+
+    from datetime import datetime
+    from timeutils import VIETNAM_TZ
+    now = datetime.now(VIETNAM_TZ)
+    today_str = now.strftime("%Y-%m-%d")
+    today_end = f"{today_str}T23:59:59+07:00"
+
+    completed = deps.task_store.list_completed_on(user.id, today_str)
+    pending = deps.task_store.list_pending_due(today_end, user_id=user.id)
+
+    date_display = now.strftime("%d/%m")
+    lines = [
+        f"Tổng kết hôm nay [{date_display}]:",
+        f"✅ Đã xong: {len(completed)} task",
+        f"⏰ Còn lại hôm nay: {len(pending)} task",
+        "",
+        "Gõ 'danh sach task' để xem chi tiết.",
+    ]
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_cau_hinh_tong_ket(chat_id: str, body: str, user, deps: CoreDeps) -> None:
+    """cau hinh tong ket: <HH:MM|tắt> — configure or disable daily summary time."""
+    value = body.strip()
+    if not value:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp:\n  cấu hình tổng kết: 21:00\n  cấu hình tổng kết: tắt",
+            use_markdown=False,
+        )
+        return
+
+    if _norm(value) in {"tắt", "tat", "off", "disable"}:
+        deps.user_store.set_daily_summary_time(user.id, "off")
+        await deps.channel.send(chat_id, "Đã tắt tổng kết hàng ngày.", use_markdown=False)
+        return
+
+    try:
+        deps.user_store.set_daily_summary_time(user.id, value)
+        await deps.channel.send(
+            chat_id, f"Đã đặt giờ tổng kết hàng ngày: {value}.", use_markdown=False,
+        )
+    except ValueError:
+        await deps.channel.send(
+            chat_id,
+            "Giờ không hợp lệ. Dùng định dạng HH:MM (ví dụ: 21:00) hoặc 'tắt' để tắt.",
+            use_markdown=False,
+        )
+
+
+async def _cmd_cau_hinh_gio_mac_dinh(chat_id: str, body: str, user, deps: CoreDeps) -> None:
+    """cau hinh gio mac dinh: <HH:MM> — configure morning default time for deadline-less tasks."""
+    value = body.strip()
+    if not value:
+        await deps.channel.send(
+            chat_id, "Cú pháp: cấu hình giờ mặc định: 09:00", use_markdown=False,
+        )
+        return
+
+    try:
+        deps.user_store.set_morning_default_time(user.id, value)
+        await deps.channel.send(
+            chat_id, f"Đã đặt giờ mặc định buổi sáng: {value}.", use_markdown=False,
+        )
+    except ValueError:
+        await deps.channel.send(
+            chat_id,
+            "Giờ không hợp lệ. Dùng định dạng HH:MM (ví dụ: 09:00).",
+            use_markdown=False,
+        )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Inline keyboard callback dispatcher
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+async def _handle_callback(msg: ChannelMessage, user: User, deps: CoreDeps) -> None:
+    """Dispatch an inline keyboard callback_query to the appropriate handler.
+
+    callback_data formats:
+      done:<task_id>           — mark task completed
+      snooze:<task_id>:<min>   — snooze by <min> minutes
+      view:<task_id>           — show task detail
+    """
+    chat_id = msg.chat_id
+    callback_data = msg.raw.get("callback_data", "")
+    cq_id = msg.raw.get("callback_query_id", "")
+
+    # Stop the loading spinner — Telegram-specific, guard with hasattr.
+    if hasattr(deps.channel, "answer_callback_query"):
+        await deps.channel.answer_callback_query(cq_id)
+
+    if deps.task_store is None:
+        await deps.channel.send(chat_id, "Tính năng task chưa được kích hoạt.", use_markdown=False)
+        return
+
+    parts = callback_data.split(":")
+    action = parts[0] if parts else ""
+
+    if action == "done" and len(parts) >= 2:
+        try:
+            task_id = int(parts[1])
+        except ValueError:
+            await deps.channel.send(chat_id, "Lệnh không hợp lệ.", use_markdown=False)
+            return
+        task = deps.task_store.get_task(task_id)
+        if task is None or task.get("user_id") != user.id:
+            await deps.channel.send(chat_id, f"Không tìm thấy task #{task_id}.", use_markdown=False)
+            return
+        from datetime import datetime
+        from timeutils import VIETNAM_TZ
+        deps.task_store.complete_task(task_id, completed_at=datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S"))
+        if deps.reminder_engine is not None:
+            deps.reminder_engine.cancel_all_for_task(task_id)
+        await deps.channel.send(
+            chat_id, f"✅ Đã hoàn thành task #{task_id}: {task['title']}", use_markdown=False,
+        )
+
+    elif action == "snooze" and len(parts) >= 3:
+        try:
+            task_id = int(parts[1])
+            minutes = int(parts[2])
+        except ValueError:
+            await deps.channel.send(chat_id, "Lệnh không hợp lệ.", use_markdown=False)
+            return
+        task = deps.task_store.get_task(task_id)
+        if task is None or task.get("user_id") != user.id:
+            await deps.channel.send(chat_id, f"Không tìm thấy task #{task_id}.", use_markdown=False)
+            return
+        if deps.reminder_engine is None:
+            await deps.channel.send(chat_id, "Tính năng task chưa được kích hoạt.", use_markdown=False)
+            return
+        try:
+            deps.reminder_engine.snooze(task_id, minutes)
+        except ValueError as e:
+            await deps.channel.send(chat_id, str(e), use_markdown=False)
+            return
+        await deps.channel.send(
+            chat_id,
+            f"😴 Đã hoãn task #{task_id}: {task['title']} thêm {minutes} phút.",
+            use_markdown=False,
+        )
+
+    elif action == "view" and len(parts) >= 2:
+        try:
+            task_id = int(parts[1])
+        except ValueError:
+            await deps.channel.send(chat_id, "Lệnh không hợp lệ.", use_markdown=False)
+            return
+        task = deps.task_store.get_task(task_id)
+        if task is None or task.get("user_id") != user.id:
+            await deps.channel.send(chat_id, f"Không tìm thấy task #{task_id}.", use_markdown=False)
+            return
+        await deps.channel.send(chat_id, _format_task_detail(task))
+
+    else:
+        await deps.channel.send(
+            chat_id, f"Lệnh không hợp lệ: {callback_data!r}.", use_markdown=False,
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3297,12 +3474,23 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     # "task <id>" (space, no colon) — must be listed AFTER "task: " variant above
     # so the table ordering keeps longest-prefix logic intact in match_command.
     "XEM_TASK":           ["task "],
+    # ── FR-7 daily summary commands ───────────────────────────────────────────
+    # Longer prefixes first within each group.
+    "CAU_HINH_TONG_KET":     ["cấu hình tổng kết: ", "cau hinh tong ket: "],
+    "CAU_HINH_GIO_MAC_DINH": ["cấu hình giờ mặc định: ", "cau hinh gio mac dinh: "],
+    "TOM_TAT_HOM_NAY":       ["tóm tắt hôm nay", "tom tat hom nay"],
 }
 
 
 async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> None:
     """Dispatch a normalized inbound message to the appropriate handler."""
     chat_id = msg.chat_id
+
+    # ── Step 0: inline keyboard callback_query (no text, callback_data in raw) ─
+    if msg.raw.get("callback_data"):
+        await _handle_callback(msg, user, deps)
+        return
+
     text = msg.text.strip()
     if not text:
         return
@@ -3340,6 +3528,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "XUAT_DU_LIEU_SELF", "XUAT_DU_LIEU_ADMIN",
         # FR-7 non-LLM task commands.
         "XONG_TASK", "HUY_TASK", "DANH_SACH_TASK", "XEM_TASK", "HOAN_TASK",
+        "TOM_TAT_HOM_NAY", "CAU_HINH_TONG_KET", "CAU_HINH_GIO_MAC_DINH",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -3461,6 +3650,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_lich_hoc(chat_id, remainder, user, deps); return
         if cmd_id == "HOAN_TASK":
             await _cmd_hoan_task(chat_id, remainder, user, deps); return
+        if cmd_id == "TOM_TAT_HOM_NAY":
+            await _cmd_tom_tat_hom_nay(chat_id, user, deps); return
+        if cmd_id == "CAU_HINH_TONG_KET":
+            await _cmd_cau_hinh_tong_ket(chat_id, remainder, user, deps); return
+        if cmd_id == "CAU_HINH_GIO_MAC_DINH":
+            await _cmd_cau_hinh_gio_mac_dinh(chat_id, remainder, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)

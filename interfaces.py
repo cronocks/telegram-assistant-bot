@@ -422,6 +422,21 @@ class ChannelAdapter(Protocol):
         """Send a message to the given conversation."""
         ...
 
+    async def send_with_inline_keyboard(
+        self,
+        chat_id: str,
+        text: str,
+        buttons: list[list[dict]],
+        use_markdown: bool = False,
+    ) -> None:
+        """Send a message with an inline keyboard attached.
+
+        buttons is a list of rows; each row is a list of button dicts with
+        keys 'text' and 'callback_data'. Adapters that don't support inline
+        keyboards should fall back to a plain send().
+        """
+        ...
+
     async def delete_message(self, chat_id: str, message_id: int) -> bool:
         """Best-effort delete of a previously-sent message. Returns True on success.
 

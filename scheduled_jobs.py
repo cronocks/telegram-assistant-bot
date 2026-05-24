@@ -38,6 +38,8 @@ RECYCLE_RETENTION_DAYS = 180
 JOB_ID_180D = "fr4_purge_180d"
 JOB_ID_TURN_18 = "fr4_purge_children_18"
 JOB_ID_NOTIF_FLUSH = "fr4_flush_notifications"
+JOB_ID_SCAN_REMINDERS = "fr7_scan_reminders"
+JOB_ID_DAILY_SUMMARY = "fr7_daily_summary"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -224,6 +226,96 @@ async def flush_pending_notifications(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Job 4 — Reminder scan (every 1 minute)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def scan_reminders(deps: "CoreDeps") -> dict:
+    """Call reminder_engine.tick() and return its stats.
+
+    Returns {} if no reminder_engine is wired (safe no-op so the job
+    can be registered even before the engine is configured).
+    """
+    if deps.reminder_engine is None:
+        return {}
+    try:
+        return deps.reminder_engine.tick()
+    except Exception:
+        logger.exception("scan_reminders: unexpected error in tick()")
+        return {}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Job 5 — Daily summary (every minute, fires per user at their configured time)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def send_daily_summary(deps: "CoreDeps", now: datetime | None = None) -> dict:
+    """Send a daily task summary to each user whose configured time matches now.
+
+    Per-user logic:
+      - daily_summary_time NULL  → use system default "21:00"
+      - daily_summary_time "off" → skip
+      - daily_summary_time HH:MM → fire when now matches that minute
+
+    Skips users with no tasks today (completed + pending) to avoid spam.
+    Returns {"sent": N, "skipped": M}.
+    """
+    if deps.task_store is None or deps.notification_service is None:
+        return {"sent": 0, "skipped": 0}
+
+    now = now or datetime.now(VN_TZ)
+    now_hhmm = now.strftime("%H:%M")
+    today_str = now.strftime("%Y-%m-%d")
+    today_end = f"{today_str}T23:59:59+07:00"
+
+    sent = 0
+    skipped = 0
+
+    for user in deps.user_store.list_users():
+        configured = deps.user_store.get_daily_summary_time(user.id)
+
+        if configured == "off":
+            skipped += 1
+            continue
+
+        effective_time = configured if configured else "21:00"
+        if effective_time != now_hhmm:
+            skipped += 1
+            continue
+
+        completed = deps.task_store.list_completed_on(user.id, today_str)
+        pending = deps.task_store.list_pending_due(today_end, user_id=user.id)
+
+        if not completed and not pending:
+            skipped += 1
+            continue
+
+        date_display = now.strftime("%d/%m")
+        text = "\n".join([
+            f"Tổng kết hôm nay [{date_display}]:",
+            f"✅ Đã xong: {len(completed)} task",
+            f"⏰ Còn lại: {len(pending)} task",
+            "",
+            "Gõ 'danh sach task' để xem chi tiết.",
+        ])
+
+        deps.notification_service.enqueue(user.id, "telegram", {"kind": "daily_summary", "text": text})
+        deps.audit.log(
+            actor_user_id=None,
+            action="daily_summary_sent",
+            target_type="user",
+            target_id=user.id,
+            payload={"completed": len(completed), "pending": len(pending), "date": today_str},
+        )
+        sent += 1
+
+    if sent:
+        logger.info("send_daily_summary: sent=%d skipped=%d", sent, skipped)
+    return {"sent": sent, "skipped": skipped}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Helpers
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -270,5 +362,21 @@ def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
         trigger="interval",
         seconds=30,
         id=JOB_ID_NOTIF_FLUSH,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        scan_reminders,
+        args=[deps],
+        trigger="interval",
+        seconds=60,
+        id=JOB_ID_SCAN_REMINDERS,
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        send_daily_summary,
+        args=[deps],
+        trigger="interval",
+        seconds=60,
+        id=JOB_ID_DAILY_SUMMARY,
         replace_existing=True,
     )
