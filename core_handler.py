@@ -42,10 +42,13 @@ from cmd_sudo import (
 from cmd_task import (
     _cmd_cau_hinh_gio_mac_dinh,
     _cmd_cau_hinh_tong_ket,
+    _cmd_danh_sach_lich_hoc,
     _cmd_danh_sach_task,
     _cmd_hoan_task,
+    _cmd_huy_lich_hoc,
     _cmd_huy_task,
     _cmd_lich_hoc,
+    _cmd_sua_lich_hoc,
     _cmd_tao_task,
     _cmd_tom_tat_hom_nay,
     _cmd_xem_task,
@@ -169,6 +172,9 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`task [id]` — Xem chi tiet task\n"
         "`danh sach task` — Liet ke task dang cho\n"
         "`lich hoc: [mo ta]` — Tao lich hoc (recurring; category=study)\n"
+        "`danh sach lich hoc` — Xem tat ca lich hoc dang hoat dong\n"
+        "`sua lich hoc: [id] [mo ta moi]` — Cap nhat lich hoc (thay doi gio/ngay)\n"
+        "`huy lich hoc: [id]` — Huy mot lich hoc\n"
         "`hoan task: [id] [phut]` — Hoan task them N phut\n"
         "`tom tat hom nay` — Tong ket task hom nay\n"
         "`cau hinh tong ket: [HH:MM | tat]` — Doi gio gui tong ket hang ngay\n"
@@ -574,6 +580,10 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "XONG_TASK":          ["xong task: ", "done task: "],
     "HUY_TASK":           ["hủy task: ", "huy task: ", "xóa task: ", "xoa task: "],
     "DANH_SACH_TASK":     ["danh sách task", "danh sach task", "list task"],
+    # Study schedule commands — longer prefixes before shorter "lich hoc:"
+    "DANH_SACH_LICH_HOC": ["danh sách lịch học", "danh sach lich hoc"],
+    "HUY_LICH_HOC":       ["hủy lịch học: ", "huy lich hoc: "],
+    "SUA_LICH_HOC":       ["sửa lịch học: ", "sua lich hoc: ", "đổi lịch học: ", "doi lich hoc: "],
     "LICH_HOC":           ["lịch học: ", "lich hoc: "],
     "HOAN_TASK":          ["hoãn task: ", "hoan task: ", "snooze: "],
     # "task <id>" (space, no colon) — must be listed AFTER "task: " variant above
@@ -749,6 +759,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_huy_task(chat_id, remainder, user, deps); return
         if cmd_id == "DANH_SACH_TASK":
             await _cmd_danh_sach_task(chat_id, user, deps); return
+        if cmd_id == "DANH_SACH_LICH_HOC":
+            await _cmd_danh_sach_lich_hoc(chat_id, user, deps); return
+        if cmd_id == "HUY_LICH_HOC":
+            await _cmd_huy_lich_hoc(chat_id, remainder, user, deps); return
+        if cmd_id == "SUA_LICH_HOC":
+            await _cmd_sua_lich_hoc(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_TASK":
             await _cmd_xem_task(chat_id, remainder, user, deps); return
         if cmd_id == "LICH_HOC":

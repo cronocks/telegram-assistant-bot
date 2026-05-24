@@ -391,6 +391,169 @@ async def _cmd_cau_hinh_gio_mac_dinh(chat_id: str, body: str, user, deps: CoreDe
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# Study schedule commands
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DAY_VI = {
+    "MON": "Thứ 2", "TUE": "Thứ 3", "WED": "Thứ 4",
+    "THU": "Thứ 5", "FRI": "Thứ 6", "SAT": "Thứ 7", "SUN": "CN",
+}
+
+
+def _format_recurring_rule(rule: str | None) -> str:
+    """Convert 'weekly:MON,WED@17:30' or 'daily@21:00' to a readable Vietnamese string."""
+    if not rule:
+        return "một lần"
+    if rule.startswith("daily@"):
+        time_part = rule.split("@", 1)[1]
+        return f"Hàng ngày {time_part}"
+    if rule.startswith("weekly:"):
+        rest = rule[len("weekly:"):]
+        days_part, _, time_part = rest.partition("@")
+        days_vi = ", ".join(_DAY_VI.get(d.strip(), d.strip()) for d in days_part.split(","))
+        return f"{days_vi} {time_part}"
+    return rule
+
+
+async def _cmd_danh_sach_lich_hoc(
+    chat_id: str, user, deps: CoreDeps,
+) -> None:
+    """danh sach lich hoc — list all pending study-category tasks for the user."""
+    if deps.task_store is None:
+        await deps.channel.send(
+            chat_id, "Tính năng task chưa được kích hoạt.", use_markdown=False,
+        )
+        return
+
+    tasks = deps.task_store.list_for_user(user.id, status="pending", category="study")
+    if not tasks:
+        await deps.channel.send(
+            chat_id, "Không có lịch học nào đang hoạt động.", use_markdown=False,
+        )
+        return
+
+    lines = ["📚 *Lịch học:*"]
+    for t in tasks:
+        schedule = _format_recurring_rule(t.get("recurring_rule"))
+        lines.append(f"#{t['id']} *{t['title']}* — {schedule}")
+    lines.append("\nDùng `sửa lịch học: [id] [mô tả mới]` hoặc `hủy lịch học: [id]` để thay đổi.")
+    await deps.channel.send(chat_id, "\n".join(lines))
+
+
+async def _cmd_huy_lich_hoc(
+    chat_id: str, body: str, user, deps: CoreDeps,
+) -> None:
+    """huy lich hoc: <id> — cancel a study schedule task."""
+    if deps.task_store is None:
+        await deps.channel.send(
+            chat_id, "Tính năng task chưa được kích hoạt.", use_markdown=False,
+        )
+        return
+
+    task_id = _parse_task_id(body)
+    if task_id is None:
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: hủy lịch học: <id>  ví dụ: hủy lịch học: 4",
+            use_markdown=False,
+        )
+        return
+
+    task = deps.task_store.get_task(task_id)
+    if task is None or task.get("user_id") != user.id:
+        await deps.channel.send(
+            chat_id, f"Không tìm thấy lịch học #{task_id}.", use_markdown=False,
+        )
+        return
+    if task.get("category") != "study":
+        await deps.channel.send(
+            chat_id,
+            f"Task #{task_id} không phải lịch học. Dùng `hủy task: {task_id}` để hủy task thường.",
+            use_markdown=False,
+        )
+        return
+
+    deps.task_store.cancel_task(task_id)
+    if deps.reminder_engine is not None:
+        deps.reminder_engine.cancel_all_for_task(task_id)
+    await deps.channel.send(
+        chat_id,
+        f"🗑 Đã hủy lịch học #{task_id}: {task['title']}.",
+        use_markdown=False,
+    )
+
+
+async def _cmd_sua_lich_hoc(
+    chat_id: str, body: str, user, deps: CoreDeps,
+) -> None:
+    """sua lich hoc: <id> <mo ta moi> — re-parse and update an existing study schedule."""
+    if deps.task_store is None or deps.task_parser is None:
+        await deps.channel.send(
+            chat_id, "Tính năng task chưa được kích hoạt.", use_markdown=False,
+        )
+        return
+
+    parts = body.strip().split(None, 1)
+    if len(parts) < 2 or not parts[0].isdigit():
+        await deps.channel.send(
+            chat_id,
+            "Cú pháp: sửa lịch học: <id> <mô tả mới>\n"
+            "Ví dụ: sửa lịch học: 4 Kẹo học toán 6h tối thứ 5 hàng tuần",
+            use_markdown=False,
+        )
+        return
+
+    task_id = int(parts[0])
+    new_description = parts[1].strip()
+
+    task = deps.task_store.get_task(task_id)
+    if task is None or task.get("user_id") != user.id:
+        await deps.channel.send(
+            chat_id, f"Không tìm thấy lịch học #{task_id}.", use_markdown=False,
+        )
+        return
+    if task.get("category") != "study":
+        await deps.channel.send(
+            chat_id,
+            f"Task #{task_id} không phải lịch học.",
+            use_markdown=False,
+        )
+        return
+
+    try:
+        from datetime import datetime
+        from timeutils import VIETNAM_TZ
+        morning_default = deps.user_store.get_morning_default_time(user.id) or "09:00"
+        parsed = deps.task_parser.parse(
+            new_description, morning_default=morning_default, now=datetime.now(VIETNAM_TZ),
+        )
+    except Exception as e:
+        await deps.channel.send(chat_id, str(e), use_markdown=False)
+        return
+
+    deps.task_store.update_task(
+        task_id,
+        title=parsed.title,
+        deadline=parsed.deadline_iso,
+        recurring_rule=parsed.recurring_rule,
+    )
+    if deps.reminder_engine is not None:
+        deps.reminder_engine.cancel_all_for_task(task_id)
+        updated = deps.task_store.get_task(task_id)
+        if updated:
+            deps.reminder_engine.schedule_for_task(updated)
+
+    dl_display = parsed.deadline_iso[:16].replace("T", " ")
+    lines = [
+        f"✏️ Đã cập nhật lịch học #{task_id}: *{parsed.title}*",
+        f"📅 {dl_display}",
+    ]
+    if parsed.recurring_rule:
+        lines.append(f"🔁 {_format_recurring_rule(parsed.recurring_rule)}")
+    await deps.channel.send(chat_id, "\n".join(lines))
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Inline keyboard callback dispatcher
 # ═══════════════════════════════════════════════════════════════════════════════
 
