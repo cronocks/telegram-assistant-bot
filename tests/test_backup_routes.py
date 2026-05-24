@@ -356,9 +356,15 @@ class TestSelfExport:
         r = client.post("/login", data={"username": "alice", "password": "secret123"})
         client.cookies.set("web_session", r.cookies["web_session"])
 
+        # D81: /settings/export returns 303 → /settings/export/download?token=
         r = client.get("/settings/export")
-        assert r.status_code == 200
-        assert r.headers["content-type"].startswith("application/zip")
+        assert r.status_code == 303
+        location = r.headers["location"]
+        assert "/settings/export/download" in location
+
+        r2 = client.get(location)
+        assert r2.status_code == 200
+        assert r2.headers["content-type"].startswith("application/zip")
 
 
 # ── GET /admin/users/{id}/export ─────────────────────────────────────────────
