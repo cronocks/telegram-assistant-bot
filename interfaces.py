@@ -717,6 +717,7 @@ class TaskStore(Protocol):
         user_id: int,
         *,
         status: "str | None" = None,
+        category: "str | None" = None,
         include_deleted: bool = False,
     ) -> "list[dict]": ...
 

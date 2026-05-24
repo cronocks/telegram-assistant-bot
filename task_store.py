@@ -86,12 +86,14 @@ class SqliteTaskStore:
         user_id: int,
         *,
         status: str | None = None,
+        category: str | None = None,
         include_deleted: bool = False,
     ) -> list[dict]:
         """Return tasks for user_id ordered by deadline ASC.
 
         Args:
             status: filter by status ('pending'|'completed'|'cancelled'); None = all.
+            category: filter by category ('task'|'study'|'reminder'); None = all.
             include_deleted: include soft-deleted rows when True.
         """
         conditions = ["user_id = ?"]
@@ -102,6 +104,9 @@ class SqliteTaskStore:
         if status is not None:
             conditions.append("status = ?")
             params.append(status)
+        if category is not None:
+            conditions.append("category = ?")
+            params.append(category)
 
         where = " AND ".join(conditions)
         rows = self._conn.execute(
