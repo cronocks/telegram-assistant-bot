@@ -482,15 +482,20 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-7 — Tasks + Reminders + Daily Summary + Parent Digest
-**Status:** PENDING
-**Scope:**
-- `task_store` (SQLite table)
-- Reminders ở mốc: **2h, 1h, 30m, 15m** trước deadline
-- **Reminder engine tổng quát:** offset cấu hình tùy ý + hỗ trợ recurring event — KHÔNG hardcode 4 mốc, để FR-8 plug vào dùng lại
-- Daily summary cuối ngày: việc đã hoàn thành / chưa hoàn thành
-- **Kids' study schedule** (gộp vào FR-7 như task category `study`, recurring weekly)
-- Mirror reminder real-time cho parent (theo 4.3 Tier 1)
-- Digest cho parent theo cấu hình ở 4.3 Tier 2
+**Status:** ✅ DONE — branch `feature/FR7`, 867 tests passing; plan chi tiết tại `docs/FR-7-PLAN.md`
+**Scope delivered:**
+- Migrations 018–020: bảng `tasks`, `task_reminders`; 2 cột `users.daily_summary_time` + `users.morning_default_time`
+- `task_store.py` — `SqliteTaskStore` CRUD (list by user/status/category, soft-delete)
+- `reminder_store.py` — `SqliteReminderStore` CRUD + ready-to-fire query
+- `reminder_engine.py` — scan + emit + lazy recurring expansion + parent mirror runtime (D7) + grace 1h missed (D12)
+- `task_parser.py` — `TaskParser` Haiku 4.5 tool-use; cải thiện system prompt cho Vietnamese time formats (`10h tối`, `22h`, `chiều thứ 3`, v.v.)
+- Telegram commands: `tao task:`, `xong task:`, `huy task:`, `danh sach task`, `task <id>`, `lich hoc:`, `hoan task:`, `tom tat hom nay`, `cau hinh tong ket:`, `cau hinh gio mac dinh:`
+- Study schedule management (bổ sung ngoài plan gốc): `danh sach lich hoc`, `sua lich hoc:`, `huy lich hoc:`
+- Web routes + templates: `GET/POST /tasks`, `/tasks/new`, `/tasks/{id}`, `/tasks/{id}/edit`, `/tasks/{id}/complete`, `/tasks/{id}/delete`
+- Scheduled jobs: `scan_reminders` mỗi 1 phút, `send_daily_summary`, `send_parent_digest`
+- `core_handler.py` refactor: tách business logic vào 7 cmd_* modules (`cmd_utils`, `cmd_user`, `cmd_audit`, `cmd_notes`, `cmd_sudo`, `cmd_wiki`, `cmd_task`); `core_handler.py` giữ vai trò dispatcher + help/start
+- Fix `WebChannelAdapter.send_with_inline_keyboard` (fallback silent khi web channel nhận inline keyboard)
+- FR-7 group thêm vào `/start` menu + `/help cong viec`
 **Note:** Kids' study **đã gộp vào FR-7** — cùng engine reminder, study chỉ là category đặc biệt. Slot `FR-8` nay được tái dùng cho Anniversary Reminders (xem bên dưới).
 
 ---
@@ -651,6 +656,9 @@ INDEX (user_id, category_id, occurred_at)
 | 80 | Drive upload backup dùng API trực tiếp, không qua NoteStore Protocol | `BackupEngine.upload_to_drive()` gọi thẳng `_get_service()` từ `drive_client.py`; tạo subfolder `Claude-Notes/Backups/` | `NoteStore.save_note()` chỉ nhận string content (encode UTF-8), không xử lý được ZIP binary; BackupEngine là concrete class (D76) nên không vi phạm hexagonal — chỉ core_handler mới bắt buộc qua Protocol | 2026-05-23 |
 | 81 | Web export dùng download token redirect để tránh IDM double-request | `GET /settings/export` generate ZIP → lưu vào `_download_tokens` dict (TTL 60s) → redirect 303 tới `GET /settings/export/download?token=xxx`; token dùng `get` (không `pop`) để IDM retry trong TTL không bị 410 | IDM và download manager thường gửi 2 request HEAD+GET tới cùng URL; redirect tách URL generate (rate-limited) khỏi URL download (token-gated); token TTL-based thay vì one-time-use để support retry trong window | 2026-05-23 |
 | 82 | Self-service web password qua Telegram channel binding | Lệnh `doi web pass: <mat_khau>` cho mọi user (không cần admin); channel binding là identity proof — không cần current password; set `must_change_password=False`; auto-delete message chứa password; web form `/settings/password` dùng current password để xác nhận | User thường không có admin để set password ban đầu; Telegram channel binding đủ để chứng minh identity; web form cần current password vì không có channel binding identity proof | 2026-05-23 |
+| 83 | Refactor `core_handler.py` → 7 cmd_* modules | Business logic tách vào `cmd_utils`, `cmd_user`, `cmd_audit`, `cmd_notes`, `cmd_sudo`, `cmd_wiki`, `cmd_task`; `core_handler.py` giữ vai trò dispatcher + `/start` + `/help`. Mỗi module import `CoreDeps` từ `deps.py` | File 3662 dòng khó maintain, test import chậm; tách theo domain giúp locate code nhanh, test isolation tốt hơn, PR review nhỏ hơn | 2026-05-24 |
+| 84 | Bổ sung 3 lệnh quản lý lịch học ngoài scope FR-7 gốc | `danh sach lich hoc`, `huy lich hoc: <id>`, `sua lich hoc: <id> <mo ta moi>` — thêm khi test thấy thiếu UX để xem/sửa/xóa lịch học đã tạo. `sua lich hoc` re-parse qua LLM + update task + reschedule reminder | FR-7 gốc chỉ có `lich hoc:` để tạo; không có cách xem hay sửa → UX bỏ ngỏ; phát hiện khi test production | 2026-05-24 |
+| 85 | Cải thiện system prompt task_parser cho Vietnamese time formats | Thêm bảng quy đổi buổi → giờ (`10h tối` = 22:00, `chiều` = 15:00, `trưa` = 12:00, v.v.) và ví dụ phong phú vào `_SYSTEM_PROMPT` của `task_parser.py` | Haiku 4.5 không tự suy luận `10h tối` = 22:00 khi prompt chỉ dùng ví dụ `5h chiều mai`; explicit mapping loại bỏ ambiguity | 2026-05-24 |
 
 ---
 
@@ -701,21 +709,28 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
   - Sidebar collapsible, conversation list, rename inline, search (LIKE), new chat lazy create
   - LLM title generation async (Haiku 4.5) sau message đầu; SSE `title_update` event
   - Admin stealth-read hội thoại web của user under-18; audit `stealth_read_web_conversation`
-- ✅ **FR-6** DONE — branch `feature/FR6` — Backup / Restore Tooling; staging tested; chờ merge main
+- ✅ **FR-6** merged to `main` — Backup / Restore Tooling
   - `backup_engine.py`: `BackupEngine` concrete class; export ZIP in-memory, rate-limit 5 phút; parse/apply import transactional với Drive rollback
   - Web: 6 routes (`/settings/export`, `/settings/export/download`, `/admin/users/{id}/export`, `/admin/import`, `/admin/import/preview`, `/admin/import/apply`); download token redirect (D81); `templates/import.html`
   - Telegram: `xuat du lieu` (self, guard trailing text) + `xuat du lieu: <tên>` (admin); `doi web pass: <mat_khau>` self-service (D82)
   - `tools/local_migrate.py`: CLI standalone migrate SQLite + Drive → local FS
   - Option C: web form `GET/POST /settings/password` + `templates/settings_password.html`; sidebar link trong chat
   - 82 tests passing
+- ✅ **FR-7** DONE — branch `feature/FR7`, 867 tests passing — Tasks + Reminders + Daily Summary + Kids' Study
+  - Migrations 018–020: `tasks`, `task_reminders`, `users.daily_summary_time/morning_default_time`
+  - `task_store.py`, `reminder_store.py`, `reminder_engine.py`, `task_parser.py` (Haiku 4.5 tool-use)
+  - Telegram: 10 lệnh task + 3 lệnh lịch học (`danh sach lich hoc`, `sua lich hoc:`, `huy lich hoc:`)
+  - Web: CRUD `/tasks` routes + `templates/tasks.html`, `task_form.html`, `task_view.html`
+  - Scheduled jobs: `scan_reminders` (1 phút), `send_daily_summary`, `send_parent_digest`
+  - `core_handler.py` refactor → 7 cmd_* modules; `WebChannelAdapter.send_with_inline_keyboard` fix
 
 ---
 
 ### 🔔 Next session reminder (cho phiên tiếp theo)
 
-**FR-6 DONE — branch `feature/FR6`, staging tested, decisions #76-#82 logged, chờ merge vào `main`.**
+**FR-7 DONE — branch `feature/FR7`, 867 tests passing.**
 
-**Tiếp theo:** merge FR-6 → `main`, sau đó bắt đầu **FR-7** (Tasks + Reminders + Daily Summary + Parent Digest).
+**Tiếp theo:** merge FR-7 → `main`, sau đó bắt đầu **FR-8** (Anniversary / Memorial Reminders).
 
 ---
 
@@ -768,13 +783,13 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
 ---
 
 ### Immediate next steps
-1. Merge **FR-6** → `main` (branch `feature/FR6`, 82 tests, code complete)
-2. Bắt đầu **FR-7**: Tasks + Reminders + Daily Summary + Parent Digest
+1. Merge **FR-7** → `main` (branch `feature/FR7`, 867 tests passing)
+2. Bắt đầu **FR-8**: Anniversary / Memorial Reminders
    - Branch off từ `main`
-   - Lập `docs/FR-7-PLAN.md` chi tiết trước khi code
+   - Lập `docs/FR-8-PLAN.md` chi tiết trước khi code
 
 ### Pending FRs
-- **FR-7** (next), FR-8, FR-9 — sequential theo Section 5
+- **FR-8** (next), FR-9 — sequential theo Section 5
 
 ---
 

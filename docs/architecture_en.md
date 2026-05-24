@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-6** (Backup / Restore Tooling).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-7** (Tasks + Reminders + Daily Summary).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -19,7 +19,7 @@ A personal and family **knowledge management system** delivered primarily over T
 
 ## 2. Architecture — Hexagonal (Ports & Adapters)
 
-The system uses a **Modular Monolith** with a hexagonal architecture. All business logic lives in `core_handler.py` and depends only on *Protocols* (interfaces), never on concrete adapters. Concrete adapters are wired in `main.py`.
+The system uses a **Modular Monolith** with a hexagonal architecture. Business logic is organized across `cmd_*.py` modules and depends only on *Protocols* (interfaces), never on concrete adapters. `core_handler.py` acts as the command dispatcher — routing messages to the correct `cmd_*` handler. Concrete adapters are wired in `main.py`.
 
 ```
                   ┌──────────────────────┐
@@ -39,7 +39,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
        (future: OllamaLLM, LocalFSNoteStore, DiscordAdapter, WebAdapter)
 ```
 
-**Key rule:** `core_handler.py` never imports a concrete class. All adapter wiring happens in `main.py`.
+**Key rule:** `cmd_*.py` modules never import a concrete class. All adapter wiring happens in `main.py`.
 
 **Why Modular Monolith (not Microservices):**
 
@@ -59,27 +59,38 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 |------|------|
 | `main.py` | Wiring layer — instantiates adapters, routes webhook, health check |
 | `interfaces.py` | Protocols + `ChannelMessage` dataclass — the contract layer |
-| `core_handler.py` | Business logic, command dispatch, pending state machine |
-| `channel_telegram.py` | `TelegramAdapter` — parses Telegram webhook payloads, sends replies |
+| `core_handler.py` | Command dispatcher + `/start` + `/help`; routes messages to `cmd_*` handlers (FR-7 refactor) |
+| `deps.py` | `CoreDeps` dataclass — collects all dependencies injected into handlers (FR-4 refactor) |
+| `cmd_utils.py` | Shared helpers: pending state machine, ACL filter helpers, parsing utilities (FR-7) |
+| `cmd_user.py` | User management handlers: `them user`, `xoa user`, `doi role`, `dat birthdate`, `dat cha`, etc. (FR-7) |
+| `cmd_audit.py` | Audit + recycle bin handlers: `xem audit`, `xem thung rac`, `khoi phuc`, `xoa han` (FR-7) |
+| `cmd_notes.py` | Note/journal handlers: `ghi nho`, `nhat ky`, `xem`, `liet ke`, `tim`, `chia se` (FR-7) |
+| `cmd_sudo.py` | Sudo handlers: `sudo`, `thoat sudo`, `dat mat khau`, `dat web pass` (FR-7) |
+| `cmd_wiki.py` | Wiki + memory handlers: `wiki`, `hoi wiki`, `xem tri nho`, `cap nhat tri nho` (FR-7) |
+| `cmd_task.py` | Task + study schedule handlers + inline keyboard callback dispatcher (FR-7) |
+| `channel_telegram.py` | `TelegramAdapter` — parses Telegram webhook payloads, sends replies, `send_with_inline_keyboard` |
 | `claude_client.py` | `AnthropicLLM` — wraps Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — Google Drive notes storage |
 | `wiki_client.py` | `DriveWikiStore` — Google Drive wiki, uses LLM via DI |
-| `user_store.py` | `UserStore` — SQLite user registry, quota, parent links, password |
+| `user_store.py` | `UserStore` — SQLite user registry, quota, parent links, password, task preferences |
 | `note_index.py` | `SqliteNoteIndex` — SQLite ACL/index layer mapping Drive file IDs to owner + scope |
 | `memory_store.py` | `SqliteMemoryStore` — L1 memory (`memory` and `user` slots per user) |
+| `task_store.py` | `SqliteTaskStore` — task CRUD, query by user/status/category, soft-delete (FR-7) |
+| `reminder_store.py` | `SqliteReminderStore` — reminder CRUD, ready-to-fire query, cancel by task (FR-7) |
+| `reminder_engine.py` | `ReminderEngine` — scan + emit + lazy recurring expansion + parent mirror + grace window (FR-7) |
+| `task_parser.py` | `TaskParser` — Haiku 4.5 tool-use; parses free-form Vietnamese → `{title, deadline, recurring_rule}` (FR-7) |
 | `elevation_store.py` | `SqliteElevationStore` — sudo elevation sessions + failed-attempt rate-limit (FR-3.5) |
 | `audit.py` | `SqliteAuditLog` — append-only audit event writer; `AuditLog` Protocol (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — persistent notification queue CRUD (FR-4) |
 | `notification_service.py` | `NotificationService` — bridges store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
-| `scheduled_jobs.py` | APScheduler job definitions: 180d purge, purge-at-18, notification flush (FR-4) |
-| `deps.py` | `CoreDeps` dataclass — collects all dependencies injected into `core_handler` (FR-4 refactor) |
+| `scheduled_jobs.py` | APScheduler jobs: 180d purge, purge-at-18, notification flush, scan_reminders, daily_summary, parent_digest (FR-4, FR-7) |
 | `web_session_store.py` | `SqliteWebSessionStore` — DB-revocable web sessions (no JWT); find/revoke/create (FR-5) |
-| `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; connect/disconnect/send (FR-5, refactored FR-5.5) |
-| `web_router.py` | FastAPI web router: `/login`, `/logout`, `/setup-password`, `/chat`, `/chat/<id>`, SSE, conversations API (FR-5, FR-5.5) |
+| `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
+| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD routes (FR-5, FR-5.5, FR-7) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — conversation + message CRUD; LIKE search; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — in-memory ZIP export, transactional parse/apply import, Drive upload to `Claude-Notes/Backups/`, 5-min/user rate-limit (FR-6) |
 | `tools/local_migrate.py` | Standalone CLI: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html` (glass/dark mode, collapsible sidebar), `import.html` (FR-5, FR-5.5, FR-6) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html` (FR-5 → FR-7) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
@@ -90,7 +101,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. All busine
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–015) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–020) |
 
 ---
 
@@ -134,6 +145,8 @@ Core identity table. One row per registered user. Soft-deleted users have `delet
 | `must_change_password` | INTEGER | 0 = normal; 1 = force-reset on next web login (FR-5) |
 | `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
 | `deleted_at` | DATETIME | Soft-delete marker; NULL = active |
+| `daily_summary_time` | TEXT | `NULL` = default 21:00; `'off'` = disabled; `'HH:MM'` = custom *(FR-7)* |
+| `morning_default_time` | TEXT | `NULL` = default 09:00; `'HH:MM'` = custom — used when task has no explicit time *(FR-7)* |
 
 #### `channel_bindings`
 Maps a Telegram `chat_id` (or other channel identifier) to a user.
@@ -335,6 +348,44 @@ Each chat turn (user or bot) is one row. Retained indefinitely — no auto-purge
 | `created_at` | DATETIME | Default `CURRENT_TIMESTAMP` |
 
 Indexes: `(conversation_id, created_at)`, `(conversation_id, text)` — text index supports LIKE search.
+
+#### `tasks` *(FR-7)*
+Task CRUD. Category `study` covers recurring children's study schedules. Soft-delete via `deleted_at`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `title` | TEXT NOT NULL | Short task title |
+| `description` | TEXT | Optional detail |
+| `deadline` | TEXT NOT NULL | ISO datetime +07:00 |
+| `category` | TEXT | `task` \| `study` \| `reminder` — default `task` |
+| `scope` | TEXT | `private` (v1 only) |
+| `recurring_rule` | TEXT | NULL = one-shot; e.g. `weekly:MON,WED@07:00` or `daily@21:00` |
+| `reminder_offsets` | TEXT | CSV seconds: default `7200,3600,1800,900` (2h/1h/30m/15m) |
+| `status` | TEXT | `pending` \| `completed` \| `cancelled` |
+| `completed_at` | TEXT | ISO datetime; NULL if not done |
+| `snooze_count` | INTEGER | Number of times snoozed |
+| `source` | TEXT | `telegram` \| `web` |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Indexes: `(user_id, status)`, `(deadline)` WHERE pending, `(recurring_rule)` WHERE not null.
+
+#### `task_reminders` *(FR-7)*
+One row per reminder fire point per task. When a recurring task's reminder fires, the engine computes the next occurrence and inserts new rows (lazy expansion).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `task_id` | INTEGER FK → tasks | |
+| `fire_at` | TEXT NOT NULL | ISO datetime +07:00 — when to fire |
+| `offset_seconds` | INTEGER | Distance from deadline (e.g. 7200 = 2h before) |
+| `kind` | TEXT | `scheduled` \| `snoozed` |
+| `status` | TEXT | `pending` \| `fired` \| `missed` \| `cancelled` |
+| `fired_at` | TEXT | ISO datetime; NULL if not yet fired |
+| `created_at` | TEXT | ISO timestamp |
+
+Partial index: `(fire_at, status) WHERE status = 'pending'` — `scan_reminders` job scans only pending rows.
 
 ---
 
