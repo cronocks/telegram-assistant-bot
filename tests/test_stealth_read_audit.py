@@ -19,7 +19,7 @@ import pytest
 
 from audit import SqliteAuditLog
 from deps import CoreDeps
-from core_handler import _acl_filter_notes, _visible_notes_with_meta
+from cmd_utils import _acl_filter_notes, _visible_notes_with_meta
 from note_index import SqliteNoteIndex
 
 

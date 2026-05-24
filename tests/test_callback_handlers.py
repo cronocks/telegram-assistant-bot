@@ -36,7 +36,7 @@ def _run(coro):
 
 def _import_handle_callback():
     """Lazy import so TelegramAdapter tests still run if _handle_callback not yet implemented."""
-    from core_handler import _handle_callback  # noqa: PLC0415
+    from cmd_task import _handle_callback  # noqa: PLC0415
     return _handle_callback
 
 

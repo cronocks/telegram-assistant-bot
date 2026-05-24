@@ -40,17 +40,17 @@ def _now_at(hour: int, minute: int = 0) -> datetime:
 
 
 def _import_cmd_tom_tat():
-    from core_handler import _cmd_tom_tat_hom_nay  # noqa: PLC0415
+    from cmd_task import _cmd_tom_tat_hom_nay  # noqa: PLC0415
     return _cmd_tom_tat_hom_nay
 
 
 def _import_cmd_cau_hinh_tong_ket():
-    from core_handler import _cmd_cau_hinh_tong_ket  # noqa: PLC0415
+    from cmd_task import _cmd_cau_hinh_tong_ket  # noqa: PLC0415
     return _cmd_cau_hinh_tong_ket
 
 
 def _import_cmd_cau_hinh_gio_mac_dinh():
-    from core_handler import _cmd_cau_hinh_gio_mac_dinh  # noqa: PLC0415
+    from cmd_task import _cmd_cau_hinh_gio_mac_dinh  # noqa: PLC0415
     return _cmd_cau_hinh_gio_mac_dinh
 
 

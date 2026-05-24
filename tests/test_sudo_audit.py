@@ -14,7 +14,7 @@ import pytest
 
 from audit import SqliteAuditLog
 from deps import CoreDeps
-from core_handler import (
+from cmd_sudo import (
     _cmd_dat_mat_khau,
     _cmd_sudo,
     _cmd_thoat_sudo,

@@ -11,7 +11,7 @@ import pytest
 
 from audit import SqliteAuditLog
 from deps import CoreDeps
-from core_handler import (
+from cmd_audit import (
     _cmd_khoi_phuc,
     _cmd_xem_thung_rac,
     _cmd_xoa_han,
