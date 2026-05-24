@@ -97,6 +97,7 @@ async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
         "📝 *Ghi chu & Nhat ky* — `/help ghi chu`\n"
         "📚 *Wiki* — `/help wiki`\n"
         "🧠 *Tri nho* — `/help tri nho`\n"
+        "📋 *Cong viec* — `/help cong viec`\n"
         "👥 *Nguoi dung* — `/help nguoi dung`\n"
         "💰 *Quota* — `/help quota`\n"
         "🔍 *Tim kiem & Xem* — `/help xem`\n"
@@ -159,6 +160,20 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`xem ho so` — Xem ho so ca nhan cua ban\n"
         "`cap nhat tri nho` — Cap nhat bo nho tu ghi chu gan day (LLM curation)",
     ),
+    "cong viec": (
+        "📋 *CONG VIEC (TASK)*",
+        "`tao task: [mo ta]` — Tao task moi (LLM parse deadline tu mo ta tu nhien)\n"
+        "`task: [mo ta]` — Tuong duong tao task\n"
+        "`xong task: [id]` — Danh dau task hoan thanh\n"
+        "`huy task: [id]` — Huy task\n"
+        "`task [id]` — Xem chi tiet task\n"
+        "`danh sach task` — Liet ke task dang cho\n"
+        "`lich hoc: [mo ta]` — Tao lich hoc (recurring; category=study)\n"
+        "`hoan task: [id] [phut]` — Hoan task them N phut\n"
+        "`tom tat hom nay` — Tong ket task hom nay\n"
+        "`cau hinh tong ket: [HH:MM | tat]` — Doi gio gui tong ket hang ngay\n"
+        "`cau hinh gio mac dinh: [HH:MM]` — Doi gio mac dinh cho task 'mai'",
+    ),
     "sudo": (
         "🔐 *QUAN TRI (SUDO)*",
         "`sudo: [mat khau]` — Nang quyen len admin trong 15 phut (chi role manager)\n"
@@ -195,6 +210,9 @@ _HELP_ALIASES: dict[str, str] = {
     "xem": "xem",
     "tri nho": "tri nho",
     "trí nhớ": "tri nho",
+    "cong viec": "cong viec",
+    "công việc": "cong viec",
+    "task": "cong viec",
     "he thong": "he thong",
     "hệ thống": "he thong",
     "sudo": "sudo",
