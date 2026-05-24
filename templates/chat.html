@@ -408,7 +408,10 @@ function chatApp() {
         this.messages = this.messages.filter(m => m.role !== 'thinking');
         this.messages.push({ role: 'bot', text: data.text });
         this.sending = false;
-        this.$nextTick(() => this.scrollBottom());
+        this.$nextTick(() => {
+          this.scrollBottom();
+          this.$refs.input && this.$refs.input.focus();
+        });
       } else if (data.type === 'title_update') {
         const c = this.conversations.find(c => c.id === this.activeConvId);
         if (c) c.title = data.title;
