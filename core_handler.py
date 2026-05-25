@@ -239,6 +239,8 @@ _HELP_ALIASES: dict[str, str] = {
     "cong viec": "cong viec",
     "công việc": "cong viec",
     "task": "cong viec",
+    "ky niem": "ky niem",
+    "kỷ niệm": "ky niem",
     "he thong": "he thong",
     "hệ thống": "he thong",
     "sudo": "sudo",
