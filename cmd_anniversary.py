@@ -52,11 +52,11 @@ def parse_anniversary_input(body: str) -> dict:
         raise ParseAnniversaryError("Tên kỷ niệm không được để trống.")
 
     date_part = parts[1].strip()
-    # Optional trailing "nhuận"/"nhuan" after the date numbers.
-    m = re.match(r"^(\S+)\s+(\d{1,2})\s*/\s*(\d{1,2})(?:\s+\S+)?$", date_part)
+    # Format: <type> DD/MM[/YYYY][ nhuận]
+    m = re.match(r"^(\S+)\s+(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{4}))?(?:\s+\S+)?$", date_part)
     if not m:
         raise ParseAnniversaryError(
-            f"Định dạng ngày sai: {date_part!r}. Dùng 'âm DD/MM' hoặc 'dương DD/MM'."
+            f"Định dạng ngày sai: {date_part!r}. Dùng 'âm DD/MM' hoặc 'âm DD/MM/YYYY'."
         )
     dt_key = _normalize_token(m.group(1))
     if dt_key not in DATE_TYPE_MAP:
@@ -67,6 +67,7 @@ def parse_anniversary_input(body: str) -> dict:
     try:
         day = int(m.group(2))
         month = int(m.group(3))
+        year = int(m.group(4)) if m.group(4) else None
     except ValueError:
         raise ParseAnniversaryError(f"Ngày/tháng sai: {date_part!r}")
     if not (1 <= month <= 12) or not (1 <= day <= 31):
@@ -89,8 +90,8 @@ def parse_anniversary_input(body: str) -> dict:
 
     return {
         "name": name, "date_type": date_type,
-        "day": day, "month": month, "is_leap_month": is_leap_month,
-        "category": category,
+        "day": day, "month": month, "year": year,
+        "is_leap_month": is_leap_month, "category": category,
     }
 
 
@@ -103,7 +104,9 @@ def parse_anniversary_id(body: str) -> int | None:
 
 def _format_date_human(row: dict) -> str:
     label = "Âm" if row["date_type"] == "lunar" else "Dương"
-    return f"{label} {row['day']:02d}/{row['month']:02d}"
+    leap = " (nhuận)" if row.get("is_leap_month") else ""
+    year_str = f"/{row['year']}" if row.get("year") else ""
+    return f"{label} {row['day']:02d}/{row['month']:02d}{year_str}{leap}"
 
 
 def _format_list(rows: list[dict]) -> str:
@@ -284,7 +287,7 @@ async def _cmd_sua_ky_niem(chat_id, body, user, deps: CoreDeps) -> None:
         if key in ("ten", "name"):
             updates["name"] = val
         elif key in ("ngay", "date"):
-            m = re.match(r"^(\S+)\s+(\d{1,2})\s*/\s*(\d{1,2})(?:\s+\S+)?$", val)
+            m = re.match(r"^(\S+)\s+(\d{1,2})\s*/\s*(\d{1,2})(?:\s*/\s*(\d{4}))?(?:\s+\S+)?$", val)
             if not m:
                 await deps.channel.send(
                     chat_id, f"Định dạng ngày sai: {val!r}", use_markdown=False,
@@ -300,6 +303,7 @@ async def _cmd_sua_ky_niem(chat_id, body, user, deps: CoreDeps) -> None:
             updates["date_type"] = new_date_type
             updates["day"] = int(m.group(2))
             updates["month"] = int(m.group(3))
+            updates["year"] = int(m.group(4)) if m.group(4) else None
             updates["is_leap_month"] = (
                 1 if new_date_type == "lunar" and "nhuan" in normalize_vn(val).lower() else 0
             )

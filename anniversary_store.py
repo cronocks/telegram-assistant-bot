@@ -51,6 +51,7 @@ class SqliteAnniversaryStore:
         month: int,
         day: int,
         *,
+        year: int | None = None,
         is_leap_month: int = 0,
         category: str = "khac",
         reminder_offsets: str = DEFAULT_OFFSETS,
@@ -70,13 +71,13 @@ class SqliteAnniversaryStore:
             cur = self._conn.execute(
                 """
                 INSERT INTO anniversaries (
-                    user_id, name, date_type, month, day, is_leap_month, category,
+                    user_id, name, date_type, month, day, year, is_leap_month, category,
                     reminder_offsets, enabled, note, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    user_id, name.strip(), date_type, month, day, is_leap_month, category,
-                    reminder_offsets, enabled, note, now, now,
+                    user_id, name.strip(), date_type, month, day, year, is_leap_month,
+                    category, reminder_offsets, enabled, note, now, now,
                 ),
             )
         return self.get_anniversary(cur.lastrowid)
@@ -112,7 +113,7 @@ class SqliteAnniversaryStore:
 
     def update_anniversary(self, anniversary_id: int, **fields) -> dict | None:
         allowed = {
-            "name", "date_type", "month", "day", "is_leap_month", "category",
+            "name", "date_type", "month", "day", "year", "is_leap_month", "category",
             "reminder_offsets", "enabled", "note",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}

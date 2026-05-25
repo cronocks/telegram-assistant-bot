@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS anniversaries (
     date_type           TEXT    NOT NULL,                          -- 'lunar' | 'solar'
     month               INTEGER NOT NULL,                          -- 1-12
     day                 INTEGER NOT NULL,                          -- 1-30 (lunar may be 30)
+    year                INTEGER,                                   -- optional: original year of the event
     category            TEXT    NOT NULL DEFAULT 'khac',           -- 'gio' | 'cuoi' | 'khac'
     is_leap_month       INTEGER NOT NULL DEFAULT 0,                -- 1 = lunar leap month (tháng nhuận)
     reminder_offsets    TEXT    NOT NULL DEFAULT '30,15,7,3,1,0',  -- CSV days before (0 = on the day)

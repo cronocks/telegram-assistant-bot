@@ -239,6 +239,29 @@ def test_restore_clears_deleted_at(anniv_store, member_user):
 # ── is_leap_month ─────────────────────────────────────────────────────────────
 
 
+def test_create_with_year(anniv_store, member_user):
+    row = anniv_store.create_anniversary(
+        user_id=member_user.id, name="Giỗ anh", date_type="lunar",
+        month=5, day=9, year=1987,
+    )
+    assert row["year"] == 1987
+
+
+def test_create_default_year_is_none(anniv_store, member_user):
+    row = anniv_store.create_anniversary(
+        user_id=member_user.id, name="X", date_type="lunar", month=1, day=1,
+    )
+    assert row["year"] is None
+
+
+def test_update_year(anniv_store, member_user):
+    a = anniv_store.create_anniversary(
+        user_id=member_user.id, name="X", date_type="lunar", month=1, day=1,
+    )
+    updated = anniv_store.update_anniversary(a["id"], year=2005)
+    assert updated["year"] == 2005
+
+
 def test_create_with_is_leap_month_true(anniv_store, member_user):
     row = anniv_store.create_anniversary(
         user_id=member_user.id, name="Giỗ tháng nhuận", date_type="lunar",

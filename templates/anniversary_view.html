@@ -28,7 +28,7 @@
     <div class="meta-label">Ngày</div>
     <div class="meta-value">
       {% if anniversary.date_type == 'lunar' %}Âm lịch{% else %}Dương lịch{% endif %}
-      — {{ "%02d"|format(anniversary.day) }}/{{ "%02d"|format(anniversary.month) }}
+      — {{ "%02d"|format(anniversary.day) }}/{{ "%02d"|format(anniversary.month) }}{% if anniversary.year %}/{{ anniversary.year }}{% endif %}
       {% if anniversary.date_type == 'lunar' and anniversary.is_leap_month %}<em>(tháng nhuận)</em>{% endif %}
     </div>
   </div>
