@@ -75,7 +75,7 @@ def test_parse_full_lunar():
     p = parse_anniversary_input("Giỗ ông nội, âm 10/3, giỗ")
     assert p == {
         "name": "Giỗ ông nội", "date_type": "lunar",
-        "day": 10, "month": 3, "category": "gio", "is_leap_month": 0,
+        "day": 10, "month": 3, "year": None, "category": "gio", "is_leap_month": 0,
     }
 
 
@@ -123,6 +123,24 @@ def test_parse_rejects_out_of_range():
 def test_parse_rejects_invalid_category():
     with pytest.raises(ParseAnniversaryError):
         parse_anniversary_input("X, dương 1/1, weird")
+
+
+def test_parse_with_year():
+    p = parse_anniversary_input("Giỗ anh, âm 9/5/1987, giỗ")
+    assert p["day"] == 9
+    assert p["month"] == 5
+    assert p["year"] == 1987
+
+
+def test_parse_without_year_defaults_none():
+    p = parse_anniversary_input("Giỗ ông, âm 10/3, giỗ")
+    assert p["year"] is None
+
+
+def test_parse_solar_with_year():
+    p = parse_anniversary_input("Kỷ niệm cưới, dương 15/8/2010, cưới")
+    assert p["year"] == 2010
+    assert p["date_type"] == "solar"
 
 
 def test_parse_leap_month_flag():

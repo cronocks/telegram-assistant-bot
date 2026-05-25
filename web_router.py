@@ -860,12 +860,15 @@ def _form_to_anniv_kwargs(form: dict) -> dict:
     category = (form.get("category") or "khac").strip()
     offsets = (form.get("reminder_offsets") or "30,15,7,3,1,0").strip()
     note = (form.get("note") or "").strip() or None
+    year_raw = (form.get("year") or "").strip()
+    year = int(year_raw) if year_raw.isdigit() else None
     # Checkbox: present in form = 1 (checked), absent = 0 (unchecked).
     # Only meaningful for lunar; ignored for solar.
     is_leap_month = 1 if date_type == "lunar" and form.get("is_leap_month") == "1" else 0
     return {
         "name": name, "date_type": date_type,
-        "day": day, "month": month, "is_leap_month": is_leap_month,
+        "day": day, "month": month, "year": year,
+        "is_leap_month": is_leap_month,
         "category": category, "reminder_offsets": offsets, "note": note,
     }
 
