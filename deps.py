@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from anniversary_engine import AnniversaryEngine
+    from anniversary_store import SqliteAnniversaryStore
     from backup_engine import BackupEngine
     from interfaces import ReminderStore, TaskStore
     from reminder_engine import ReminderEngine
@@ -48,3 +50,5 @@ class CoreDeps:
     reminder_store: "ReminderStore | None" = None
     reminder_engine: "ReminderEngine | None" = None
     task_parser: "TaskParser | None" = None
+    anniversary_store: "SqliteAnniversaryStore | None" = None
+    anniversary_engine: "AnniversaryEngine | None" = None

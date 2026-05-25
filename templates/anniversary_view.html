@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}{{ anniversary.name }} — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .view-container { max-width: 540px; margin: 2rem auto; padding: 0 1rem; }
+  .view-container h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1rem; color: var(--text); }
+  .meta-row { display: flex; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+  .meta-label { width: 8rem; color: var(--text-muted); font-size: 0.9rem; }
+  .meta-value { color: var(--text); }
+  .actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+  .btn { padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; border: none; font-size: 1rem; cursor: pointer; }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .btn-danger { background: #ef4444; color: white; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="view-container">
+  <h1>
+    {% if anniversary.category == 'gio' %}🕯{% elif anniversary.category == 'cuoi' %}💐{% else %}📅{% endif %}
+    {{ anniversary.name }}
+  </h1>
+
+  <div class="meta-row">
+    <div class="meta-label">Ngày</div>
+    <div class="meta-value">
+      {% if anniversary.date_type == 'lunar' %}Âm lịch{% else %}Dương lịch{% endif %}
+      — {{ "%02d"|format(anniversary.day) }}/{{ "%02d"|format(anniversary.month) }}
+      {% if anniversary.date_type == 'lunar' and anniversary.is_leap_month %}<em>(tháng nhuận)</em>{% endif %}
+    </div>
+  </div>
+  <div class="meta-row">
+    <div class="meta-label">Loại</div>
+    <div class="meta-value">{{ anniversary.category }}</div>
+  </div>
+  <div class="meta-row">
+    <div class="meta-label">Nhắc trước</div>
+    <div class="meta-value">{{ anniversary.reminder_offsets }} ngày</div>
+  </div>
+  <div class="meta-row">
+    <div class="meta-label">Trạng thái</div>
+    <div class="meta-value">{% if anniversary.enabled %}✅ Bật{% else %}⚪ Tắt{% endif %}</div>
+  </div>
+  {% if anniversary.note %}
+  <div class="meta-row">
+    <div class="meta-label">Ghi chú</div>
+    <div class="meta-value">{{ anniversary.note }}</div>
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    <a href="/anniversaries/{{ anniversary.id }}/edit" class="btn btn-primary">✏️ Sửa</a>
+    <form method="POST" action="/anniversaries/{{ anniversary.id }}/delete" style="display: inline;">
+      <button type="submit" class="btn btn-danger"
+              onclick="return confirm('Xoá kỷ niệm này?');">🗑 Xoá</button>
+    </form>
+    <a href="/anniversaries" class="btn btn-secondary">← Danh sách</a>
+  </div>
+</div>
+{% endblock %}

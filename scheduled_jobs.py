@@ -42,6 +42,8 @@ JOB_ID_NOTIF_FLUSH = "fr4_flush_notifications"
 JOB_ID_SCAN_REMINDERS = "fr7_scan_reminders"
 JOB_ID_DAILY_SUMMARY = "fr7_daily_summary"
 JOB_ID_PARENT_DIGEST = "fr7_parent_digest"
+JOB_ID_ANNIV_TICK = "fr8_anniversary_tick"
+JOB_ID_ANNIV_COMPUTE_YEAR = "fr8_anniversary_compute_year"
 
 _DOW_MAP = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
 
@@ -496,6 +498,48 @@ def _try_drive_delete(adapter, drive_file_id: str | None) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FR-8 — Anniversary jobs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def anniversary_tick(deps: "CoreDeps") -> dict:
+    """Fire any anniversary reminders due now (called every 60s).
+
+    Returns the engine's stats dict for logging/observability.
+    Errors are logged and swallowed — never propagate to break the scheduler.
+    """
+    if deps.anniversary_engine is None:
+        return {"fired": 0, "missed": 0}
+    try:
+        return deps.anniversary_engine.tick()
+    except Exception:
+        logger.exception("anniversary_tick: unexpected error")
+        return {"fired": 0, "missed": 0, "error": True}
+
+
+def compute_anniversary_year(deps: "CoreDeps") -> int:
+    """Compute reminder rows for the current solar year (Jan 1st + startup).
+
+    Idempotent — UNIQUE(anniversary_id, year, offset_days) on the table.
+    Returns count of new rows inserted.
+    """
+    if deps.anniversary_engine is None:
+        return 0
+    try:
+        year = datetime.now(VN_TZ).year
+        inserted = deps.anniversary_engine.compute_year(year)
+        # Also seed next year if we're in the last 60 days — keeps long-range
+        # offsets (30-day) intact when reminders cross the Jan 1st boundary.
+        today = datetime.now(VN_TZ).date()
+        if (date(today.year, 12, 31) - today).days <= 60:
+            deps.anniversary_engine.compute_year(year + 1)
+        return inserted
+    except Exception:
+        logger.exception("compute_anniversary_year: unexpected error")
+        return 0
+
+
 def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
     """Register FR-4 scheduled jobs with the given APScheduler instance.
 
@@ -548,3 +592,25 @@ def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
         id=JOB_ID_PARENT_DIGEST,
         replace_existing=True,
     )
+
+    # FR-8 anniversary jobs.
+    if deps.anniversary_engine is not None:
+        scheduler.add_job(
+            anniversary_tick,
+            args=[deps],
+            trigger="interval",
+            seconds=60,
+            id=JOB_ID_ANNIV_TICK,
+            replace_existing=True,
+        )
+        # Annual compute runs at 00:05 Jan 1st VN. We also kick off an immediate
+        # run at startup via `next_run_time=now` so newly-deployed bots populate
+        # current-year reminders without waiting until next Jan 1st.
+        scheduler.add_job(
+            compute_anniversary_year,
+            args=[deps],
+            trigger=CronTrigger(month=1, day=1, hour=0, minute=5, timezone=VN_TZ),
+            id=JOB_ID_ANNIV_COMPUTE_YEAR,
+            replace_existing=True,
+            next_run_time=datetime.now(VN_TZ),
+        )

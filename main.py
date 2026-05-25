@@ -41,6 +41,9 @@ from task_store import SqliteTaskStore
 from reminder_store import SqliteReminderStore
 from reminder_engine import ReminderEngine
 from task_parser import TaskParser
+from anniversary_store import SqliteAnniversaryStore
+from anniversary_engine import AnniversaryEngine
+from db.connection import get_connection
 
 _REGISTER_PREFIXES = ("dang ky:", "đăng ký:")
 
@@ -90,6 +93,14 @@ reminder_engine = ReminderEngine(
     audit=audit,
 )
 task_parser = TaskParser()
+anniversary_store = SqliteAnniversaryStore()
+anniversary_engine = AnniversaryEngine(
+    anniv_store=anniversary_store,
+    user_store=user_store,
+    notification_service=notif_service,
+    audit=audit,
+    conn=get_connection(),
+)
 
 deps = CoreDeps(
     llm=llm,
@@ -108,6 +119,8 @@ deps = CoreDeps(
     reminder_store=reminder_store,
     reminder_engine=reminder_engine,
     task_parser=task_parser,
+    anniversary_store=anniversary_store,
+    anniversary_engine=anniversary_engine,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -128,6 +141,8 @@ web_deps = CoreDeps(
     reminder_store=reminder_store,
     reminder_engine=reminder_engine,
     task_parser=task_parser,
+    anniversary_store=anniversary_store,
+    anniversary_engine=anniversary_engine,
 )
 
 
@@ -201,6 +216,8 @@ init_web_router(
     conv_store=web_conv_store,
     backup_engine=backup_engine,
     task_store=task_store,
+    anniversary_store=anniversary_store,
+    anniversary_engine=anniversary_engine,
 )
 
 
