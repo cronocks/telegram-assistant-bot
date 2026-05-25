@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+
+{% block title %}Kỷ niệm — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .anniv-container { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  .anniv-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .anniv-header h1 { font-size: 1.5rem; font-weight: 700; color: var(--text); }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; }
+  .anniv-list { list-style: none; padding: 0; }
+  .anniv-item { padding: 0.75rem; border-radius: 0.5rem; background: var(--surface); margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
+  .anniv-item a { color: var(--text); text-decoration: none; }
+  .anniv-meta { font-size: 0.85rem; color: var(--text-muted); }
+  .anniv-disabled { opacity: 0.5; }
+  .empty { color: var(--text-muted); text-align: center; padding: 2rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="anniv-container">
+  <div class="anniv-header">
+    <h1>📅 Kỷ niệm của tôi</h1>
+    <a href="/anniversaries/new" class="btn-primary">+ Thêm</a>
+  </div>
+
+  {% if anniversaries %}
+    <ul class="anniv-list">
+      {% for a in anniversaries %}
+      <li class="anniv-item {% if not a.enabled %}anniv-disabled{% endif %}">
+        <div>
+          <a href="/anniversaries/{{ a.id }}">
+            {% if a.category == 'gio' %}🕯{% elif a.category == 'cuoi' %}💐{% else %}📅{% endif %}
+            <strong>{{ a.name }}</strong>
+          </a>
+          <div class="anniv-meta">
+            {% if a.date_type == 'lunar' %}Âm{% else %}Dương{% endif %} {{ "%02d"|format(a.day) }}/{{ "%02d"|format(a.month) }}
+            · Nhắc trước: {{ a.reminder_offsets }} ngày
+            {% if not a.enabled %} · (đang tắt){% endif %}
+          </div>
+        </div>
+        <a href="/anniversaries/{{ a.id }}/edit">✏️</a>
+      </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">Bạn chưa có kỷ niệm nào.<br>Bấm <a href="/anniversaries/new">+ Thêm</a> để bắt đầu.</div>
+  {% endif %}
+</div>
+{% endblock %}

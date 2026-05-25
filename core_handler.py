@@ -55,6 +55,13 @@ from cmd_task import (
     _cmd_xong_task,
     _handle_callback,
 )
+from cmd_anniversary import (
+    _cmd_danh_sach_ky_niem,
+    _cmd_sua_ky_niem,
+    _cmd_them_ky_niem,
+    _cmd_xem_ky_niem,
+    _cmd_xoa_ky_niem,
+)
 from cmd_user import (
     _cmd_dat_birthdate,
     _cmd_dat_cha,
@@ -101,6 +108,7 @@ async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
         "📚 *Wiki* — `/help wiki`\n"
         "🧠 *Tri nho* — `/help tri nho`\n"
         "📋 *Cong viec* — `/help cong viec`\n"
+        "📅 *Ky niem* — `/help ky niem`\n"
         "👥 *Nguoi dung* — `/help nguoi dung`\n"
         "💰 *Quota* — `/help quota`\n"
         "🔍 *Tim kiem & Xem* — `/help xem`\n"
@@ -179,6 +187,18 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`tom tat hom nay` — Tong ket task hom nay\n"
         "`cau hinh tong ket: [HH:MM | tat]` — Doi gio gui tong ket hang ngay\n"
         "`cau hinh gio mac dinh: [HH:MM]` — Doi gio mac dinh cho task 'mai'",
+    ),
+    "ky niem": (
+        "📅 *KY NIEM (ANNIVERSARY)*",
+        "`them ky niem: [ten], am/duong DD/MM, [loai]` — Tao moi (loai: gio/cuoi/khac)\n"
+        "  Vi du: `them ky niem: Gio ong noi, am 10/3, gio`\n"
+        "  Vi du: `them ky niem: Ky niem cuoi, duong 15/8, cuoi`\n"
+        "`danh sach ky niem` — Liet ke tat ca ky niem cua ban\n"
+        "`ky niem [id]` — Xem chi tiet 1 ky niem\n"
+        "`sua ky niem: [id], ten=..., ngay=am/duong DD/MM, loai=..., nhac=...` — Cap nhat\n"
+        "`xoa ky niem: [id]` — Xoa (soft-delete)\n\n"
+        "Mac dinh nhac truoc: 30/15/7/3/1 ngay + dung ngay (08:00 sang).\n"
+        "Ngay am lich tu dong quy doi sang duong moi nam.",
     ),
     "sudo": (
         "🔐 *QUAN TRI (SUDO)*",
@@ -594,6 +614,13 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "CAU_HINH_TONG_KET":     ["cấu hình tổng kết: ", "cau hinh tong ket: "],
     "CAU_HINH_GIO_MAC_DINH": ["cấu hình giờ mặc định: ", "cau hinh gio mac dinh: "],
     "TOM_TAT_HOM_NAY":       ["tóm tắt hôm nay", "tom tat hom nay"],
+    # ── FR-8 anniversary commands ────────────────────────────────────────────
+    # Longer prefixes first within each group to avoid swallowing shorter ones.
+    "THEM_KY_NIEM":     ["thêm kỷ niệm: ", "them ky niem: "],
+    "XOA_KY_NIEM":      ["xóa kỷ niệm: ", "xoa ky niem: "],
+    "SUA_KY_NIEM":      ["sửa kỷ niệm: ", "sua ky niem: ", "đổi kỷ niệm: ", "doi ky niem: "],
+    "DANH_SACH_KY_NIEM": ["danh sách kỷ niệm", "danh sach ky niem"],
+    "XEM_KY_NIEM":      ["kỷ niệm ", "ky niem "],
 }
 
 
@@ -644,6 +671,9 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         # FR-7 non-LLM task commands.
         "XONG_TASK", "HUY_TASK", "DANH_SACH_TASK", "XEM_TASK", "HOAN_TASK",
         "TOM_TAT_HOM_NAY", "CAU_HINH_TONG_KET", "CAU_HINH_GIO_MAC_DINH",
+        # FR-8 anniversary commands — no LLM, all structured parse.
+        "THEM_KY_NIEM", "XOA_KY_NIEM", "SUA_KY_NIEM",
+        "DANH_SACH_KY_NIEM", "XEM_KY_NIEM",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -777,6 +807,16 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_cau_hinh_tong_ket(chat_id, remainder, user, deps); return
         if cmd_id == "CAU_HINH_GIO_MAC_DINH":
             await _cmd_cau_hinh_gio_mac_dinh(chat_id, remainder, user, deps); return
+        if cmd_id == "THEM_KY_NIEM":
+            await _cmd_them_ky_niem(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_KY_NIEM":
+            await _cmd_xoa_ky_niem(chat_id, remainder, user, deps); return
+        if cmd_id == "SUA_KY_NIEM":
+            await _cmd_sua_ky_niem(chat_id, remainder, user, deps); return
+        if cmd_id == "DANH_SACH_KY_NIEM":
+            await _cmd_danh_sach_ky_niem(chat_id, user, deps); return
+        if cmd_id == "XEM_KY_NIEM":
+            await _cmd_xem_ky_niem(chat_id, remainder, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)

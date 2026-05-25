@@ -70,6 +70,8 @@ _elevation_store: ElevationStore | None = None
 _conv_store: WebConversationStore | None = None
 _backup_engine: BackupEngine | None = None
 _task_store = None  # SqliteTaskStore | None — injected at startup
+_anniversary_store = None  # SqliteAnniversaryStore | None — injected at startup (FR-8)
+_anniversary_engine = None  # AnniversaryEngine | None — injected at startup (FR-8)
 
 # Import preview token store: token → {parsed: ParsedImport, expires_at: datetime}
 _import_tokens: dict[str, dict] = {}
@@ -94,10 +96,13 @@ def init_web_router(
     conv_store: WebConversationStore,
     backup_engine: BackupEngine | None = None,
     task_store=None,
+    anniversary_store=None,
+    anniversary_engine=None,
 ) -> None:
     """Wire dependencies into this router (called once from main.py lifespan)."""
     global _templates, _web_channel, _session_store, _user_store
     global _audit, _elevation_store, _conv_store, _backup_engine, _task_store
+    global _anniversary_store, _anniversary_engine
     _templates = templates
     _web_channel = web_channel
     _session_store = session_store
@@ -107,6 +112,8 @@ def init_web_router(
     _conv_store = conv_store
     _backup_engine = backup_engine
     _task_store = task_store
+    _anniversary_store = anniversary_store
+    _anniversary_engine = anniversary_engine
     # Also inject conv_store into the channel adapter for bot-reply persistence
     web_channel.set_conv_store(conv_store)
 
@@ -825,6 +832,226 @@ async def tasks_page(
             "today": today_str,
         },
     )
+
+
+# ── Anniversary routes (FR-8) ─────────────────────────────────────────────────
+
+
+def _parse_int_or_400(s: str) -> int:
+    try:
+        return int(s)
+    except ValueError:
+        raise ValueError(f"Invalid integer: {s!r}")
+
+
+def _form_to_anniv_kwargs(form: dict) -> dict:
+    """Convert POST form dict to create_anniversary kwargs. Raises ValueError on bad input."""
+    name = (form.get("name") or "").strip()
+    if not name:
+        raise ValueError("Tên kỷ niệm không được để trống.")
+    date_type = (form.get("date_type") or "").strip()
+    if date_type not in ("lunar", "solar"):
+        raise ValueError(f"date_type must be lunar|solar, got {date_type!r}")
+    try:
+        day = int(form.get("day", "0"))
+        month = int(form.get("month", "0"))
+    except (TypeError, ValueError):
+        raise ValueError("day/month must be integers")
+    category = (form.get("category") or "khac").strip()
+    offsets = (form.get("reminder_offsets") or "30,15,7,3,1,0").strip()
+    note = (form.get("note") or "").strip() or None
+    # Checkbox: present in form = 1 (checked), absent = 0 (unchecked).
+    # Only meaningful for lunar; ignored for solar.
+    is_leap_month = 1 if date_type == "lunar" and form.get("is_leap_month") == "1" else 0
+    return {
+        "name": name, "date_type": date_type,
+        "day": day, "month": month, "is_leap_month": is_leap_month,
+        "category": category, "reminder_offsets": offsets, "note": note,
+    }
+
+
+@router.get("/anniversaries", response_class=HTMLResponse)
+async def anniversaries_list(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    assert _templates is not None
+    rows = _anniversary_store.list_for_user(user.id) if _anniversary_store else []
+    return _templates.TemplateResponse(
+        request, "anniversaries.html",
+        {"user": user, "anniversaries": rows},
+    )
+
+
+@router.get("/anniversaries/new", response_class=HTMLResponse)
+async def anniversary_new_form(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "anniversary_form.html",
+        {"user": user, "anniversary": None, "error": None},
+    )
+
+
+@router.post("/anniversaries")
+async def anniversary_create(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if _anniversary_store is None or _anniversary_engine is None:
+        return HTMLResponse("Anniversary feature not initialised.", status_code=503)
+
+    form = dict(await request.form())
+    try:
+        kwargs = _form_to_anniv_kwargs(form)
+        row = _anniversary_store.create_anniversary(user_id=user.id, **kwargs)
+    except ValueError as e:
+        assert _templates is not None
+        return _templates.TemplateResponse(
+            request, "anniversary_form.html",
+            {"user": user, "anniversary": None, "error": str(e)},
+            status_code=400,
+        )
+
+    _anniversary_engine.compute_year(datetime.now(timezone(timedelta(hours=7))).year)
+    if _audit is not None:
+        _audit.log(
+            user.id, "anniversary_created", "anniversary", str(row["id"]),
+            {"name": row["name"], "date_type": row["date_type"]},
+        )
+    return RedirectResponse(url=f"/anniversaries/{row['id']}", status_code=303)
+
+
+@router.get("/anniversaries/{anniv_id}", response_class=HTMLResponse)
+async def anniversary_view(
+    anniv_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if _anniversary_store is None:
+        return HTMLResponse("Anniversary feature not initialised.", status_code=503)
+    row = _anniversary_store.get_anniversary(anniv_id)
+    if row is None or row["user_id"] != user.id or row["deleted_at"] is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "anniversary_view.html",
+        {"user": user, "anniversary": row},
+    )
+
+
+@router.get("/anniversaries/{anniv_id}/edit", response_class=HTMLResponse)
+async def anniversary_edit_form(
+    anniv_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if _anniversary_store is None:
+        return HTMLResponse("Anniversary feature not initialised.", status_code=503)
+    row = _anniversary_store.get_anniversary(anniv_id)
+    if row is None or row["user_id"] != user.id or row["deleted_at"] is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "anniversary_form.html",
+        {"user": user, "anniversary": row, "error": None},
+    )
+
+
+@router.post("/anniversaries/{anniv_id}")
+async def anniversary_update(
+    anniv_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if _anniversary_store is None or _anniversary_engine is None:
+        return HTMLResponse("Anniversary feature not initialised.", status_code=503)
+
+    row = _anniversary_store.get_anniversary(anniv_id)
+    if row is None or row["user_id"] != user.id or row["deleted_at"] is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+
+    form = dict(await request.form())
+    try:
+        kwargs = _form_to_anniv_kwargs(form)
+    except ValueError as e:
+        assert _templates is not None
+        return _templates.TemplateResponse(
+            request, "anniversary_form.html",
+            {"user": user, "anniversary": row, "error": str(e)},
+            status_code=400,
+        )
+    kwargs["enabled"] = 1 if form.get("enabled") else 0
+
+    try:
+        _anniversary_store.update_anniversary(anniv_id, **kwargs)
+    except ValueError as e:
+        assert _templates is not None
+        return _templates.TemplateResponse(
+            request, "anniversary_form.html",
+            {"user": user, "anniversary": row, "error": str(e)},
+            status_code=400,
+        )
+
+    # Date or offsets changed → cancel pending + recompute.
+    if (row["date_type"] != kwargs["date_type"]
+            or row["month"] != kwargs["month"]
+            or row["day"] != kwargs["day"]
+            or row["reminder_offsets"] != kwargs["reminder_offsets"]):
+        _anniversary_engine.cancel_all_for_anniversary(anniv_id)
+        _anniversary_engine.compute_year(datetime.now(timezone(timedelta(hours=7))).year)
+
+    if _audit is not None:
+        _audit.log(
+            user.id, "anniversary_updated", "anniversary", str(anniv_id),
+            {"changed_fields": list(kwargs.keys())},
+        )
+    return RedirectResponse(url=f"/anniversaries/{anniv_id}", status_code=303)
+
+
+@router.post("/anniversaries/{anniv_id}/delete")
+async def anniversary_delete(
+    anniv_id: int,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if _anniversary_store is None or _anniversary_engine is None:
+        return HTMLResponse("Anniversary feature not initialised.", status_code=503)
+
+    row = _anniversary_store.get_anniversary(anniv_id)
+    if row is None or row["user_id"] != user.id or row["deleted_at"] is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+
+    _anniversary_store.soft_delete_anniversary(anniv_id)
+    _anniversary_engine.cancel_all_for_anniversary(anniv_id)
+    if _audit is not None:
+        _audit.log(
+            user.id, "anniversary_deleted", "anniversary", str(anniv_id),
+            {"name": row["name"]},
+        )
+    return RedirectResponse(url="/anniversaries", status_code=303)
 
 
 # ── Admin stealth-read routes (FR-5.5.6) ──────────────────────────────────────

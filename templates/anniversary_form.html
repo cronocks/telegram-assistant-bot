@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+
+{% block title %}{% if anniversary %}Sửa kỷ niệm{% else %}Thêm kỷ niệm{% endif %} — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .form-container { max-width: 540px; margin: 2rem auto; padding: 0 1rem; }
+  .form-container h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; color: var(--text); }
+  .form-row { margin-bottom: 1rem; }
+  .form-row label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem; color: var(--text-muted); }
+  .form-row input, .form-row select, .form-row textarea {
+    width: 100%; padding: 0.5rem; border-radius: 0.5rem; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 1rem;
+  }
+  .form-row textarea { min-height: 80px; }
+  .form-actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; }
+  .btn { padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; cursor: pointer; border: none; font-size: 1rem; }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .error { color: #ef4444; margin-bottom: 1rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="form-container">
+  <h1>{% if anniversary %}✏️ Sửa kỷ niệm #{{ anniversary.id }}{% else %}➕ Thêm kỷ niệm{% endif %}</h1>
+
+  {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
+
+  <form method="POST" action="{% if anniversary %}/anniversaries/{{ anniversary.id }}{% else %}/anniversaries{% endif %}">
+    <div class="form-row">
+      <label for="name">Tên kỷ niệm</label>
+      <input type="text" id="name" name="name" required maxlength="120"
+             value="{{ anniversary.name if anniversary else '' }}"
+             placeholder="vd: Giỗ ông nội">
+    </div>
+
+    <div class="form-row">
+      <label for="date_type">Loại ngày</label>
+      <select id="date_type" name="date_type">
+        <option value="lunar" {% if anniversary and anniversary.date_type == 'lunar' %}selected{% endif %}>Âm lịch</option>
+        <option value="solar" {% if anniversary and anniversary.date_type == 'solar' %}selected{% endif %}>Dương lịch</option>
+      </select>
+    </div>
+
+    <div class="form-row" style="display: flex; gap: 0.5rem;">
+      <div style="flex: 1;">
+        <label for="day">Ngày</label>
+        <input type="number" id="day" name="day" min="1" max="31" required
+               value="{{ anniversary.day if anniversary else '' }}">
+      </div>
+      <div style="flex: 1;">
+        <label for="month">Tháng</label>
+        <input type="number" id="month" name="month" min="1" max="12" required
+               value="{{ anniversary.month if anniversary else '' }}">
+      </div>
+    </div>
+
+    <div class="form-row" id="leap-month-row" style="display: none;">
+      <label>
+        <input type="checkbox" name="is_leap_month" value="1"
+               {% if anniversary and anniversary.is_leap_month %}checked{% endif %}>
+        Tháng nhuận (âm lịch)
+      </label>
+    </div>
+
+    <div class="form-row">
+      <label for="category">Loại</label>
+      <select id="category" name="category">
+        <option value="khac" {% if not anniversary or anniversary.category == 'khac' %}selected{% endif %}>Khác</option>
+        <option value="gio" {% if anniversary and anniversary.category == 'gio' %}selected{% endif %}>Giỗ</option>
+        <option value="cuoi" {% if anniversary and anniversary.category == 'cuoi' %}selected{% endif %}>Cưới</option>
+      </select>
+    </div>
+
+    <div class="form-row">
+      <label for="reminder_offsets">Nhắc trước (ngày, CSV)</label>
+      <input type="text" id="reminder_offsets" name="reminder_offsets"
+             value="{{ anniversary.reminder_offsets if anniversary else '30,15,7,3,1,0' }}"
+             placeholder="30,15,7,3,1,0">
+    </div>
+
+    <div class="form-row">
+      <label for="note">Ghi chú</label>
+      <textarea id="note" name="note" maxlength="500">{{ anniversary.note if anniversary and anniversary.note else '' }}</textarea>
+    </div>
+
+    {% if anniversary %}
+    <div class="form-row">
+      <label>
+        <input type="checkbox" name="enabled" value="1"
+               {% if anniversary.enabled %}checked{% endif %}>
+        Kích hoạt nhắc nhở
+      </label>
+    </div>
+    {% endif %}
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">
+        {% if anniversary %}💾 Lưu{% else %}➕ Tạo{% endif %}
+      </button>
+      <a href="/anniversaries" class="btn btn-secondary">← Quay lại</a>
+    </div>
+  </form>
+</div>
+<script>
+  function updateLeapMonthVisibility() {
+    var dt = document.getElementById('date_type').value;
+    document.getElementById('leap-month-row').style.display = dt === 'lunar' ? 'block' : 'none';
+    if (dt !== 'lunar') {
+      document.querySelector('#leap-month-row input[type=checkbox]').checked = false;
+    }
+  }
+  document.getElementById('date_type').addEventListener('change', updateLeapMonthVisibility);
+  updateLeapMonthVisibility();
+</script>
+{% endblock %}
