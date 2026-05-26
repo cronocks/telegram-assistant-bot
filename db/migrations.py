@@ -62,9 +62,25 @@ def _pending_files(applied: set[int]) -> list[tuple[int, str]]:
 def _apply(conn: sqlite3.Connection, version: int, path: str) -> None:
     sql = open(path, encoding="utf-8").read()
     logger.info("DB migrations: applying version %s (%s)", version, os.path.basename(path))
-    with conn:
-        conn.executescript(sql)
-        conn.execute(
-            "INSERT INTO _schema_version (version) VALUES (?)", (version,)
-        )
+    try:
+        with conn:
+            conn.executescript(sql)
+            conn.execute(
+                "INSERT INTO _schema_version (version) VALUES (?)", (version,)
+            )
+    except sqlite3.OperationalError as exc:
+        if "duplicate column name" in str(exc).lower():
+            # Column already exists (fresh deploy ran CREATE TABLE with the column;
+            # ALTER TABLE in this migration is a no-op).
+            logger.warning(
+                "DB migrations: version %s — column already exists, marking as applied (%s)",
+                version,
+                exc,
+            )
+            with conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO _schema_version (version) VALUES (?)", (version,)
+                )
+        else:
+            raise
     logger.info("DB migrations: version %s applied", version)
