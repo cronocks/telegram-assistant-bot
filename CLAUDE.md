@@ -76,6 +76,12 @@ Quy tắc cột **Type**:
 ---
 
 ### PHASE 3 — THỰC THI (TDD Cycle)
+
+**Bước 0 — Kiểm tra branch (bắt buộc trước mọi thay đổi file):**
+Chạy `git branch --show-current`. Nếu không phải `feature/*` → **dừng lại**, nhắc user:
+> "Bạn đang ở branch `<tên branch>`. Hãy chuyển về feature branch trước khi tôi thực hiện thay đổi."
+Chỉ tiếp tục sau khi user đã chuyển sang đúng branch.
+
 Chỉ bắt đầu sau khi user xác nhận rõ ràng bằng một trong các từ:
 - "go", "proceed", "approved", "ok", "yes", "looks good", "ship it"
 - Hoặc tiếng Việt: "được", "ok", "tiến hành", "đồng ý", "làm đi"
