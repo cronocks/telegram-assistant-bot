@@ -738,23 +738,22 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
   - Web: CRUD `/tasks` routes + `templates/tasks.html`, `task_form.html`, `task_view.html`
   - Scheduled jobs: `scan_reminders` (1 phút), `send_daily_summary`, `send_parent_digest`
   - `core_handler.py` refactor → 7 cmd_* modules; `WebChannelAdapter.send_with_inline_keyboard` fix
-- 🔄 **FR-8** DONE on branch `feature/FR8` — Anniversary / Memorial Reminders; 968 tests passing
-  - Migrations 022–023: `anniversaries` (với `year` column) + `anniversary_reminders`
+- ✅ **FR-8** merged to `main` 2026-05-26 — Anniversary / Memorial Reminders; 968 tests passing; plan chi tiết tại `docs/FR-8-PLAN.md`
+  - Migrations 022–024: `anniversaries` (với `year` column) + `anniversary_reminders` + ALTER TABLE idempotent fix
   - `lunar_utils.py`, `anniversary_store.py`, `anniversary_engine.py`, `cmd_anniversary.py`
-  - 5 Telegram commands + 7 web routes + 3 templates
-  - Scheduled jobs: `anniversary_tick` (60s) + `compute_anniversary_year` (startup + Jan 1)
-  - **⚠️ Pending:** migration 024 `ALTER TABLE anniversaries ADD COLUMN year INTEGER` trước khi merge (production DB đã chạy 022 cũ)
+  - 5 Telegram commands + 7 web routes + 3 templates (`anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`)
+  - Scheduled jobs: `anniversary_tick` (60s) + `compute_anniversary_year` (startup + Jan 1 00:05 VN)
+  - Migration runner (`db/migrations.py`) cải tiến: handle "duplicate column name" gracefully cho ALTER TABLE idempotent
 
 ---
 
 ### 🔔 Next session reminder (cho phiên tiếp theo)
 
-**FR-8 DONE — branch `feature/FR8`, 968 tests passing.**
+**FR-8 DONE — merged to `main` 2026-05-26, 968 tests passing.**
 
-**Tiếp theo (theo thứ tự ưu tiên):**
-1. Tạo `db/migrations/024_add_year_to_anniversaries.sql` (`ALTER TABLE anniversaries ADD COLUMN year INTEGER`) — fix production DB trước khi merge
-2. Merge **FR-8** → `main` (và `dev` để test trên staging)
-3. Bắt đầu **FR-9** (Expense Tracking / Ledger)
+**Tiếp theo:** Bắt đầu **FR-9** (Expense Tracking / Ledger)
+- Branch off từ `main`: `feature/FR9`
+- Lập `docs/FR-9-PLAN.md` chi tiết trước khi code
 
 ---
 
@@ -807,10 +806,8 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
 ---
 
 ### Immediate next steps
-1. Tạo `db/migrations/024_add_year_to_anniversaries.sql` — production fix trước khi merge FR-8
-2. Merge **FR-8** → `main` (branch `feature/FR8`, 968 tests passing)
-3. Bắt đầu **FR-9**: Expense Tracking (Ledger)
-   - Branch off từ `main`
+1. Bắt đầu **FR-9**: Expense Tracking (Ledger)
+   - Branch off từ `main`: `feature/FR9`
    - Lập `docs/FR-9-PLAN.md` chi tiết trước khi code
 
 ### Pending FRs

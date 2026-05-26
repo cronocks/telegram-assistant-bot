@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-7** (Tasks + Reminders + Daily Summary).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-8** (Anniversary / Memorial Reminders).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -68,6 +68,10 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `cmd_sudo.py` | Sudo handlers: `sudo`, `thoat sudo`, `dat mat khau`, `dat web pass` (FR-7) |
 | `cmd_wiki.py` | Wiki + memory handlers: `wiki`, `hoi wiki`, `xem tri nho`, `cap nhat tri nho` (FR-7) |
 | `cmd_task.py` | Task + study schedule handlers + inline keyboard callback dispatcher (FR-7) |
+| `anniversary_store.py` | `SqliteAnniversaryStore` — anniversary CRUD + soft-delete + validation (FR-8) |
+| `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fires at 08:00 VN, 12h grace window (FR-8) |
+| `lunar_utils.py` | `lunar_to_solar()` + `compute_anniversary_solar_date()`; uses `lunardate==0.2.2` (FR-8) |
+| `cmd_anniversary.py` | 5 Telegram handlers: `them ky niem`, `danh sach ky niem`, `ky niem <id>`, `xoa ky niem`, `sua ky niem` (FR-8) |
 | `channel_telegram.py` | `TelegramAdapter` — parses Telegram webhook payloads, sends replies, `send_with_inline_keyboard` |
 | `claude_client.py` | `AnthropicLLM` — wraps Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — Google Drive notes storage |
@@ -83,14 +87,14 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `audit.py` | `SqliteAuditLog` — append-only audit event writer; `AuditLog` Protocol (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — persistent notification queue CRUD (FR-4) |
 | `notification_service.py` | `NotificationService` — bridges store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
-| `scheduled_jobs.py` | APScheduler jobs: 180d purge, purge-at-18, notification flush, scan_reminders, daily_summary, parent_digest (FR-4, FR-7) |
+| `scheduled_jobs.py` | APScheduler jobs: 180d purge, purge-at-18, notification flush, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year (FR-4, FR-7, FR-8) |
 | `web_session_store.py` | `SqliteWebSessionStore` — DB-revocable web sessions (no JWT); find/revoke/create (FR-5) |
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
-| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD routes (FR-5, FR-5.5, FR-7) |
+| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD, anniversary CRUD routes (FR-5, FR-5.5, FR-7, FR-8) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — conversation + message CRUD; LIKE search; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — in-memory ZIP export, transactional parse/apply import, Drive upload to `Claude-Notes/Backups/`, 5-min/user rate-limit (FR-6) |
 | `tools/local_migrate.py` | Standalone CLI: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html` (FR-5 → FR-7) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html` (FR-5 → FR-8) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
@@ -101,7 +105,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–020) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–024) |
 
 ---
 
@@ -387,6 +391,42 @@ One row per reminder fire point per task. When a recurring task's reminder fires
 
 Partial index: `(fire_at, status) WHERE status = 'pending'` — `scan_reminders` job scans only pending rows.
 
+#### `anniversaries` *(FR-8)*
+Annual recurring events: memorials (giỗ), wedding anniversaries, and other yearly dates. Stores the original lunar/solar month-day; the solar date is recomputed each year at runtime (Decision #47).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `name` | TEXT NOT NULL | Event name, e.g. "Giỗ ông nội" |
+| `date_type` | TEXT NOT NULL | `lunar` \| `solar` |
+| `month` | INTEGER NOT NULL | 1–12 |
+| `day` | INTEGER NOT NULL | 1–30 (lunar) or 1–31 (solar) |
+| `year` | INTEGER | Original year of the event (optional) |
+| `category` | TEXT NOT NULL | `gio` \| `cuoi` \| `khac` — default `khac` |
+| `is_leap_month` | INTEGER NOT NULL | 1 = lunar leap month — default 0 |
+| `reminder_offsets` | TEXT NOT NULL | CSV days before: default `30,15,7,3,1,0` |
+| `enabled` | INTEGER NOT NULL | 1 = active; 0 = paused |
+| `note` | TEXT | Optional free-form note |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Indexes: `(user_id)` WHERE deleted_at IS NULL, `(enabled)` WHERE enabled=1 AND deleted_at IS NULL.
+
+#### `anniversary_reminders` *(FR-8)*
+One row per reminder fire point per anniversary per year. UNIQUE constraint ensures the annual compute job is idempotent.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `anniversary_id` | INTEGER FK → anniversaries | |
+| `year` | INTEGER NOT NULL | Solar year of this reminder instance |
+| `fire_at` | TEXT NOT NULL | ISO datetime at 08:00 VN |
+| `offset_days` | INTEGER NOT NULL | Days before the anniversary date (0 = on the day) |
+| `status` | TEXT NOT NULL | `pending` \| `fired` \| `missed` \| `cancelled` — default `pending` |
+| `fired_at` | TEXT | ISO datetime; NULL if not yet fired |
+| `created_at` | TEXT NOT NULL | ISO timestamp |
+| UNIQUE | `(anniversary_id, year, offset_days)` | Idempotent — compute job can run repeatedly |
+
 ---
 
 ## 6. Permission Model
@@ -466,6 +506,20 @@ Soft-delete has been present since earlier FRs via `deleted_at` on `notes`, `wik
 | `web_conversation_created` | `web_conversation` | Lazy create on first message *(FR-5.5)* |
 | `web_conversation_renamed` | `web_conversation` | User renames a conversation *(FR-5.5)* |
 | `stealth_read_web_conversation` | `web_conversation` | Admin views web conversation of an under-18 user *(FR-5.5)* |
+| `task_created` | `task` | New task created *(FR-7)* |
+| `task_updated` | `task` | Task edited *(FR-7)* |
+| `task_completed` | `task` | User marks task done *(FR-7)* |
+| `task_deleted` | `task` | Task soft-deleted *(FR-7)* |
+| `task_snoozed` | `task` | User snoozes a reminder *(FR-7)* |
+| `reminder_fired` | `task` | Reminder delivered successfully *(FR-7)* |
+| `reminder_missed` | `task` | Reminder past 1h grace — skipped *(FR-7)* |
+| `daily_summary_sent` | `user` | Daily summary sent at end of day *(FR-7)* |
+| `parent_digest_sent` | `user` | Parent digest sent at configured frequency *(FR-7)* |
+| `anniversary_created` | `anniversary` | Anniversary created (Telegram or web) *(FR-8)* |
+| `anniversary_updated` | `anniversary` | Anniversary edited *(FR-8)* |
+| `anniversary_deleted` | `anniversary` | Anniversary soft-deleted *(FR-8)* |
+| `anniversary_reminder_fired` | `anniversary` | Anniversary reminder delivered *(FR-8)* |
+| `anniversary_reminder_missed` | `anniversary` | Anniversary reminder past 12h grace — skipped *(FR-8)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -629,6 +683,27 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 - Search box with 300ms debounce
 - New chat button — lazy conversation create on first message
 
+### Anniversaries & Reminders *(FR-8)*
+| Command | Description |
+|---------|-------------|
+| `them ky niem: <name>, âm/dương DD/MM[, <category>]` | Add anniversary. Category: gio / cuoi / khac |
+| `danh sach ky niem` | List all user anniversaries |
+| `ky niem <id>` | View anniversary detail |
+| `xoa ky niem: <id>` | Soft-delete + cancel pending reminders |
+| `sua ky niem: <id>, ten=…, ngay=âm/dương DD/MM, loai=…, nhac=<csv>, bat/tat` | Edit anniversary |
+
+**Web routes *(FR-8)*:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/anniversaries` | List user anniversaries |
+| GET | `/anniversaries/new` | Create form |
+| POST | `/anniversaries` | Create — redirect to detail |
+| GET | `/anniversaries/{id}` | Detail view |
+| GET | `/anniversaries/{id}/edit` | Edit form |
+| POST | `/anniversaries/{id}` | Update |
+| POST | `/anniversaries/{id}/delete` | Soft-delete |
+
 ### Registration (pre-auth)
 | Command | Description |
 |---------|-------------|
@@ -691,6 +766,6 @@ Since Render free tier uses an **ephemeral filesystem**, SQLite data would be lo
 | `dev` | Staging integration buffer — never use as feature base |
 | `feature/*` | Feature branches — always branch off `main` |
 
-Feature branches merge **in parallel** into both `dev` (for staging test) and `main` (for production), and are deleted only after landing in `main`.
+Feature branches merge **sequentially**: feature → `dev` first (staging test) → confirm no errors → feature → `main` (production). Deleted only after landing in `main`.
 
 See [`ROADMAP.md`](ROADMAP.md) Section 3.5 for full git workflow details.
