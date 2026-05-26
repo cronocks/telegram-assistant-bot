@@ -12,7 +12,12 @@ if TYPE_CHECKING:
     from anniversary_engine import AnniversaryEngine
     from anniversary_store import SqliteAnniversaryStore
     from backup_engine import BackupEngine
+    from budget_store import SqliteBudgetStore
+    from category_store import SqliteCategoryStore
     from interfaces import ReminderStore, TaskStore
+    from ledger_parser import LedgerParser
+    from ledger_reports import LedgerReports
+    from ledger_store import SqliteLedgerStore
     from reminder_engine import ReminderEngine
     from task_parser import TaskParser
 
@@ -52,3 +57,8 @@ class CoreDeps:
     task_parser: "TaskParser | None" = None
     anniversary_store: "SqliteAnniversaryStore | None" = None
     anniversary_engine: "AnniversaryEngine | None" = None
+    category_store: "SqliteCategoryStore | None" = None
+    ledger_store: "SqliteLedgerStore | None" = None
+    budget_store: "SqliteBudgetStore | None" = None
+    ledger_parser: "LedgerParser | None" = None
+    ledger_reports: "LedgerReports | None" = None
