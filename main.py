@@ -43,6 +43,11 @@ from reminder_engine import ReminderEngine
 from task_parser import TaskParser
 from anniversary_store import SqliteAnniversaryStore
 from anniversary_engine import AnniversaryEngine
+from category_store import SqliteCategoryStore
+from ledger_store import SqliteLedgerStore
+from budget_store import SqliteBudgetStore
+from ledger_parser import LedgerParser
+from ledger_reports import LedgerReports
 from db.connection import get_connection
 
 _REGISTER_PREFIXES = ("dang ky:", "đăng ký:")
@@ -101,6 +106,11 @@ anniversary_engine = AnniversaryEngine(
     audit=audit,
     conn=get_connection(),
 )
+category_store = SqliteCategoryStore()
+ledger_store = SqliteLedgerStore()
+budget_store = SqliteBudgetStore()
+ledger_parser = LedgerParser()
+ledger_reports = LedgerReports(ledger_store, budget_store)
 
 deps = CoreDeps(
     llm=llm,
@@ -121,6 +131,11 @@ deps = CoreDeps(
     task_parser=task_parser,
     anniversary_store=anniversary_store,
     anniversary_engine=anniversary_engine,
+    category_store=category_store,
+    ledger_store=ledger_store,
+    budget_store=budget_store,
+    ledger_parser=ledger_parser,
+    ledger_reports=ledger_reports,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -143,6 +158,11 @@ web_deps = CoreDeps(
     task_parser=task_parser,
     anniversary_store=anniversary_store,
     anniversary_engine=anniversary_engine,
+    category_store=category_store,
+    ledger_store=ledger_store,
+    budget_store=budget_store,
+    ledger_parser=ledger_parser,
+    ledger_reports=ledger_reports,
 )
 
 
@@ -218,6 +238,10 @@ init_web_router(
     task_store=task_store,
     anniversary_store=anniversary_store,
     anniversary_engine=anniversary_engine,
+    ledger_store=ledger_store,
+    category_store=category_store,
+    budget_store=budget_store,
+    ledger_reports=ledger_reports,
 )
 
 
