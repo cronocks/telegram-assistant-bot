@@ -44,6 +44,8 @@ JOB_ID_DAILY_SUMMARY = "fr7_daily_summary"
 JOB_ID_PARENT_DIGEST = "fr7_parent_digest"
 JOB_ID_ANNIV_TICK = "fr8_anniversary_tick"
 JOB_ID_ANNIV_COMPUTE_YEAR = "fr8_anniversary_compute_year"
+JOB_ID_WEEKLY_LEDGER = "fr9_weekly_ledger_summary"
+JOB_ID_PURGE_VOIDED = "fr9_purge_voided_ledger"
 
 _DOW_MAP = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}
 
@@ -540,6 +542,92 @@ def compute_anniversary_year(deps: "CoreDeps") -> int:
         return 0
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# FR-9 — Ledger jobs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+def send_weekly_ledger_summary(deps: "CoreDeps", now: datetime | None = None) -> dict:
+    """Send a 7-day ledger summary to each user who has entries in the past week.
+
+    Runs every Monday 08:00 VN. Skips users with no activity in the window.
+    Returns {"sent": N, "skipped": M}.
+    """
+    if deps.ledger_reports is None or deps.notification_service is None:
+        return {"sent": 0, "skipped": 0}
+
+    now = now or datetime.now(VN_TZ)
+    since_dt = now - timedelta(days=7)
+    since_iso = since_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    sent = 0
+    skipped = 0
+
+    for user in deps.user_store.list_users():
+        data = deps.ledger_reports.last_7_days(user.id, since_iso)
+        if not data["entries"]:
+            skipped += 1
+            continue
+
+        income = data["total_income"]
+        expense = data["total_expense"]
+        savings = income - expense
+
+        def _fmt(v: int) -> str:
+            return f"{v:,}".replace(",", ".")
+
+        lines = [
+            f"Tổng kết chi tiêu 7 ngày qua:",
+            f"💚 Thu: {_fmt(income)}đ",
+            f"🔴 Chi: {_fmt(expense)}đ",
+            f"💰 Tiết kiệm: {_fmt(savings)}đ",
+        ]
+
+        # Top 3 expense entries by amount
+        top3 = sorted(
+            [e for e in data["entries"] if e["kind"] == "expense"],
+            key=lambda e: e["amount"],
+            reverse=True,
+        )[:3]
+        if top3:
+            lines.append("")
+            lines.append("Top chi tiêu:")
+            for e in top3:
+                lines.append(f"  • {e['note'] or '(không có mô tả)'}: {_fmt(e['amount'])}đ")
+
+        deps.notification_service.enqueue(
+            user.id, "telegram",
+            {"kind": "weekly_ledger_summary", "text": "\n".join(lines)},
+        )
+        sent += 1
+
+    if sent:
+        logger.info("send_weekly_ledger_summary: sent=%d skipped=%d", sent, skipped)
+    return {"sent": sent, "skipped": skipped}
+
+
+def purge_voided_ledger_entries(deps: "CoreDeps", now: datetime | None = None) -> dict:
+    """Hard-delete ledger entries voided more than 30 days ago.
+
+    Returns {"purged": N}.
+    """
+    if deps.ledger_store is None:
+        return {"purged": 0}
+
+    now = now or datetime.now(timezone.utc)
+    threshold = now - timedelta(days=30)
+    threshold_iso = threshold.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        purged = deps.ledger_store.purge_voided_older_than(threshold_iso)
+        if purged:
+            logger.info("purge_voided_ledger_entries: purged=%d", purged)
+        return {"purged": purged}
+    except Exception:
+        logger.exception("purge_voided_ledger_entries: unexpected error")
+        return {"purged": 0}
+
+
 def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
     """Register FR-4 scheduled jobs with the given APScheduler instance.
 
@@ -613,4 +701,21 @@ def register_jobs(scheduler: "BaseScheduler", deps: "CoreDeps") -> None:
             id=JOB_ID_ANNIV_COMPUTE_YEAR,
             replace_existing=True,
             next_run_time=datetime.now(VN_TZ),
+        )
+
+    # FR-9 ledger jobs.
+    if deps.ledger_reports is not None or deps.ledger_store is not None:
+        scheduler.add_job(
+            send_weekly_ledger_summary,
+            args=[deps],
+            trigger=CronTrigger(day_of_week="mon", hour=8, minute=0, timezone=VN_TZ),
+            id=JOB_ID_WEEKLY_LEDGER,
+            replace_existing=True,
+        )
+        scheduler.add_job(
+            purge_voided_ledger_entries,
+            args=[deps],
+            trigger=CronTrigger(hour=3, minute=10, timezone=VN_TZ),
+            id=JOB_ID_PURGE_VOIDED,
+            replace_existing=True,
         )

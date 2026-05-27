@@ -62,6 +62,24 @@ from cmd_anniversary import (
     _cmd_xem_ky_niem,
     _cmd_xoa_ky_niem,
 )
+from cmd_ledger import (
+    _cmd_bao_cao_nam,
+    _cmd_bao_cao_thang,
+    _cmd_chi,
+    _cmd_dat_han_muc_chi,
+    _cmd_dat_muc_tieu_tiet_kiem,
+    _cmd_danh_sach_ghi_chep,
+    _cmd_ghi_chep_xem,
+    _cmd_huy_ghi_chep,
+    _cmd_sua_danh_muc,
+    _cmd_sua_ghi_chep,
+    _cmd_them_danh_muc,
+    _cmd_thu,
+    _cmd_xem_chi_tieu,
+    _cmd_xem_danh_muc,
+    _cmd_xem_han_muc,
+    _cmd_xoa_danh_muc,
+)
 from cmd_user import (
     _cmd_dat_birthdate,
     _cmd_dat_cha,
@@ -109,6 +127,7 @@ async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
         "🧠 *Tri nho* — `/help tri nho`\n"
         "📋 *Cong viec* — `/help cong viec`\n"
         "📅 *Ky niem* — `/help ky niem`\n"
+        "💰 *Chi tieu* — `/help chi tieu`\n"
         "👥 *Nguoi dung* — `/help nguoi dung`\n"
         "💰 *Quota* — `/help quota`\n"
         "🔍 *Tim kiem & Xem* — `/help xem`\n"
@@ -223,6 +242,25 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`/test` — Kiem tra ket noi Drive\n"
         "`/security` — Cau hinh bao mat",
     ),
+    "chi tieu": (
+        "💰 *CHI TIEU (EXPENSE TRACKING)*",
+        "`chi: <so> <mo ta>` — Ghi chi tieu (vd: chi: 50k an trua)\n"
+        "`thu: <so> <mo ta>` — Ghi thu nhap (vd: thu: 5tr luong)\n"
+        "`ghi chep: <id>` — Xem chi tiet but toan\n"
+        "`danh sach ghi chep` — Liet ke 20 but toan gan nhat\n"
+        "`sua ghi chep: <id>, so=<so>[, mo ta=<text>]` — Cap nhat but toan\n"
+        "`huy ghi chep: <id>` — Huy (soft-delete) but toan\n"
+        "`xem danh muc` — Xem danh muc chi/thu\n"
+        "`them danh muc: <ten>, chi|thu` — Them danh muc moi\n"
+        "`xoa danh muc: <id>` — Xoa danh muc\n"
+        "`sua danh muc: <id> <ten moi>` — Doi ten danh muc\n"
+        "`bao cao thang [YYYY-MM]` — Bao cao thang (mac dinh thang hien tai)\n"
+        "`bao cao nam` — Bao cao nam hien tai\n"
+        "`xem chi tieu` — Chi tieu 7 ngay qua\n"
+        "`dat han muc chi: <so>` — Dat han muc chi thang nay\n"
+        "`dat muc tieu tiet kiem: <so>` — Dat muc tieu tiet kiem\n"
+        "`xem han muc` — Xem han muc chi va muc tieu tiet kiem",
+    ),
 }
 
 # Alias map: normalized input → canonical key in _HELP_PAGES
@@ -246,6 +284,10 @@ _HELP_ALIASES: dict[str, str] = {
     "sudo": "sudo",
     "quan tri": "sudo",
     "quản trị": "sudo",
+    "chi tieu": "chi tieu",
+    "chi tiêu": "chi tieu",
+    "expense": "chi tieu",
+    "ledger": "chi tieu",
 }
 
 
@@ -591,6 +633,10 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "CAP_NHAT_TRI_NHO":   ["cập nhật trí nhớ", "cap nhat tri nho"],
     "LIET_KE":            ["liệt kê", "liet ke"],
     "TIM":                ["tìm ", "tim ", "search "],
+    # "xem danh muc / xem chi tieu / xem han muc" must come before the catch-all "xem " below.
+    "XEM_DANH_MUC":         ["xem danh muc", "xem danh mục"],
+    "XEM_CHI_TIEU":         ["xem chi tieu", "xem chi tiêu"],
+    "XEM_HAN_MUC":          ["xem han muc", "xem hạn mức"],
     "XEM":                ["xem "],
     "TOM_TAT_TUAN":       ["tóm tắt tuần này", "tom tat tuan nay", "tóm tắt tuần", "tom tat tuan"],
     # Longer prefix first: "xuat du lieu: <ten>" must match before "xuat du lieu"
@@ -623,6 +669,20 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "SUA_KY_NIEM":      ["sửa kỷ niệm: ", "sua ky niem: ", "đổi kỷ niệm: ", "doi ky niem: "],
     "DANH_SACH_KY_NIEM": ["danh sách kỷ niệm", "danh sach ky niem"],
     "XEM_KY_NIEM":      ["kỷ niệm ", "ky niem "],
+    # ── FR-9 ledger commands ──────────────────────────────────────────────────
+    "CHI":                  ["chi: "],
+    "THU":                  ["thu: "],
+    "GHI_CHEP_XEM":         ["ghi chep: ", "ghi chép: "],
+    "DANH_SACH_GHI_CHEP":   ["danh sach ghi chep", "danh sách ghi chép"],
+    "SUA_GHI_CHEP":         ["sua ghi chep: ", "sửa ghi chép: "],
+    "HUY_GHI_CHEP":         ["huy ghi chep: ", "hủy ghi chép: "],
+    "THEM_DANH_MUC":        ["them danh muc: ", "thêm danh mục: "],
+    "XOA_DANH_MUC":         ["xoa danh muc: ", "xóa danh mục: "],
+    "SUA_DANH_MUC":         ["sua danh muc: ", "sửa danh mục: "],
+    "BAO_CAO_THANG":        ["bao cao thang", "báo cáo tháng"],
+    "BAO_CAO_NAM":          ["bao cao nam", "báo cáo năm"],
+    "DAT_HAN_MUC":          ["dat han muc chi: ", "đặt hạn mức chi: "],
+    "DAT_MUC_TIEU":         ["dat muc tieu tiet kiem: ", "đặt mục tiêu tiết kiệm: "],
 }
 
 
@@ -676,6 +736,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         # FR-8 anniversary commands — no LLM, all structured parse.
         "THEM_KY_NIEM", "XOA_KY_NIEM", "SUA_KY_NIEM",
         "DANH_SACH_KY_NIEM", "XEM_KY_NIEM",
+        # FR-9 ledger commands — no LLM, all structured.
+        "CHI", "THU", "GHI_CHEP_XEM", "DANH_SACH_GHI_CHEP",
+        "SUA_GHI_CHEP", "HUY_GHI_CHEP",
+        "XEM_DANH_MUC", "THEM_DANH_MUC", "XOA_DANH_MUC", "SUA_DANH_MUC",
+        "BAO_CAO_THANG", "BAO_CAO_NAM", "XEM_CHI_TIEU",
+        "DAT_HAN_MUC", "DAT_MUC_TIEU", "XEM_HAN_MUC",
     }
     _matched = match_command(text, _COMMAND_TABLE)
     if _matched is None or _matched[0] not in _QUOTA_EXEMPT:
@@ -819,6 +885,38 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_danh_sach_ky_niem(chat_id, user, deps); return
         if cmd_id == "XEM_KY_NIEM":
             await _cmd_xem_ky_niem(chat_id, remainder, user, deps); return
+        if cmd_id == "CHI":
+            await _cmd_chi(chat_id, remainder, user, deps); return
+        if cmd_id == "THU":
+            await _cmd_thu(chat_id, remainder, user, deps); return
+        if cmd_id == "GHI_CHEP_XEM":
+            await _cmd_ghi_chep_xem(chat_id, remainder, user, deps); return
+        if cmd_id == "DANH_SACH_GHI_CHEP":
+            await _cmd_danh_sach_ghi_chep(chat_id, user, deps); return
+        if cmd_id == "SUA_GHI_CHEP":
+            await _cmd_sua_ghi_chep(chat_id, remainder, user, deps); return
+        if cmd_id == "HUY_GHI_CHEP":
+            await _cmd_huy_ghi_chep(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_DANH_MUC":
+            await _cmd_xem_danh_muc(chat_id, user, deps); return
+        if cmd_id == "THEM_DANH_MUC":
+            await _cmd_them_danh_muc(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_DANH_MUC":
+            await _cmd_xoa_danh_muc(chat_id, remainder, user, deps); return
+        if cmd_id == "SUA_DANH_MUC":
+            await _cmd_sua_danh_muc(chat_id, remainder, user, deps); return
+        if cmd_id == "BAO_CAO_THANG":
+            await _cmd_bao_cao_thang(chat_id, remainder, user, deps); return
+        if cmd_id == "BAO_CAO_NAM":
+            await _cmd_bao_cao_nam(chat_id, user, deps); return
+        if cmd_id == "XEM_CHI_TIEU":
+            await _cmd_xem_chi_tieu(chat_id, user, deps); return
+        if cmd_id == "DAT_HAN_MUC":
+            await _cmd_dat_han_muc_chi(chat_id, remainder, user, deps); return
+        if cmd_id == "DAT_MUC_TIEU":
+            await _cmd_dat_muc_tieu_tiet_kiem(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_HAN_MUC":
+            await _cmd_xem_han_muc(chat_id, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)

@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+
+{% block title %}Hạn mức chi tiêu — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .budget-container { max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+  .budget-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .budget-header h1 { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+  .nav-back { font-size: 0.85rem; color: var(--primary); text-decoration: none; }
+  .nav-back:hover { text-decoration: underline; }
+  .current-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-bottom: 1.5rem; }
+  .current-card h2 { font-size: 0.9rem; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.75rem; }
+  .current-row { display: flex; justify-content: space-between; padding: 0.35rem 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+  .current-row:last-child { border-bottom: none; }
+  .current-label { color: var(--text-muted); }
+  .current-value { font-weight: 600; color: var(--text); }
+  .no-budget { color: var(--text-muted); font-size: 0.9rem; font-style: italic; margin-bottom: 1rem; }
+  .form-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1.1rem; }
+  .form-card h2 { font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: 1rem; }
+  .form-group { margin-bottom: 0.9rem; }
+  label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.3rem; }
+  input[type=month], input[type=number] {
+    width: 100%; box-sizing: border-box;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 7px; padding: 0.5rem 0.65rem;
+    font-size: 0.9rem;
+  }
+  input:focus { outline: none; border-color: var(--primary); }
+  .hint { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem; }
+  .btn-submit { width: 100%; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.65rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 0.25rem; }
+  .btn-submit:hover { opacity: 0.9; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="budget-container">
+  <div class="budget-header">
+    <h1>🎯 Hạn mức</h1>
+    <a href="/ledger" class="nav-back">← Chi tiêu</a>
+  </div>
+
+  {% if budget %}
+  <div class="current-card">
+    <h2>Tháng {{ budget.month }}</h2>
+    <div class="current-row">
+      <span class="current-label">Hạn mức chi</span>
+      <span class="current-value">
+        {% if budget.expense_budget %}{{ budget.expense_budget | format_vnd }}đ{% else %}Chưa đặt{% endif %}
+      </span>
+    </div>
+    <div class="current-row">
+      <span class="current-label">Mục tiêu tiết kiệm</span>
+      <span class="current-value">
+        {% if budget.savings_target %}{{ budget.savings_target | format_vnd }}đ{% else %}Chưa đặt{% endif %}
+      </span>
+    </div>
+  </div>
+  {% else %}
+  <p class="no-budget">Chưa có hạn mức cho tháng này.</p>
+  {% endif %}
+
+  <div class="form-card">
+    <h2>{{ "Cập nhật" if budget else "Đặt hạn mức" }}</h2>
+    <form method="post" action="/ledger/budget">
+      <div class="form-group">
+        <label>Tháng</label>
+        <input type="month" name="month" value="{{ current_month }}" required>
+      </div>
+      <div class="form-group">
+        <label>Hạn mức chi (VNĐ)</label>
+        <input type="number" name="expense_budget" min="0"
+          value="{{ budget.expense_budget if budget and budget.expense_budget else '' }}"
+          placeholder="Ví dụ: 5000000">
+        <div class="hint">Bot sẽ cảnh báo khi chi vượt 80% và 100% hạn mức.</div>
+      </div>
+      <div class="form-group">
+        <label>Mục tiêu tiết kiệm (VNĐ)</label>
+        <input type="number" name="savings_target" min="0"
+          value="{{ budget.savings_target if budget and budget.savings_target else '' }}"
+          placeholder="Ví dụ: 2000000">
+      </div>
+      <button type="submit" class="btn-submit">💾 Lưu hạn mức</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

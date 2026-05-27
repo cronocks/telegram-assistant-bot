@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "Sửa" if entry else "Thêm" }} ghi chép — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .form-container { max-width: 480px; margin: 2rem auto; padding: 0 1rem; }
+  .form-container h1 { font-size: 1.4rem; font-weight: 700; color: var(--text); margin-bottom: 1.5rem; }
+  .form-group { margin-bottom: 1.1rem; }
+  label { display: block; font-size: 0.85rem; font-weight: 600; color: var(--text-muted); margin-bottom: 0.3rem; }
+  input, select, textarea {
+    width: 100%; box-sizing: border-box;
+    background: var(--surface); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px; padding: 0.55rem 0.75rem;
+    font-size: 0.95rem;
+  }
+  input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); }
+  .kind-toggle { display: flex; gap: 0.5rem; }
+  .kind-btn { flex: 1; padding: 0.55rem; border-radius: 8px; border: 1.5px solid var(--border); background: var(--surface); color: var(--text-muted); cursor: pointer; font-size: 0.9rem; text-align: center; }
+  .kind-btn.active-income { border-color: #22c55e; background: #22c55e20; color: #22c55e; font-weight: 600; }
+  .kind-btn.active-expense { border-color: #ef4444; background: #ef444420; color: #ef4444; font-weight: 600; }
+  .btn-submit { width: 100%; background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.65rem; border: none; border-radius: 8px; font-size: 1rem; font-weight: 600; cursor: pointer; margin-top: 0.5rem; }
+  .btn-submit:hover { opacity: 0.9; }
+  .nav-back { font-size: 0.85rem; color: var(--primary); text-decoration: none; display: inline-block; margin-bottom: 1rem; }
+  .nav-back:hover { text-decoration: underline; }
+  .error { color: #ef4444; font-size: 0.85rem; margin-top: 0.4rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="form-container">
+  <a href="/ledger" class="nav-back">← Quay lại</a>
+  <h1>{{ "✏️ Sửa ghi chép" if entry else "➕ Thêm ghi chép" }}</h1>
+
+  {% if error %}
+  <div class="error">⚠️ {{ error }}</div>
+  {% endif %}
+
+  <form method="post" action="{{ '/ledger/' ~ entry.id if entry else '/ledger' }}">
+    <div class="form-group">
+      <label>Loại</label>
+      <div class="kind-toggle" x-data="{ kind: '{{ entry.kind if entry else 'expense' }}' }">
+        <input type="hidden" name="kind" :value="kind">
+        <button type="button" class="kind-btn"
+          :class="kind === 'expense' ? 'active-expense' : ''"
+          @click="kind='expense'">🔴 Chi tiêu</button>
+        <button type="button" class="kind-btn"
+          :class="kind === 'income' ? 'active-income' : ''"
+          @click="kind='income'">💚 Thu nhập</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>Số tiền (VNĐ)</label>
+      <input type="number" name="amount" min="1" required
+        value="{{ entry.amount if entry else '' }}"
+        placeholder="Ví dụ: 50000">
+    </div>
+
+    <div class="form-group">
+      <label>Mô tả</label>
+      <input type="text" name="note"
+        value="{{ entry.note if entry else '' }}"
+        placeholder="Ví dụ: ăn trưa, mua cà phê...">
+    </div>
+
+    <div class="form-group">
+      <label>Danh mục</label>
+      <select name="category_id">
+        <option value="">— Chưa phân loại —</option>
+        {% for cat in categories %}
+        <option value="{{ cat.id }}"
+          {% if entry and entry.category_id == cat.id %}selected{% endif %}>
+          {{ cat.name }} ({{ "Chi" if cat.kind == "expense" else "Thu" }})
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Thời gian</label>
+      <input type="datetime-local" name="occurred_at" required
+        value="{{ entry.occurred_at[:16] | replace(' ', 'T') if entry else now }}">
+    </div>
+
+    <button type="submit" class="btn-submit">
+      {{ "💾 Lưu thay đổi" if entry else "✅ Thêm ghi chép" }}
+    </button>
+  </form>
+</div>
+{% endblock %}

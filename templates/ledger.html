@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block title %}Chi tiêu — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .ledger-container { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  .ledger-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .ledger-header h1 { font-size: 1.5rem; font-weight: 700; color: var(--text); }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; font-size: 0.9rem; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1.5rem; }
+  .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
+  .summary-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+  .summary-value { font-size: 1.2rem; font-weight: 700; }
+  .income-val { color: #22c55e; }
+  .expense-val { color: #ef4444; }
+  .savings-val { color: var(--primary); }
+  .section-title { font-size: 0.85rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 1.25rem 0 0.5rem; }
+  .entry-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+  .entry-item { display: flex; align-items: center; gap: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.65rem 0.9rem; }
+  .entry-kind { font-size: 1rem; flex-shrink: 0; }
+  .entry-info { flex: 1; min-width: 0; }
+  .entry-note { font-size: 0.9rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .entry-meta { font-size: 0.75rem; color: var(--text-muted); }
+  .entry-amount { font-size: 0.95rem; font-weight: 600; white-space: nowrap; }
+  .entry-amount.income { color: #22c55e; }
+  .entry-amount.expense { color: #ef4444; }
+  .btn-void { background: none; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 5px; padding: 0.2rem 0.5rem; font-size: 0.75rem; cursor: pointer; }
+  .btn-void:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .empty { color: var(--text-muted); text-align: center; padding: 2rem; font-size: 0.9rem; }
+  .nav-links { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+  .nav-link { font-size: 0.85rem; color: var(--primary); text-decoration: none; }
+  .nav-link:hover { text-decoration: underline; }
+  .month-nav { display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+  .month-nav a { color: var(--primary); text-decoration: none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="ledger-container">
+  <div class="ledger-header">
+    <h1>💰 Chi tiêu</h1>
+    <a href="/ledger/new" class="btn-primary">+ Ghi chép</a>
+  </div>
+
+  <div class="nav-links">
+    <a href="/ledger/categories" class="nav-link">📂 Danh mục</a>
+    <a href="/ledger/report?month={{ month }}" class="nav-link">📊 Báo cáo</a>
+    <a href="/ledger/budget" class="nav-link">🎯 Hạn mức</a>
+    <a href="/chat" class="nav-link">← Chat</a>
+  </div>
+
+  <div class="month-nav">
+    <span>Tháng:</span>
+    <strong>{{ month }}</strong>
+  </div>
+
+  <div class="summary-grid">
+    <div class="summary-card">
+      <div class="summary-label">Thu nhập</div>
+      <div class="summary-value income-val">{{ summary.income | format_vnd }}</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Chi tiêu</div>
+      <div class="summary-value expense-val">{{ summary.expense | format_vnd }}</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Tiết kiệm</div>
+      <div class="summary-value savings-val">{{ summary.savings | format_vnd }}</div>
+    </div>
+  </div>
+
+  {% if budget and budget.expense_budget %}
+  <div style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">
+    Hạn mức chi: {{ budget.expense_budget | format_vnd }} —
+    đã dùng {{ summary.budget_pct }}%
+    {% if summary.budget_pct is not none and summary.budget_pct >= 80 %}
+    <span style="color:#ef4444;">⚠️</span>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <p class="section-title">Ghi chép tháng này ({{ entries | length }})</p>
+  {% if entries %}
+  <ul class="entry-list">
+    {% for e in entries %}
+    <li class="entry-item">
+      <span class="entry-kind">{% if e.kind == 'income' %}💚{% else %}🔴{% endif %}</span>
+      <div class="entry-info">
+        <div class="entry-note">{{ e.note or "(không có mô tả)" }}</div>
+        <div class="entry-meta">{{ e.occurred_at[:10] }} · {{ e.category_name or "Chưa phân loại" }}</div>
+      </div>
+      <span class="entry-amount {{ e.kind }}">{{ e.amount | format_vnd }}đ</span>
+      <form method="post" action="/ledger/{{ e.id }}/void" style="display:inline;"
+            onsubmit="return confirm('Xóa ghi chép này?')">
+        <button type="submit" class="btn-void">✕</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty">Chưa có ghi chép nào trong tháng này.<br>Bấm <a href="/ledger/new">+ Ghi chép</a> để bắt đầu.</div>
+  {% endif %}
+</div>
+{% endblock %}

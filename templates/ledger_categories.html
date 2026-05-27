@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block title %}Danh mục chi tiêu — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .cat-container { max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+  .cat-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .cat-header h1 { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+  .nav-back { font-size: 0.85rem; color: var(--primary); text-decoration: none; }
+  .nav-back:hover { text-decoration: underline; }
+  .section-title { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 1.25rem 0 0.5rem; }
+  .cat-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+  .cat-item { display: flex; align-items: center; gap: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.9rem; }
+  .cat-name { flex: 1; font-size: 0.9rem; color: var(--text); }
+  .cat-shared { font-size: 0.75rem; color: var(--text-muted); }
+  .btn-delete { background: none; border: 1px solid var(--border-strong); color: var(--text-muted); border-radius: 5px; padding: 0.2rem 0.5rem; font-size: 0.75rem; cursor: pointer; }
+  .btn-delete:hover { background: var(--danger); border-color: var(--danger); color: #fff; }
+  .empty { color: var(--text-muted); text-align: center; padding: 1.5rem; font-size: 0.9rem; }
+  .add-form { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; margin-top: 1.5rem; }
+  .add-form h2 { font-size: 1rem; font-weight: 600; color: var(--text); margin-bottom: 0.75rem; }
+  .form-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .form-row input, .form-row select { flex: 1; min-width: 120px; background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 0.5rem 0.65rem; font-size: 0.9rem; }
+  .form-row input:focus, .form-row select:focus { outline: none; border-color: var(--primary); }
+  .btn-add { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.5rem 1rem; border: none; border-radius: 7px; font-size: 0.9rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .btn-add:hover { opacity: 0.9; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="cat-container">
+  <div class="cat-header">
+    <h1>📂 Danh mục</h1>
+    <a href="/ledger" class="nav-back">← Chi tiêu</a>
+  </div>
+
+  <p class="section-title">Chi tiêu</p>
+  {% set expense_cats = categories | selectattr("kind", "equalto", "expense") | list %}
+  {% if expense_cats %}
+  <ul class="cat-list">
+    {% for cat in expense_cats %}
+    <li class="cat-item">
+      <span class="cat-name">{{ cat.name }}</span>
+      {% if cat.user_id is none %}<span class="cat-shared">dùng chung</span>{% endif %}
+      {% if cat.user_id == user.id %}
+      <form method="post" action="/ledger/categories/{{ cat.id }}/delete" style="display:inline;"
+            onsubmit="return confirm('Xóa danh mục này?')">
+        <button type="submit" class="btn-delete">✕</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty">Chưa có danh mục chi tiêu.</div>
+  {% endif %}
+
+  <p class="section-title">Thu nhập</p>
+  {% set income_cats = categories | selectattr("kind", "equalto", "income") | list %}
+  {% if income_cats %}
+  <ul class="cat-list">
+    {% for cat in income_cats %}
+    <li class="cat-item">
+      <span class="cat-name">{{ cat.name }}</span>
+      {% if cat.user_id is none %}<span class="cat-shared">dùng chung</span>{% endif %}
+      {% if cat.user_id == user.id %}
+      <form method="post" action="/ledger/categories/{{ cat.id }}/delete" style="display:inline;"
+            onsubmit="return confirm('Xóa danh mục này?')">
+        <button type="submit" class="btn-delete">✕</button>
+      </form>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty">Chưa có danh mục thu nhập.</div>
+  {% endif %}
+
+  <div class="add-form">
+    <h2>+ Thêm danh mục</h2>
+    <form method="post" action="/ledger/categories">
+      <div class="form-row">
+        <input type="text" name="name" placeholder="Tên danh mục" required>
+        <select name="kind">
+          <option value="expense">Chi tiêu</option>
+          <option value="income">Thu nhập</option>
+        </select>
+        <button type="submit" class="btn-add">Thêm</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

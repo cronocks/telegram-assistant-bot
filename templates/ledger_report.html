@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+
+{% block title %}Báo cáo tháng {{ month }} — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .report-container { max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+  .report-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
+  .report-header h1 { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+  .nav-back { font-size: 0.85rem; color: var(--primary); text-decoration: none; }
+  .nav-back:hover { text-decoration: underline; }
+  .month-form { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; align-items: center; }
+  .month-form input { background: var(--surface); border: 1px solid var(--border); color: var(--text); border-radius: 7px; padding: 0.45rem 0.65rem; font-size: 0.9rem; }
+  .month-form button { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.45rem 0.9rem; border: none; border-radius: 7px; font-size: 0.9rem; cursor: pointer; }
+  .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1.5rem; }
+  .summary-card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; text-align: center; }
+  .summary-label { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
+  .summary-value { font-size: 1.15rem; font-weight: 700; }
+  .income-val { color: #22c55e; }
+  .expense-val { color: #ef4444; }
+  .savings-val { color: var(--primary); }
+  .section-title { font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin: 1.25rem 0 0.5rem; }
+  .cat-breakdown { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+  .cat-row { display: flex; align-items: center; gap: 0.75rem; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem 0.9rem; }
+  .cat-row-name { flex: 1; font-size: 0.9rem; color: var(--text); }
+  .cat-row-amount { font-size: 0.9rem; font-weight: 600; }
+  .cat-row-amount.income { color: #22c55e; }
+  .cat-row-amount.expense { color: #ef4444; }
+  .bar-track { flex: 1; background: var(--border); border-radius: 4px; height: 6px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; }
+  .bar-fill.expense { background: #ef4444; }
+  .bar-fill.income { background: #22c55e; }
+  .budget-info { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; margin-bottom: 1rem; font-size: 0.875rem; color: var(--text-muted); }
+  .budget-warn { color: #ef4444; font-weight: 600; }
+  .empty { color: var(--text-muted); text-align: center; padding: 2rem; font-size: 0.9rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="report-container">
+  <div class="report-header">
+    <h1>📊 Báo cáo</h1>
+    <a href="/ledger" class="nav-back">← Chi tiêu</a>
+  </div>
+
+  <form class="month-form" method="get" action="/ledger/report">
+    <input type="month" name="month" value="{{ month }}">
+    <button type="submit">Xem</button>
+  </form>
+
+  <div class="summary-grid">
+    <div class="summary-card">
+      <div class="summary-label">Thu nhập</div>
+      <div class="summary-value income-val">{{ summary.income | format_vnd }}đ</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Chi tiêu</div>
+      <div class="summary-value expense-val">{{ summary.expense | format_vnd }}đ</div>
+    </div>
+    <div class="summary-card">
+      <div class="summary-label">Tiết kiệm</div>
+      <div class="summary-value savings-val">{{ summary.savings | format_vnd }}đ</div>
+    </div>
+  </div>
+
+  {% if summary.expense_budget %}
+  <div class="budget-info">
+    Hạn mức chi: {{ summary.expense_budget | format_vnd }}đ —
+    đã dùng <strong {% if summary.budget_pct >= 100 %}class="budget-warn"{% endif %}>{{ summary.budget_pct }}%</strong>
+    {% if summary.budget_pct >= 100 %}⚠️ Vượt hạn mức!{% elif summary.budget_pct >= 80 %}⚡ Sắp đến hạn mức{% endif %}
+    {% if summary.savings_target %}
+    · Mục tiêu tiết kiệm: {{ summary.savings_target | format_vnd }}đ
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if summary.by_category %}
+  {% set max_expense = summary.by_category | selectattr("kind", "equalto", "expense") | map(attribute="total") | list | max | default(1) %}
+
+  <p class="section-title">Chi tiêu theo danh mục</p>
+  <ul class="cat-breakdown">
+    {% for row in summary.by_category if row.kind == 'expense' %}
+    <li class="cat-row">
+      <span class="cat-row-name">{{ row.category_name or "Chưa phân loại" }}</span>
+      <div class="bar-track">
+        <div class="bar-fill expense" style="width: {{ (row.total / max_expense * 100) | int }}%"></div>
+      </div>
+      <span class="cat-row-amount expense">{{ row.total | format_vnd }}đ</span>
+    </li>
+    {% else %}
+    <li><div class="empty">Không có dữ liệu chi tiêu.</div></li>
+    {% endfor %}
+  </ul>
+
+  <p class="section-title">Thu nhập theo danh mục</p>
+  <ul class="cat-breakdown">
+    {% for row in summary.by_category if row.kind == 'income' %}
+    <li class="cat-row">
+      <span class="cat-row-name">{{ row.category_name or "Chưa phân loại" }}</span>
+      <span class="cat-row-amount income">{{ row.total | format_vnd }}đ</span>
+    </li>
+    {% else %}
+    <li><div class="empty">Không có dữ liệu thu nhập.</div></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="empty">Không có dữ liệu cho tháng {{ month }}.</div>
+  {% endif %}
+</div>
+{% endblock %}
