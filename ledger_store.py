@@ -122,6 +122,18 @@ class SqliteLedgerStore:
 
     # ── Soft-delete ───────────────────────────────────────────────────────────
 
+    def purge_voided_older_than(self, threshold_iso: str) -> int:
+        """Hard-delete voided entries whose voided_at is older than threshold_iso.
+
+        Returns the number of rows deleted.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "DELETE FROM ledger_entries WHERE voided_at IS NOT NULL AND voided_at < ?",
+                (threshold_iso,),
+            )
+        return cur.rowcount
+
     def void_entry(self, entry_id: int) -> bool:
         now = _utcnow_iso()
         with self._conn:
