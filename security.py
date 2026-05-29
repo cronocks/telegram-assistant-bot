@@ -26,6 +26,16 @@ ALLOWED_MIME_TYPES = {"text/markdown"}
 _create_timestamps: deque = deque()
 _trusted_folders: set = set()
 
+# Optional SQLite audit sink (injected at startup via set_audit_sink). When set,
+# audit_log() persists events to the audit_log table instead of only stdout.
+_audit_sink = None
+
+
+def set_audit_sink(sink) -> None:
+    """Inject (or clear) the persistent audit sink. Pass None to disable."""
+    global _audit_sink
+    _audit_sink = sink
+
 
 def register_trusted_folder(folder_id: str):
     """
@@ -126,7 +136,30 @@ def get_rate_limit_status() -> dict:
 
 def audit_log(action: str, file_id: str = "", filename: str = "",
               user: str = "", details: str = ""):
-    """Lớp 6: Log mọi thao tác nhạy cảm."""
+    """Lớp 6: Log mọi thao tác nhạy cảm.
+
+    Routes to the injected SQLite audit sink when available so Drive operations
+    show up in `xem audit`. Falls back to stdout when no sink is set or the sink
+    write fails (audit must never break the operation it is recording).
+    """
+    if _audit_sink is not None:
+        payload = {
+            k: v for k, v in
+            {"filename": filename, "user": user, "details": details}.items() if v
+        }
+        try:
+            _audit_sink.log(
+                actor_user_id=None,
+                action=action,
+                target_type="drive",
+                target_id=(file_id or filename or None),
+                payload=payload or None,
+            )
+            return
+        except Exception:
+            # Degrade to stdout rather than letting an audit failure propagate.
+            pass
+
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(
         f"[audit] {timestamp} | action={action} | "

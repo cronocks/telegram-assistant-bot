@@ -435,12 +435,14 @@ function chatApp() {
       const fd = new FormData();
       fd.append('text', text);
 
+      const csrfHeaders = { 'X-CSRF-Token': getCsrfToken() };
+
       if (this.activeConvId) {
         // Existing conversation
-        await fetch(`/chat/${this.activeConvId}/send`, { method: 'POST', body: fd });
+        await fetch(`/chat/${this.activeConvId}/send`, { method: 'POST', body: fd, headers: csrfHeaders });
       } else {
         // Lazy-create: POST to /chat/send, get back conversation_id
-        const res = await fetch('/chat/send', { method: 'POST', body: fd });
+        const res = await fetch('/chat/send', { method: 'POST', body: fd, headers: csrfHeaders });
         if (res.ok) {
           const json = await res.json();
           const convId = json.conversation_id;
@@ -511,7 +513,7 @@ function chatApp() {
       if (!title) return;
       const res = await fetch(`/api/conversations/${id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': getCsrfToken() },
         body: JSON.stringify({ title }),
       });
       if (res.ok) {

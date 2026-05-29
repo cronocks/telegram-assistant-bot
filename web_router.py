@@ -1238,7 +1238,14 @@ async def ledger_delete_category(
         return HTMLResponse("Ledger feature not initialised.", status_code=503)
 
     cat = _category_store.get_category(cat_id)
-    if cat is None or cat["user_id"] != user.id:
+    if cat is None:
+        return HTMLResponse("403 Forbidden", status_code=403)
+    # Owner may delete own category; shared categories (user_id IS NULL) may be
+    # deleted only by admin/manager — mirrors the Telegram handler logic.
+    is_owner = cat["user_id"] == user.id
+    is_shared = cat["user_id"] is None
+    can_manage = user.role in ("admin", "manager")
+    if not (is_owner or (is_shared and can_manage)):
         return HTMLResponse("403 Forbidden", status_code=403)
 
     _category_store.soft_delete_category(cat_id)
