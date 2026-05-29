@@ -17,12 +17,16 @@ from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
 
 from audit import SqliteAuditLog
+from security_headers import SecurityHeadersMiddleware
+from rate_limit import RateLimitMiddleware
+from csrf import CSRFMiddleware
 from channel_telegram import TelegramAdapter
 from web_channel import WebChannelAdapter
 from web_session_store import SqliteWebSessionStore
 from web_router import router as web_router, init_web_router
 import scheduled_jobs
 from claude_client import AnthropicLLM
+import config
 from config import TELEGRAM_CHAT_ID, TELEGRAM_TOKEN
 from deps import CoreDeps
 from core_handler import handle_message
@@ -172,6 +176,11 @@ web_deps = CoreDeps(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Route Drive security audit events into the SQLite audit log (FR — security
+    # hardening), so they surface via `xem audit` instead of only stdout.
+    import security as _security
+    _security.set_audit_sink(audit)
+
     # DB: run migrations then bootstrap first admin user
     try:
         run_migrations()
@@ -224,6 +233,19 @@ async def lifespan(app: FastAPI):
 templates = Jinja2Templates(directory="templates")
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(SecurityHeadersMiddleware, hsts=(config.APP_ENV != "local"))
+app.add_middleware(
+    CSRFMiddleware,
+    exempt_paths={"/webhook"},               # Telegram bot — no browser cookies
+    secure=(config.APP_ENV != "local"),
+)
+app.add_middleware(
+    RateLimitMiddleware,
+    # /login gets a tight cap: 10 attempts / 60 s per IP (brute-force deterrent
+    # at the transport layer — distinct from the per-user lockout in elevation_store).
+    path_limits={"/login": (10, 60)},
+    default_limit=(120, 60),  # 120 unsafe requests / 60 s per IP for all other routes
+)
 app.include_router(web_router)
 
 init_web_router(

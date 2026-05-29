@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="csrf-token" id="csrf-meta">
   <title>{% block title %}Family Assistant{% endblock %}</title>
   <script>
     (function () {
@@ -12,8 +13,12 @@
       document.documentElement.setAttribute('data-theme', theme);
     })();
   </script>
-  <script src="https://unpkg.com/htmx.org@1.9.12" defer></script>
-  <script src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js" defer></script>
+  <script src="https://unpkg.com/htmx.org@1.9.12"
+          integrity="sha384-ujb1lZYygJmzgSwoxRggbCHcjc0rB2XoQrxeTUQyRjrOnlCoYta87iKBWq3EsdM2"
+          crossorigin="anonymous" defer></script>
+  <script src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js"
+          integrity="sha384-l8f0VcPi/M1iHPv8egOnY/15TDwqgbOR1anMIJWvU6nLRgZVLTLSaNqi/TOoT5Fh"
+          crossorigin="anonymous" defer></script>
   <style>
     :root {
       --bg: #f8f6f2;
@@ -225,6 +230,32 @@
       document.documentElement.setAttribute('data-theme', next);
       localStorage.setItem('theme', next);
     }
+
+    // CSRF: read token from cookie and expose it globally.
+    function getCsrfToken() {
+      var m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+      return m ? decodeURIComponent(m[1]) : '';
+    }
+
+    // Inject X-CSRF-Token into every htmx unsafe request automatically.
+    document.addEventListener('htmx:configRequest', function(e) {
+      var method = (e.detail.verb || '').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD') {
+        e.detail.headers['X-CSRF-Token'] = getCsrfToken();
+      }
+    });
+
+    // Inject hidden csrf_token field into HTML form submissions (non-htmx).
+    document.addEventListener('submit', function(e) {
+      var form = e.target;
+      if (!form || form.method.toLowerCase() === 'get') return;
+      if (form.querySelector('[name="csrf_token"]')) return; // already present
+      var input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'csrf_token';
+      input.value = getCsrfToken();
+      form.appendChild(input);
+    });
   </script>
 </body>
 </html>

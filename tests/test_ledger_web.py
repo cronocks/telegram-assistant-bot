@@ -262,6 +262,37 @@ def test_ledger_create_category(alice):
     assert any(c["name"] == "Di chuyển" for c in cats)
 
 
+# ── POST /ledger/categories/{id}/delete ────────────────────────────────────────
+
+
+def test_delete_own_category(alice):
+    client, conn, _, category_store, _ = _build_client(alice)
+    cat = category_store.create_category("Di chuyển", "expense", user_id=alice.id)
+    _insert_session(conn, alice.id, "tc1")
+    r = client.post(f"/ledger/categories/{cat['id']}/delete", cookies={"web_session": "tc1"})
+    assert r.status_code in (302, 303)
+    assert category_store.get_category(cat["id"])["deleted_at"] is not None
+
+
+def test_admin_can_delete_shared_category():
+    admin = User(id=1, name="Admin", role="admin", username="admin")
+    client, conn, _, category_store, _ = _build_client(admin)
+    shared = category_store.create_category("Đi lại", "expense", user_id=None)
+    _insert_session(conn, admin.id, "tc2")
+    r = client.post(f"/ledger/categories/{shared['id']}/delete", cookies={"web_session": "tc2"})
+    assert r.status_code in (302, 303)
+    assert category_store.get_category(shared["id"])["deleted_at"] is not None
+
+
+def test_member_cannot_delete_shared_category(alice):
+    client, conn, _, category_store, _ = _build_client(alice)
+    shared = category_store.create_category("Đi lại", "expense", user_id=None)
+    _insert_session(conn, alice.id, "tc3")
+    r = client.post(f"/ledger/categories/{shared['id']}/delete", cookies={"web_session": "tc3"})
+    assert r.status_code == 403
+    assert category_store.get_category(shared["id"])["deleted_at"] is None
+
+
 # ── GET /ledger/report ────────────────────────────────────────────────────────
 
 
