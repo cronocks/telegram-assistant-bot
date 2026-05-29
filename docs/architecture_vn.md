@@ -78,6 +78,9 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `ledger_parser.py` | `LedgerParser` — parse amount (k/tr/m suffix, VND integer) + fast-path Vietnamese keyword + fuzzy category match (FR-9) |
 | `ledger_reports.py` | `LedgerReports` — monthly summary, yearly breakdown, 7-day view, threshold check 80%/100% (FR-9) |
 | `cmd_ledger.py` | 16 Telegram handlers: `chi:`, `thu:`, `danh sach ghi chep`, `sua/huy ghi chep:`, `xem/them/xoa/sua danh muc`, `bao cao thang/nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc` (FR-9) |
+| `csrf.py` | `CSRFMiddleware` — double-submit cookie CSRF; set cookie non-HttpOnly trên GET, validate cookie vs form-field/header trên POST/PUT/PATCH/DELETE; `/webhook` được exempt *(Security hardening)* |
+| `rate_limit.py` | `RateLimitMiddleware` — sliding-window per `(IP, path)`; `/login` giới hạn 10 req/60s, default 120 req/60s cho các route khác; không dùng external dependency *(Security hardening)* |
+| `security_headers.py` | `SecurityHeadersMiddleware` — stamp `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Content-Security-Policy`, `Strict-Transport-Security` (chỉ staging/prod) *(Security hardening)* |
 | `channel_telegram.py` | `TelegramAdapter` — parse Telegram webhook payload, gửi reply, `send_with_inline_keyboard` |
 | `claude_client.py` | `AnthropicLLM` — wrapper Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — lưu trữ ghi chú trên Google Drive |
@@ -107,7 +110,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `text_utils.py` | Chuẩn hóa dấu tiếng Việt, multi-prefix command matcher |
 | `timeutils.py` | Helpers UTC+7 |
 | `cost_monitor.py` | Theo dõi chi phí LLM, cảnh báo ngưỡng |
-| `security.py` | Kiểm soát truy cập folder Drive, rate limiting |
+| `security.py` | Kiểm soát truy cập folder Drive (OAuth scope, folder whitelist, MIME whitelist, rate limit file/giờ); `set_audit_sink()` để route Drive audit events vào SQLite `audit_log` thay vì chỉ stdout *(Security hardening)* |
 | `config.py` | Load biến môi trường |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | Migration runner idempotent dựa trên file |
@@ -575,6 +578,11 @@ Soft-delete đã có từ trước qua cột `deleted_at` trên `notes`, `wiki_p
 | `category_created` | `category` | Tạo danh mục mới *(FR-9)* |
 | `category_updated` | `category` | Đổi tên danh mục *(FR-9)* |
 | `category_deleted` | `category` | Xóa danh mục (soft-delete) *(FR-9)* |
+| `folder_registered` | `drive` | Drive folder được trust sau khi bot tự tạo/xác minh *(Security hardening)* |
+| `scope_validated` | `drive` | OAuth token scope đã xác minh là `drive.file` *(Security hardening)* |
+| `file_created` | `drive` | File tạo thành công trên Drive *(Security hardening)* |
+| `file_updated` | `drive` | File cập nhật trên Drive *(Security hardening)* |
+| `file_deleted` | `drive` | File xóa trên Drive *(Security hardening)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -714,6 +722,12 @@ Lệnh được match qua prefix matcher không phân biệt dấu tiếng Việ
 - `/setup-password` — force-reset mật khẩu nếu `must_change_password=1`
 - `/logout` — revoke session server-side ngay lập tức
 - Brute-force: 5 fail → khóa 15 phút (tái dùng bảng `sudo_attempts` với `channel="web"`)
+
+**HTTP security middleware (security hardening):**
+- **CSRF:** Cookie `csrf_token` non-HttpOnly + SameSite=Lax được set trên mọi GET. POST/PUT/PATCH/DELETE phải echo token qua form field `csrf_token` (HTML form) hoặc header `X-CSRF-Token` (htmx/fetch). `/webhook` được exempt (Telegram không có browser cookie). JS trong `base.html` tự inject token vào form submit và htmx request.
+- **Rate limiting:** `/login` giới hạn 10 request/60s per IP (tầng transport, độc lập với per-user lockout ở `elevation_store`); default 120/60s cho tất cả route mutating khác.
+- **Security headers:** Mọi response đều có `X-Frame-Options: DENY` (chống clickjacking), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Content-Security-Policy` (cho phép unpkg.com + `unsafe-inline/eval` do Alpine 3 yêu cầu), `Strict-Transport-Security` (chỉ staging/production).
+- **SRI:** htmx và Alpine.js được load từ CDN với `integrity="sha384-..."` + `crossorigin="anonymous"` để phát hiện nếu CDN bị tamper.
 
 ### Web Chat History *(FR-5.5)*
 **Các route:**
