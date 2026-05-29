@@ -1,6 +1,6 @@
 # Kiến Trúc Hệ Thống
 
-> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-8** (Anniversary / Memorial Reminders).
+> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-9** (Expense Tracking / Ledger).
 > Xem lộ trình phát triển đầy đủ tại [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -72,6 +72,12 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fire 08:00 VN, grace 12h (FR-8) |
 | `lunar_utils.py` | `lunar_to_solar()` + `compute_anniversary_solar_date()`; lib `lunardate==0.2.2` (FR-8) |
 | `cmd_anniversary.py` | 5 Telegram handlers: `them ky niem`, `danh sach ky niem`, `ky niem <id>`, `xoa ky niem`, `sua ky niem` (FR-8) |
+| `category_store.py` | `SqliteCategoryStore` — CRUD danh mục chi/thu + family-shared scope (`user_id IS NULL`) (FR-9) |
+| `ledger_store.py` | `SqliteLedgerStore` — entry CRUD + monthly aggregates + 7-day query + void (soft-delete) + 30-day purge (FR-9) |
+| `budget_store.py` | `SqliteBudgetStore` — upsert `(user_id, month)`, threshold alert state JSON (FR-9) |
+| `ledger_parser.py` | `LedgerParser` — parse amount (k/tr/m suffix, VND integer) + fast-path Vietnamese keyword + fuzzy category match (FR-9) |
+| `ledger_reports.py` | `LedgerReports` — monthly summary, yearly breakdown, 7-day view, threshold check 80%/100% (FR-9) |
+| `cmd_ledger.py` | 16 Telegram handlers: `chi:`, `thu:`, `danh sach ghi chep`, `sua/huy ghi chep:`, `xem/them/xoa/sua danh muc`, `bao cao thang/nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc` (FR-9) |
 | `channel_telegram.py` | `TelegramAdapter` — parse Telegram webhook payload, gửi reply, `send_with_inline_keyboard` |
 | `claude_client.py` | `AnthropicLLM` — wrapper Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — lưu trữ ghi chú trên Google Drive |
@@ -87,14 +93,14 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `audit.py` | `SqliteAuditLog` — ghi sự kiện audit append-only; Protocol `AuditLog` (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — CRUD hàng đợi thông báo persistent (FR-4) |
 | `notification_service.py` | `NotificationService` — bridge store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
-| `scheduled_jobs.py` | APScheduler jobs: purge 180d, purge-at-18, flush notifications, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year (FR-4, FR-7, FR-8) |
+| `scheduled_jobs.py` | APScheduler jobs: purge 180d, purge-at-18, flush notifications, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year, weekly_ledger_summary, purge_voided_ledger (FR-4, FR-7, FR-8, FR-9) |
 | `web_session_store.py` | `SqliteWebSessionStore` — session web DB-revocable (không JWT); find/revoke/create (FR-5) |
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
-| `web_router.py` | FastAPI router web: auth, chat, conversations API, task CRUD, anniversary CRUD routes (FR-5, FR-5.5, FR-7, FR-8) |
+| `web_router.py` | FastAPI router web: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — CRUD conversation + message; search LIKE; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — export ZIP in-memory, parse/apply import transactional, upload Drive `Claude-Notes/Backups/`, rate-limit 5 phút/user (FR-6) |
 | `tools/local_migrate.py` | CLI standalone: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html` (FR-5 → FR-8) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`, `ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html` (FR-5 → FR-9) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) dùng bởi các retrieval path |
 | `auth.py` | Argon2id password hashing (hạ tầng từ FR-2; FR-3.5 dùng để verify mật khẩu sudo) |
 | `permissions.py` | Permission helpers theo role |
@@ -105,7 +111,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `config.py` | Load biến môi trường |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | Migration runner idempotent dựa trên file |
-| `db/migrations/*.sql` | File SQL migration (001–024) |
+| `db/migrations/*.sql` | File SQL migration (001–027) |
 
 ---
 
@@ -412,6 +418,49 @@ Sự kiện kỷ niệm hàng năm: giỗ, kỷ niệm cưới, dịp khác. Lư
 
 Index: `(user_id)` WHERE deleted_at IS NULL, `(enabled)` WHERE enabled=1 AND deleted_at IS NULL.
 
+#### `categories` *(FR-9)*
+Danh mục phân loại bút toán chi/thu. Có thể là riêng (`user_id` = user) hoặc chung cả nhà (`user_id IS NULL` — chỉ admin/manager tạo).
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | NULL = danh mục chung (family-shared) |
+| `name` | TEXT NOT NULL | Tên danh mục, vd "Ăn uống" |
+| `kind` | TEXT NOT NULL | `expense` \| `income` |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps; `deleted_at` dùng soft-delete |
+
+#### `ledger_entries` *(FR-9)*
+Bút toán thu/chi. Amount lưu VND nguyên (integer) — không dùng FLOAT (Decision #87). Soft-delete qua `voided_at`; auto-purge sau 30 ngày.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `kind` | TEXT NOT NULL | `income` \| `expense` |
+| `amount` | INTEGER NOT NULL | VND — luôn dương |
+| `category_id` | INTEGER FK → categories | Nullable — không bắt buộc gắn danh mục |
+| `note` | TEXT | Mô tả raw từ user |
+| `occurred_at` | TEXT | ISO datetime — thời điểm giao dịch |
+| `source` | TEXT | `telegram` \| `web` |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+| `voided_at` | TEXT | NULL = đang active; set khi void (soft-delete) |
+
+Index: `(user_id, occurred_at DESC)`, `(user_id, category_id, occurred_at)`.
+
+#### `monthly_budgets` *(FR-9)*
+Hạn mức chi tiêu và mục tiêu tiết kiệm theo tháng, mỗi user một row mỗi tháng (upsert).
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `month` | TEXT NOT NULL | `YYYY-MM` |
+| `expense_budget` | INTEGER | Hạn mức chi tháng (VND); NULL = chưa đặt |
+| `savings_target` | INTEGER | Mục tiêu tiết kiệm (VND); NULL = chưa đặt |
+| `alerts_sent` | TEXT | JSON string — track ngưỡng 80%/100% đã gửi để không spam |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+| UNIQUE | `(user_id, month)` | Một row mỗi user mỗi tháng |
+
 #### `anniversary_reminders` *(FR-8)*
 Mỗi mốc nhắc của một kỷ niệm trong một năm cụ thể là một row. UNIQUE constraint đảm bảo compute job idempotent.
 
@@ -520,6 +569,12 @@ Soft-delete đã có từ trước qua cột `deleted_at` trên `notes`, `wiki_p
 | `anniversary_deleted` | `anniversary` | Soft-delete kỷ niệm *(FR-8)* |
 | `anniversary_reminder_fired` | `anniversary` | Nhắc kỷ niệm gửi thành công *(FR-8)* |
 | `anniversary_reminder_missed` | `anniversary` | Nhắc kỷ niệm quá hạn grace 12h — bỏ qua *(FR-8)* |
+| `ledger_created` | `ledger_entry` | Ghi bút toán thu/chi mới *(FR-9)* |
+| `ledger_updated` | `ledger_entry` | Sửa bút toán *(FR-9)* |
+| `ledger_voided` | `ledger_entry` | Hủy bút toán (soft-delete) *(FR-9)* |
+| `category_created` | `category` | Tạo danh mục mới *(FR-9)* |
+| `category_updated` | `category` | Đổi tên danh mục *(FR-9)* |
+| `category_deleted` | `category` | Xóa danh mục (soft-delete) *(FR-9)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -734,6 +789,45 @@ Lệnh được match qua prefix matcher không phân biệt dấu tiếng Việ
 | GET | `/anniversaries/{id}/edit` | Form sửa |
 | POST | `/anniversaries/{id}` | Cập nhật |
 | POST | `/anniversaries/{id}/delete` | Soft-delete |
+
+### Chi tiêu & Ngân sách *(FR-9)*
+| Lệnh | Mô tả |
+|------|-------|
+| `chi: <số> <mô tả>` | Ghi khoản chi tiêu. Ví dụ: `chi: 50k ăn trưa` |
+| `thu: <số> <mô tả>` | Ghi khoản thu nhập. Ví dụ: `thu: 5tr lương` |
+| `ghi chep: <id>` | Xem chi tiết một bút toán |
+| `danh sach ghi chep` | Liệt kê 20 bút toán gần nhất |
+| `sua ghi chep: <id>, so=<số>[, mo ta=<text>]` | Sửa bút toán |
+| `huy ghi chep: <id>` | Hủy bút toán (soft-delete, giữ 30 ngày) |
+| `xem danh muc` | Xem danh sách danh mục chi/thu |
+| `them danh muc: <tên>, chi\|thu[, chung]` | Thêm danh mục (thêm `, chung` cần admin/manager) |
+| `xoa danh muc: <id>` | Xóa danh mục (soft-delete) |
+| `sua danh muc: <id> <tên mới>` | Đổi tên danh mục |
+| `bao cao thang [YYYY-MM]` | Báo cáo thu/chi tháng (mặc định tháng hiện tại) |
+| `bao cao nam` | Báo cáo thu/chi từng tháng trong năm hiện tại |
+| `xem chi tieu` | Tổng thu/chi 7 ngày qua |
+| `dat han muc chi: <số>` | Đặt hạn mức chi tháng này |
+| `dat muc tieu tiet kiem: <số>` | Đặt mục tiêu tiết kiệm tháng này |
+| `xem han muc` | Xem hạn mức chi và mục tiêu tiết kiệm hiện tại |
+
+**Định dạng số:** `50000`, `50k`, `50.000`, `50tr`, `5m` đều được chấp nhận. Xuất ra dạng `50.000 đ`.
+
+**Web routes *(FR-9)*:**
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/ledger` | Danh sách bút toán tháng hiện tại + tổng thu/chi/tiết kiệm |
+| GET | `/ledger/new` | Form tạo bút toán mới |
+| POST | `/ledger` | Lưu bút toán mới |
+| GET | `/ledger/categories` | Quản lý danh mục |
+| POST | `/ledger/categories` | Tạo danh mục mới |
+| POST | `/ledger/categories/{id}/delete` | Xóa danh mục |
+| GET | `/ledger/report` | Báo cáo tháng: tổng, theo danh mục, biểu đồ |
+| GET | `/ledger/budget` | Xem hạn mức + mục tiêu tiết kiệm |
+| POST | `/ledger/budget` | Cập nhật hạn mức / mục tiêu |
+| GET | `/ledger/{id}/edit` | Form sửa bút toán |
+| POST | `/ledger/{id}` | Cập nhật bút toán |
+| POST | `/ledger/{id}/void` | Hủy bút toán |
 
 ### Đăng ký (trước khi xác thực)
 | Lệnh | Mô tả |

@@ -529,42 +529,21 @@ Mọi lần bật/tắt **đều ghi audit log** (FR-4) — bằng chứng nếu
 ---
 
 ### FR-9 — Expense Tracking (Ledger)
-**Status:** PENDING
-**Scope:**
-- `ledger_entries` table (schema bên dưới)
-- Fast-path keyword detection:
-  - **Income:** "nhận", "thu"
-  - **Expense:** "chi", "trả", "mua", ...
-  - **Không xác định được** → hỏi lại user
-- LLM hỗ trợ phân loại category khi user mô tả mơ hồ
-- Reports: tổng tháng, by category, trend
-- Per-user wallet (chưa hỗ trợ shared family wallet)
-- Tương lai: budget alert qua reminder system (FR-7)
-
-**Schema:**
-```sql
-ledger_entries
-  id            INTEGER PK
-  user_id       INTEGER FK → users.id
-  kind          TEXT      -- 'income' | 'expense'
-  amount        INTEGER   -- VND, KHÔNG dùng FLOAT (tránh sai số)
-  category_id   INTEGER FK → categories.id
-  note          TEXT      -- mô tả raw từ user
-  occurred_at   DATETIME
-  created_at    DATETIME
-  source        TEXT      -- 'telegram' | 'web' | ...
-  voided_at     DATETIME NULL  -- soft-delete, không DELETE thật
-
-categories
-  id          INTEGER PK
-  user_id     INTEGER NULL  -- NULL = family-shared
-  name        TEXT
-  kind        TEXT          -- 'income' | 'expense'
-  parent_id   INTEGER NULL  -- nested categories
-
-INDEX (user_id, occurred_at)
-INDEX (user_id, category_id, occurred_at)
-```
+**Status:** ✅ DONE — merged to `dev` (staging) 2026-05-29, 1109 tests passing; plan chi tiết tại `docs/FR-9-PLAN.md`
+**Scope delivered:**
+- Migrations 025–027: bảng `categories`, `ledger_entries`, `monthly_budgets`
+- `category_store.py` — `SqliteCategoryStore` CRUD + family-shared scope (`user_id IS NULL`)
+- `ledger_store.py` — `SqliteLedgerStore` entry CRUD + monthly aggregates + 7-day query + soft-delete (`voided_at`) + 30-day auto-purge
+- `budget_store.py` — `SqliteBudgetStore` upsert by `(user_id, month)`, threshold alert state (`alerts_sent` JSON)
+- `ledger_parser.py` — `LedgerParser` amount parsing (k/tr/m suffix; VND integer) + fast-path Vietnamese keyword + fuzzy category match
+- `ledger_reports.py` — `LedgerReports` monthly summary, yearly breakdown, 7-day view, threshold check (80%/100%)
+- `cmd_ledger.py` — 16 Telegram command handlers: `chi:`, `thu:`, `ghi chep:`, `danh sach ghi chep`, `sua ghi chep:`, `huy ghi chep:`, `xem danh muc`, `them danh muc:`, `xoa danh muc:`, `sua danh muc:`, `bao cao thang`, `bao cao nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc`
+- Web routes: 12 routes `/ledger/*` + 6 templates (`ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html`)
+- Scheduled jobs: `send_weekly_ledger_summary` (Mon 08:00 VN) + `purge_voided_ledger_entries` (daily 03:10 VN, 30-day retention)
+- Real-time threshold alerts (80%/100% hạn mức chi tháng) via notification service
+- Audit events: `ledger_created`, `ledger_updated`, `ledger_voided`, `category_created`, `category_updated`, `category_deleted`
+- Wiring: `core_handler.py` dispatch table (16 commands + `_QUOTA_EXEMPT`) + `/help chi tieu` + `/start` menu; `main.py` instantiate + inject 5 stores
+- 141 FR-9 tests mới (categories: 14, ledger: 20, budget: 10, parser: 20, reports: 14, handlers: 26, web: 16, wiring: 10, jobs: 11)
 
 ---
 
@@ -674,6 +653,18 @@ INDEX (user_id, category_id, occurred_at)
 | 83 | Refactor `core_handler.py` → 7 cmd_* modules | Business logic tách vào `cmd_utils`, `cmd_user`, `cmd_audit`, `cmd_notes`, `cmd_sudo`, `cmd_wiki`, `cmd_task`; `core_handler.py` giữ vai trò dispatcher + `/start` + `/help`. Mỗi module import `CoreDeps` từ `deps.py` | File 3662 dòng khó maintain, test import chậm; tách theo domain giúp locate code nhanh, test isolation tốt hơn, PR review nhỏ hơn | 2026-05-24 |
 | 84 | Bổ sung 3 lệnh quản lý lịch học ngoài scope FR-7 gốc | `danh sach lich hoc`, `huy lich hoc: <id>`, `sua lich hoc: <id> <mo ta moi>` — thêm khi test thấy thiếu UX để xem/sửa/xóa lịch học đã tạo. `sua lich hoc` re-parse qua LLM + update task + reschedule reminder | FR-7 gốc chỉ có `lich hoc:` để tạo; không có cách xem hay sửa → UX bỏ ngỏ; phát hiện khi test production | 2026-05-24 |
 | 85 | Cải thiện system prompt task_parser cho Vietnamese time formats | Thêm bảng quy đổi buổi → giờ (`10h tối` = 22:00, `chiều` = 15:00, `trưa` = 12:00, v.v.) và ví dụ phong phú vào `_SYSTEM_PROMPT` của `task_parser.py` | Haiku 4.5 không tự suy luận `10h tối` = 22:00 khi prompt chỉ dùng ví dụ `5h chiều mai`; explicit mapping loại bỏ ambiguity | 2026-05-24 |
+| 86 | FR-9: Tách store riêng per concern | `LedgerStore`, `CategoryStore`, `BudgetStore` là 3 file riêng biệt | Single Responsibility — test isolation tốt hơn; match pattern `task_store` / `reminder_store` FR-7 | 2026-05-27 |
+| 87 | FR-9: Amount = INTEGER VND | Lưu số tiền là integer VND, không bao giờ dùng FLOAT | Tránh sai số float với dữ liệu tài chính — Decision #26 | 2026-05-27 |
+| 88 | FR-9: Fast-path keyword + LLM fallback cho category | `chi:` / `thu:` là fast-path; LLM chỉ dùng khi không có keyword rõ ràng | Giảm quota cost — phần lớn entries dùng keyword cụ thể | 2026-05-27 |
+| 89 | FR-9: LLM category classification tính quota user | Nhất quán với `task_parser` FR-7 | User thấy quota rõ ràng, không surprise | 2026-05-27 |
+| 90 | FR-9: Family-shared categories via `user_id IS NULL` | Danh mục chung lưu `user_id = NULL`; chỉ admin/manager tạo được | Schema từ ROADMAP; member chỉ tạo personal category | 2026-05-27 |
+| 91 | FR-9: Soft-delete via `voided_at` + 30-day auto-purge | Nhất quán với FR-4 recycle bin nhưng retention ngắn hơn (30 ngày) | Dữ liệu tài chính xoay vòng nhanh hơn ghi chú; 30 ngày đủ để undo nhầm | 2026-05-27 |
+| 92 | FR-9: Single UPSERT command cho budget | `dat han muc chi: <số>` upsert row cho tháng hiện tại, không cần lệnh "sửa" riêng | UX đơn giản hơn; đặt lại = ghi đè | 2026-05-27 |
+| 93 | FR-9: Savings target = income − expense (derived) | User đặt số mục tiêu; savings thực tế tự tính — không có "chuyển vào tiết kiệm" | Phù hợp wallet đơn giản; không cần concept "tài khoản tiết kiệm" riêng | 2026-05-27 |
+| 94 | FR-9: Weekly report scope = tuần đầy đủ trước (Mon→Sun) | Gửi Mon 08:00 VN; bao gồm tuần hoàn chỉnh trước đó | Bounded period rõ ràng, không partial week | 2026-05-27 |
+| 95 | FR-9: Threshold alerts 80%/100% fire một lần/ngưỡng/tháng | State lưu trong `monthly_budgets.alerts_sent` JSON | Tránh spam alert mỗi lần chi tiêu | 2026-05-27 |
+| 96 | FR-9: VND format linh hoạt khi nhập | Chấp nhận `50000`, `50k`, `50.000`, `50tr`, `5m` — xuất ra `50.000` | UX tự nhiên; người dùng VN quen viết `50k` hơn `50000` | 2026-05-27 |
+| 97 | FR-9: "xem danh muc / xem chi tieu / xem han muc" đặt trước catch-all "xem " trong command table | 3 prefix dài cần đứng trước `"XEM": ["xem "]` để match đúng | FastAPI/match_command iterate in order; prefix ngắn hơn sẽ match trước nếu đứng trước | 2026-05-29 |
 
 ---
 
@@ -698,7 +689,7 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
 
 ## 8. Current Status & Next Action
 
-### Right now (2026-05-26)
+### Right now (2026-05-29)
 - ✅ **FR-1** merged to `main` (production)
 - ✅ **FR-2** merged to `main` (production) 2026-05-18 — 11 commits, 148 tests passing
 - ✅ **FR-3** merged to `main` (production) 2026-05-19 — Scope (private/everyone), ACL, L1 Memory, `/help [nhom]`
@@ -744,16 +735,23 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
   - 5 Telegram commands + 7 web routes + 3 templates (`anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`)
   - Scheduled jobs: `anniversary_tick` (60s) + `compute_anniversary_year` (startup + Jan 1 00:05 VN)
   - Migration runner (`db/migrations.py`) cải tiến: handle "duplicate column name" gracefully cho ALTER TABLE idempotent
+- ✅ **FR-9** merged to `dev` (staging) 2026-05-29 — Expense Tracking (Ledger); 1109 tests passing; plan chi tiết tại `docs/FR-9-PLAN.md`
+  - Migrations 025–027: `categories`, `ledger_entries`, `monthly_budgets`
+  - `category_store.py`, `ledger_store.py`, `budget_store.py`, `ledger_parser.py`, `ledger_reports.py`, `cmd_ledger.py`
+  - 16 Telegram commands + 12 web routes + 6 templates (ledger list, form, categories, report, budget)
+  - Scheduled jobs: `send_weekly_ledger_summary` (Mon 08:00 VN) + `purge_voided_ledger_entries` (daily 03:10 VN)
+  - Real-time threshold alerts 80%/100% hạn mức chi tháng
+  - 141 FR-9 tests mới
 
 ---
 
 ### 🔔 Next session reminder (cho phiên tiếp theo)
 
-**FR-8 DONE — merged to `main` 2026-05-26, 968 tests passing.**
+**FR-9 DONE — merged to `dev` (staging) 2026-05-29, 1109 tests passing. Đang test staging.**
 
-**Tiếp theo:** Bắt đầu **FR-9** (Expense Tracking / Ledger)
-- Branch off từ `main`: `feature/FR9`
-- Lập `docs/FR-9-PLAN.md` chi tiết trước khi code
+**Tiếp theo khi staging OK:**
+- Merge `feature/FR9` → `main` (production)
+- Sau đó plan FR tiếp theo (xem Section 5 → Future)
 
 ---
 
@@ -806,12 +804,12 @@ Chi tiết scope: xem **Section 5 → FR-5.5**. Decision rationale: xem **Sectio
 ---
 
 ### Immediate next steps
-1. Bắt đầu **FR-9**: Expense Tracking (Ledger)
-   - Branch off từ `main`: `feature/FR9`
-   - Lập `docs/FR-9-PLAN.md` chi tiết trước khi code
+1. Xác nhận staging test FR-9 OK (không lỗi)
+2. Merge `feature/FR9` → `main` → push production
+3. Plan FR tiếp theo (xem Section 5 → Future)
 
 ### Pending FRs
-- **FR-9** (next) — sequential theo Section 5
+- Tất cả foundation FRs (FR-1 → FR-9) đã hoàn thành — xem Section 5 → Future để chọn FR tiếp theo
 
 ---
 
