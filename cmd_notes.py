@@ -26,9 +26,9 @@ _LIET_KE_PAGE_SIZE = 20
 async def _cmd_ghi_nho(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """ghi nhớ <content> → create a new file with a Claude-generated title."""
     if not content:
-        await deps.channel.send(chat_id, "Vui long nhap noi dung can ghi nho.")
+        await deps.channel.send(chat_id, "Vui lòng nhập nội dung cần ghi nhớ.")
         return
-    await deps.channel.send(chat_id, "Dang luu...")
+    await deps.channel.send(chat_id, "Đang lưu...")
     try:
         title, tokens = deps.llm.ask(
             f"Tao tieu de ngan (toi da 6 tu) cho ghi chu sau, chi tra ve tieu de: {content}"
@@ -36,16 +36,16 @@ async def _cmd_ghi_nho(chat_id: str, content: str, user: User, deps: CoreDeps) -
         record_usage(tokens // 2, tokens // 2)
         filename, file_id = deps.notes.save_note(title.strip(), content)
         _register_note(file_id, user.id, "note", filename, deps)
-        await deps.channel.send(chat_id, f"Da luu: {filename}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Đã lưu: {filename}", use_markdown=False)
     except PermissionError as e:
         traceback.print_exc()
         await deps.channel.send(
-            chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False,
+            chat_id, f"Từ chối vì lý do bảo mật: {str(e)[:400]}", use_markdown=False,
         )
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(
-            chat_id, f"Loi khi luu: {str(e)[:500]}", use_markdown=False,
+            chat_id, f"Lỗi khi lưu: {str(e)[:500]}", use_markdown=False,
         )
 
 
@@ -54,8 +54,8 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
     if ":" not in body:
         await deps.channel.send(
             chat_id,
-            "Cu phap: ghi nho vao <ten-file>: <noi dung>\n"
-            "Vi du: ghi nho vao kiem tra: them cau hoi moi",
+            "Cú pháp: ghi nhớ vào <tên-file>: <nội dung>\n"
+            "Ví dụ: ghi nhớ vào kiểm tra: thêm câu hỏi mới",
             use_markdown=False,
         )
         return
@@ -65,14 +65,14 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
     content = content.strip()
 
     if not name_part:
-        await deps.channel.send(chat_id, "Thieu ten file.", use_markdown=False)
+        await deps.channel.send(chat_id, "Thiếu tên file.", use_markdown=False)
         return
     if not content:
-        await deps.channel.send(chat_id, "Thieu noi dung.", use_markdown=False)
+        await deps.channel.send(chat_id, "Thiếu nội dung.", use_markdown=False)
         return
 
     await deps.channel.send(
-        chat_id, f"Dang tim file '{name_part}'...", use_markdown=False,
+        chat_id, f"Đang tìm file '{name_part}'...", use_markdown=False,
     )
 
     try:
@@ -80,7 +80,7 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(
-            chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False,
+            chat_id, f"Lỗi khi tìm: {str(e)[:400]}", use_markdown=False,
         )
         return
 
@@ -91,25 +91,25 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
             entry = f"\n## {time_str()}\n{content}\n"
             filename = deps.notes.append_to_file(chosen["id"], entry)
             await deps.channel.send(
-                chat_id, f"Da them vao: {filename}", use_markdown=False,
+                chat_id, f"Đã thêm vào: {filename}", use_markdown=False,
             )
         except Exception as e:
             traceback.print_exc()
             await deps.channel.send(
-                chat_id, f"Loi khi them: {str(e)[:400]}", use_markdown=False,
+                chat_id, f"Lỗi khi thêm: {str(e)[:400]}", use_markdown=False,
             )
         return
 
     # Case 2: multiple matches → ask user to pick.
     if len(matches) > 1:
         shown = matches[:FUZZY_SHOW_LIMIT]
-        msg_lines = [f"Tim thay {len(matches)} file khop voi '{name_part}':"]
+        msg_lines = [f"Tìm thấy {len(matches)} file khớp với '{name_part}':"]
         for i, f in enumerate(shown, 1):
             msg_lines.append(f"{i}. {f['name']}")
         if len(matches) > FUZZY_SHOW_LIMIT:
-            msg_lines.append(f"... ({len(matches) - FUZZY_SHOW_LIMIT} file khac)")
-        msg_lines.append(f"\nTra loi 1-{len(shown)} de chon, hoac 'huy'.")
-        msg_lines.append(f"(Het han sau {PENDING_CHOICE_TIMEOUT_SEC}s)")
+            msg_lines.append(f"... ({len(matches) - FUZZY_SHOW_LIMIT} file khác)")
+        msg_lines.append(f"\nTrả lời 1-{len(shown)} để chọn, hoặc 'huỷ'.")
+        msg_lines.append(f"(Hết hạn sau {PENDING_CHOICE_TIMEOUT_SEC}s)")
 
         _set_pending(chat_id, "fuzzy_append", {
             "matches": shown,
@@ -125,9 +125,9 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
     })
     await deps.channel.send(
         chat_id,
-        f"Khong tim thay file '{name_part}'.\n"
-        f"Tao file moi voi ten do? (yes/no)\n"
-        f"(Het han sau {PENDING_CHOICE_TIMEOUT_SEC}s)",
+        f"Không tìm thấy file '{name_part}'.\n"
+        f"Tạo file mới với tên đó? (yes/no)\n"
+        f"(Hết hạn sau {PENDING_CHOICE_TIMEOUT_SEC}s)",
         use_markdown=False,
     )
 
@@ -135,28 +135,28 @@ async def _cmd_ghi_nho_vao(chat_id: str, body: str, deps: CoreDeps) -> None:
 async def _cmd_nhat_ky(chat_id: str, content: str, user: User, deps: CoreDeps) -> None:
     """nhật ký <content> → append to today's journal."""
     if not content:
-        await deps.channel.send(chat_id, "Vui long nhap noi dung.", use_markdown=False)
+        await deps.channel.send(chat_id, "Vui lòng nhập nội dung.", use_markdown=False)
         return
 
-    await deps.channel.send(chat_id, "Dang ghi nhat ky...")
+    await deps.channel.send(chat_id, "Đang ghi nhật ký...")
     try:
         filename, action, file_id = deps.notes.add_to_daily_journal(content)
         if action == "created":
             _register_note(file_id, user.id, "journal", filename, deps)
         else:
             deps.note_index.touch_note(file_id)
-        verb = "Da tao moi" if action == "created" else "Da them vao"
+        verb = "Đã tạo mới" if action == "created" else "Đã thêm vào"
         await deps.channel.send(
             chat_id, f"{verb}: {filename}", use_markdown=False,
         )
     except PermissionError as e:
         traceback.print_exc()
         await deps.channel.send(
-            chat_id, f"Tu choi vi ly do bao mat: {str(e)[:400]}", use_markdown=False,
+            chat_id, f"Từ chối vì lý do bảo mật: {str(e)[:400]}", use_markdown=False,
         )
     except Exception as e:
         traceback.print_exc()
-        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:500]}", use_markdown=False)
 
 
 async def _cmd_xem_nhat_ky(chat_id: str, deps: CoreDeps) -> None:
@@ -166,26 +166,26 @@ async def _cmd_xem_nhat_ky(chat_id: str, deps: CoreDeps) -> None:
         if not journal:
             await deps.channel.send(
                 chat_id,
-                f"Chua co nhat ky cho ngay {today_str()}. "
-                f"Hay tao bang lenh: nhat ky <noi dung>",
+                f"Chưa có nhật ký cho ngày {today_str()}. "
+                f"Hãy tạo bằng lệnh: nhat ky <noi dung>",
                 use_markdown=False,
             )
             return
         content = journal["content"]
         if len(content) > 3500:
-            content = content[:3500] + "\n\n[...] (qua dai, da cat)"
+            content = content[:3500] + "\n\n[...] (quá dài, đã cắt)"
         await deps.channel.send(
             chat_id, f"=== {journal['name']} ===\n\n{content}", use_markdown=False,
         )
     except Exception as e:
         traceback.print_exc()
-        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:500]}", use_markdown=False)
 
 
 async def _cmd_xem(chat_id: str, name_query: str, user: User, deps: CoreDeps) -> None:
     """xem <name> → read a file (fuzzy match, ACL-filtered)."""
     if not name_query:
-        await deps.channel.send(chat_id, "Cu phap: xem <ten-file>", use_markdown=False)
+        await deps.channel.send(chat_id, "Cú pháp: xem <tên-file>", use_markdown=False)
         return
 
     try:
@@ -193,7 +193,7 @@ async def _cmd_xem(chat_id: str, name_query: str, user: User, deps: CoreDeps) ->
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(
-            chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False,
+            chat_id, f"Lỗi khi tìm: {str(e)[:400]}", use_markdown=False,
         )
         return
 
@@ -202,7 +202,7 @@ async def _cmd_xem(chat_id: str, name_query: str, user: User, deps: CoreDeps) ->
     if not matches:
         await deps.channel.send(
             chat_id,
-            f"Khong tim thay file nao khop voi '{name_query}'.",
+            f"Không tìm thấy file nào khớp với '{name_query}'.",
             use_markdown=False,
         )
         return
@@ -213,7 +213,7 @@ async def _cmd_xem(chat_id: str, name_query: str, user: User, deps: CoreDeps) ->
             file_data = deps.notes.read_file_by_id(chosen["id"])
             content = file_data["content"]
             if len(content) > 3500:
-                content = content[:3500] + "\n\n[...] (qua dai, da cat)"
+                content = content[:3500] + "\n\n[...] (quá dài, đã cắt)"
             await deps.channel.send(
                 chat_id, f"=== {file_data['name']} ===\n\n{content}",
                 use_markdown=False,
@@ -221,18 +221,18 @@ async def _cmd_xem(chat_id: str, name_query: str, user: User, deps: CoreDeps) ->
         except Exception as e:
             traceback.print_exc()
             await deps.channel.send(
-                chat_id, f"Loi khi doc: {str(e)[:400]}", use_markdown=False,
+                chat_id, f"Lỗi khi đọc: {str(e)[:400]}", use_markdown=False,
             )
         return
 
     # Multiple matches → ask user to pick.
     shown = matches[:FUZZY_SHOW_LIMIT]
-    msg_lines = [f"Tim thay {len(matches)} file khop voi '{name_query}':"]
+    msg_lines = [f"Tìm thấy {len(matches)} file khớp với '{name_query}':"]
     for i, f in enumerate(shown, 1):
         msg_lines.append(f"{i}. {f['name']}")
     if len(matches) > FUZZY_SHOW_LIMIT:
-        msg_lines.append(f"... ({len(matches) - FUZZY_SHOW_LIMIT} file khac)")
-    msg_lines.append(f"\nTra loi 1-{len(shown)} de chon, hoac 'huy'.")
+        msg_lines.append(f"... ({len(matches) - FUZZY_SHOW_LIMIT} file khác)")
+    msg_lines.append(f"\nTrả lời 1-{len(shown)} để chọn, hoặc 'huỷ'.")
 
     _set_pending(chat_id, "fuzzy_view", {"matches": shown})
     await deps.channel.send(chat_id, "\n".join(msg_lines), use_markdown=False)
@@ -250,13 +250,13 @@ async def _cmd_liet_ke(
         files = deps.notes.list_all_notes()
     except Exception as e:
         traceback.print_exc()
-        await deps.channel.send(chat_id, f"Loi: {str(e)[:500]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi: {str(e)[:500]}", use_markdown=False)
         return
 
     visible, metas = _visible_notes_with_meta(files, user, deps)
     if not visible:
         await deps.channel.send(
-            chat_id, "Vault trong, chua co ghi chu nao.", use_markdown=False,
+            chat_id, "Vault trống, chưa có ghi chú nào.", use_markdown=False,
         )
         return
 
@@ -266,7 +266,7 @@ async def _cmd_liet_ke(
     start = (page - 1) * _LIET_KE_PAGE_SIZE
     chunk = visible[start:start + _LIET_KE_PAGE_SIZE]
 
-    lines = [f"Tat ca file ({total} file) - Trang {page}/{total_pages}", ""]
+    lines = [f"Tất cả file ({total} file) - Trang {page}/{total_pages}", ""]
     for i, f in enumerate(chunk, start + 1):
         meta = metas.get(f["id"])
         icon = "🌐" if (meta and meta["scope"] == "everyone") else "🔒"
@@ -282,29 +282,29 @@ async def _cmd_liet_ke(
 
 async def _cmd_tim(chat_id: str, keyword: str, user: User, deps: CoreDeps) -> None:
     if not keyword:
-        await deps.channel.send(chat_id, "Vui long nhap tu khoa.")
+        await deps.channel.send(chat_id, "Vui lòng nhập từ khoá.")
         return
     await deps.channel.send(
-        chat_id, f"Dang tim '{keyword}'...", use_markdown=False,
+        chat_id, f"Đang tìm '{keyword}'...", use_markdown=False,
     )
     try:
         notes = deps.notes.search_notes(keyword)
         notes = _acl_filter_notes(notes, user, deps)
         if not notes:
             await deps.channel.send(
-                chat_id, "Khong tim thay ghi chu nao.", use_markdown=False,
+                chat_id, "Không tìm thấy ghi chú nào.", use_markdown=False,
             )
             return
         summary, tokens = deps.llm.summarize_notes(notes)
         record_usage(tokens // 2, tokens // 2)
         check_and_alert()
         await deps.channel.send(
-            chat_id, f"Ket qua:\n\n{summary}", use_markdown=False,
+            chat_id, f"Kết quả:\n\n{summary}", use_markdown=False,
         )
     except Exception as e:
         traceback.print_exc()
         await deps.channel.send(
-            chat_id, f"Loi khi tim: {str(e)[:500]}", use_markdown=False,
+            chat_id, f"Lỗi khi tìm: {str(e)[:500]}", use_markdown=False,
         )
 
 
@@ -315,7 +315,7 @@ async def _cmd_set_scope(
     if not name:
         verb = "chia se" if new_scope == "everyone" else "bo chia se"
         await deps.channel.send(
-            chat_id, f"Cu phap: {verb} <ten-file>", use_markdown=False,
+            chat_id, f"Cú pháp: {verb} <tên-file>", use_markdown=False,
         )
         return
 
@@ -323,14 +323,14 @@ async def _cmd_set_scope(
     try:
         matches = deps.notes.find_files_fuzzy(name)
     except Exception as e:
-        await deps.channel.send(chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi khi tìm: {str(e)[:400]}", use_markdown=False)
         return
 
     if len(matches) > 1:
         names = "\n".join(f"- {m['name']}" for m in matches[:5])
         await deps.channel.send(
             chat_id,
-            f"Tim thay {len(matches)} file khop voi '{name}':\n{names}\n\nVui long nhap ten cu the hon.",
+            f"Tìm thấy {len(matches)} file khớp với '{name}':\n{names}\n\nVui lòng nhập tên cụ thể hơn.",
             use_markdown=False,
         )
         return
@@ -341,32 +341,32 @@ async def _cmd_set_scope(
         if meta is None:
             await deps.channel.send(
                 chat_id,
-                "File nay chua duoc index. Vui long lien he admin de backfill.",
+                "File này chưa được index. Vui lòng liên hệ admin để backfill.",
                 use_markdown=False,
             )
             return
         if meta["owner_user_id"] != user.id:
             await deps.channel.send(
-                chat_id, "Ban khong phai chu file nay.", use_markdown=False,
+                chat_id, "Bạn không phải chủ file này.", use_markdown=False,
             )
             return
         ok = deps.note_index.set_note_scope(file_id, new_scope, user.id)
         if ok:
-            label = "chia se voi moi nguoi" if new_scope == "everyone" else "rieng tu"
+            label = "chia sẻ với mọi người" if new_scope == "everyone" else "riêng tư"
             await deps.channel.send(
                 chat_id,
-                f"Da doi '{matches[0]['name']}' thanh {label}.",
+                f"Đã đổi '{matches[0]['name']}' thành {label}.",
                 use_markdown=False,
             )
         else:
-            await deps.channel.send(chat_id, "Khong the doi scope.", use_markdown=False)
+            await deps.channel.send(chat_id, "Không thể đổi scope.", use_markdown=False)
         return
 
     # 2. No note match — try wiki.
     try:
         page = deps.wiki.find_page(name)
     except Exception as e:
-        await deps.channel.send(chat_id, f"Loi khi tim wiki: {str(e)[:400]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi khi tìm wiki: {str(e)[:400]}", use_markdown=False)
         return
 
     if page:
@@ -375,29 +375,29 @@ async def _cmd_set_scope(
         if meta is None:
             await deps.channel.send(
                 chat_id,
-                "Trang wiki nay chua duoc index. Vui long lien he admin de backfill.",
+                "Trang wiki này chưa được index. Vui lòng liên hệ admin để backfill.",
                 use_markdown=False,
             )
             return
         if meta["owner_user_id"] != user.id:
             await deps.channel.send(
-                chat_id, "Ban khong phai chu trang wiki nay.", use_markdown=False,
+                chat_id, "Bạn không phải chủ trang wiki này.", use_markdown=False,
             )
             return
         ok = deps.note_index.set_wiki_scope(file_id, new_scope, user.id)
         if ok:
-            label = "chia se voi moi nguoi" if new_scope == "everyone" else "rieng tu"
+            label = "chia sẻ với mọi người" if new_scope == "everyone" else "riêng tư"
             await deps.channel.send(
                 chat_id,
-                f"Da doi wiki '{page['name'].removesuffix('.md')}' thanh {label}.",
+                f"Đã đổi wiki '{page['name'].removesuffix('.md')}' thành {label}.",
                 use_markdown=False,
             )
         else:
-            await deps.channel.send(chat_id, "Khong the doi scope.", use_markdown=False)
+            await deps.channel.send(chat_id, "Không thể đổi scope.", use_markdown=False)
         return
 
     await deps.channel.send(
-        chat_id, f"Khong tim thay file '{name}' trong ghi chu hoac wiki.", use_markdown=False,
+        chat_id, f"Không tìm thấy file '{name}' trong ghi chú hoặc wiki.", use_markdown=False,
     )
 
 
@@ -418,17 +418,17 @@ async def _send_scope_info(
     owner = deps.user_store.get_user_by_id(meta["owner_user_id"])
     owner_str = f"{owner.name} (#{owner.id})" if owner else f"#{meta['owner_user_id']}"
     if meta["scope"] == "everyone":
-        scope_str = "🌐 chia se voi moi nguoi"
+        scope_str = "🌐 chia sẻ với mọi người"
     else:
-        scope_str = "🔒 rieng tu"
+        scope_str = "🔒 riêng tư"
     kind = "wiki" if is_wiki else meta.get("kind", "note")
     created = (meta.get("created_at") or "")[:10]
     lines = [
         f"📄 {filename}",
         f"   Scope: {scope_str}",
         f"   Owner: {owner_str}",
-        f"   Loai:  {kind}",
-        f"   Ngay:  {created}",
+        f"   Loại:  {kind}",
+        f"   Ngày:  {created}",
     ]
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
@@ -439,7 +439,7 @@ async def _cmd_xem_scope(
     """xem scope <ten-file> — show scope/owner/kind of a note or wiki page."""
     if not name:
         await deps.channel.send(
-            chat_id, "Cu phap: xem scope <ten-file>", use_markdown=False,
+            chat_id, "Cú pháp: xem scope <tên-file>", use_markdown=False,
         )
         return
 
@@ -447,15 +447,15 @@ async def _cmd_xem_scope(
     try:
         matches = deps.notes.find_files_fuzzy(name)
     except Exception as e:
-        await deps.channel.send(chat_id, f"Loi khi tim: {str(e)[:400]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi khi tìm: {str(e)[:400]}", use_markdown=False)
         return
 
     if len(matches) > 1:
         names = "\n".join(f"- {m['name']}" for m in matches[:FUZZY_SHOW_LIMIT])
         await deps.channel.send(
             chat_id,
-            f"Tim thay {len(matches)} file khop voi '{name}':\n{names}\n\n"
-            f"Vui long nhap ten cu the hon.",
+            f"Tìm thấy {len(matches)} file khớp với '{name}':\n{names}\n\n"
+            f"Vui lòng nhập tên cụ thể hơn.",
             use_markdown=False,
         )
         return
@@ -464,7 +464,7 @@ async def _cmd_xem_scope(
         meta = deps.note_index.get_note_meta(matches[0]["id"])
         if meta is None:
             await deps.channel.send(
-                chat_id, "File nay chua duoc index.", use_markdown=False,
+                chat_id, "File này chưa được index.", use_markdown=False,
             )
             return
         allowed, is_stealth = acl_mod.can_read(
@@ -472,7 +472,7 @@ async def _cmd_xem_scope(
         )
         if not allowed:
             await deps.channel.send(
-                chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
+                chat_id, f"Không tìm thấy file '{name}'.", use_markdown=False,
             )
             return
         if is_stealth:
@@ -490,14 +490,14 @@ async def _cmd_xem_scope(
     try:
         page = deps.wiki.find_page(name)
     except Exception as e:
-        await deps.channel.send(chat_id, f"Loi khi tim wiki: {str(e)[:400]}", use_markdown=False)
+        await deps.channel.send(chat_id, f"Lỗi khi tìm wiki: {str(e)[:400]}", use_markdown=False)
         return
 
     if page:
         meta = deps.note_index.get_wiki_meta(page["id"])
         if meta is None:
             await deps.channel.send(
-                chat_id, "Trang wiki nay chua duoc index.", use_markdown=False,
+                chat_id, "Trang wiki này chưa được index.", use_markdown=False,
             )
             return
         allowed, is_stealth = acl_mod.can_read(
@@ -505,7 +505,7 @@ async def _cmd_xem_scope(
         )
         if not allowed:
             await deps.channel.send(
-                chat_id, f"Khong tim thay file '{name}'.", use_markdown=False,
+                chat_id, f"Không tìm thấy file '{name}'.", use_markdown=False,
             )
             return
         if is_stealth:
@@ -520,32 +520,32 @@ async def _cmd_xem_scope(
         return
 
     await deps.channel.send(
-        chat_id, f"Khong tim thay file '{name}' trong ghi chu hoac wiki.", use_markdown=False,
+        chat_id, f"Không tìm thấy file '{name}' trong ghi chú hoặc wiki.", use_markdown=False,
     )
 
 
 async def _cmd_whoami(chat_id: str, user: User, deps: CoreDeps) -> None:
     """toi la ai — show the user bound to this chat, plus any active elevation."""
     role_labels = {
-        "admin": "Quan tri vien",
-        "manager": "Nguoi quan ly",
-        "member": "Thanh vien",
-        "readonly": "Chi doc",
+        "admin": "Quản trị viên",
+        "manager": "Người quản lý",
+        "member": "Thành viên",
+        "readonly": "Chỉ đọc",
     }
     # Resolve base role from DB so elevation override doesn't mask it.
     base = deps.user_store.get_user_by_id(user.id) or user
     session = deps.elevation_store.get_active_session("telegram", chat_id)
 
-    username = base.username or "(chua dat)"
+    username = base.username or "(chưa đặt)"
     lines = [
-        "👤 Tai khoan hien tai:",
-        f"   Ten:      {base.name}",
+        "👤 Tài khoản hiện tại:",
+        f"   Tên:      {base.name}",
         f"   Username: {username}",
-        f"   Vai tro:  {role_labels.get(base.role, base.role)}",
+        f"   Vai trò:  {role_labels.get(base.role, base.role)}",
         f"   User ID:  #{base.id}",
     ]
     if session is not None:
         remaining = _elevation_remaining_minutes(session["expires_at"])
         if remaining > 0:
-            lines.append(f"   Sudo:     dang nang quyen admin (con ~{remaining} phut)")
+            lines.append(f"   Sudo:     đang nâng quyền admin (còn ~{remaining} phút)")
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)

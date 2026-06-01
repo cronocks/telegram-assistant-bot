@@ -175,31 +175,31 @@ async def _cmd_xem_thung_rac(chat_id: str, user: User, deps: CoreDeps) -> None:
     total = len(deleted_users) + len(deleted_notes) + len(deleted_wikis)
     if total == 0:
         await deps.channel.send(
-            chat_id, "Thung rac trong.", use_markdown=False,
+            chat_id, "Thùng rác trống.", use_markdown=False,
         )
         return
 
-    lines = [f"Thung rac ({total} muc):"]
+    lines = [f"Thùng rác ({total} mục):"]
     if deleted_users:
         lines.append("\n— Users —")
         for u in deleted_users:
             del_at = u.deleted_at.strftime("%Y-%m-%d") if u.deleted_at else "?"
-            lines.append(f"• [user {u.id}] {u.name} (role={u.role}) — da xoa {del_at}")
+            lines.append(f"• [user {u.id}] {u.name} (role={u.role}) — đã xoá {del_at}")
     if deleted_notes:
         lines.append("\n— Notes —")
         for n in deleted_notes:
             title = n.get("title") or "(no title)"
             del_at = (n.get("deleted_at") or "")[:10]
-            lines.append(f"• [note {n['id']}] {title} (owner={n['owner_user_id']}) — da xoa {del_at}")
+            lines.append(f"• [note {n['id']}] {title} (owner={n['owner_user_id']}) — đã xoá {del_at}")
     if deleted_wikis:
         lines.append("\n— Wiki —")
         for w in deleted_wikis:
             del_at = (w.get("deleted_at") or "")[:10]
-            lines.append(f"• [wiki {w['id']}] {w['topic']} (owner={w['owner_user_id']}) — da xoa {del_at}")
+            lines.append(f"• [wiki {w['id']}] {w['topic']} (owner={w['owner_user_id']}) — đã xoá {del_at}")
 
     lines.append(
-        "\nKhoi phuc: `khoi phuc: <kind> <id>` (vd `khoi phuc: user 3`)"
-        "\nXoa han:   `xoa han: <kind> <id>`"
+        "\nKhôi phục: `khoi phuc: <kind> <id>` (vd `khoi phuc: user 3`)"
+        "\nXoá hẳn:   `xoa han: <kind> <id>`"
     )
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
@@ -218,9 +218,9 @@ async def _cmd_khoi_phuc(
     if parsed is None:
         await deps.channel.send(
             chat_id,
-            "Cu phap: khoi phuc: <kind> <id>\n"
-            "Kind hop le: user, note, wiki\n"
-            "Vi du: khoi phuc: user 3",
+            "Cú pháp: khoi phuc: <kind> <id>\n"
+            "Kind hợp lệ: user, note, wiki\n"
+            "Ví dụ: khoi phuc: user 3",
             use_markdown=False,
         )
         return
@@ -240,7 +240,7 @@ async def _cmd_khoi_phuc(
     if not ok:
         await deps.channel.send(
             chat_id,
-            f"Khong tim thay {label} trong thung rac (hoac da khoi phuc).",
+            f"Không tìm thấy {label} trong thùng rác (hoặc đã khôi phục).",
             use_markdown=False,
         )
         return
@@ -252,7 +252,7 @@ async def _cmd_khoi_phuc(
         target_id=target_id,
     )
     await deps.channel.send(
-        chat_id, f"Da khoi phuc {label}.", use_markdown=False,
+        chat_id, f"Đã khôi phục {label}.", use_markdown=False,
     )
 
 
@@ -274,9 +274,9 @@ async def _cmd_xoa_han(
     if parsed is None:
         await deps.channel.send(
             chat_id,
-            "Cu phap: xoa han: <kind> <id>\n"
-            "Kind hop le: user, note, wiki\n"
-            "Vi du: xoa han: note 12",
+            "Cú pháp: xoa han: <kind> <id>\n"
+            "Kind hợp lệ: user, note, wiki\n"
+            "Ví dụ: xoa han: note 12",
             use_markdown=False,
         )
         return
@@ -288,10 +288,10 @@ async def _cmd_xoa_han(
         if not ok:
             await deps.channel.send(
                 chat_id,
-                f"Khong the xoa han user #{target_id}. "
-                "Co the user khong ton tai, hoac con du lieu tham chieu "
+                f"Không thể xoá hẳn user #{target_id}. "
+                "Có thể user không tồn tại, hoặc còn dữ liệu tham chiếu "
                 "(channel_bindings, notes, parent_links...). "
-                "Hay thu khoi phuc + cleanup tay neu can.",
+                "Hãy thử khôi phục + cleanup tay nếu cần.",
                 use_markdown=False,
             )
             return
@@ -302,7 +302,7 @@ async def _cmd_xoa_han(
             target_id=target_id,
         )
         await deps.channel.send(
-            chat_id, f"Da xoa han user #{target_id}.", use_markdown=False,
+            chat_id, f"Đã xoá hẳn user #{target_id}.", use_markdown=False,
         )
         return
 
@@ -318,7 +318,7 @@ async def _cmd_xoa_han(
 
     if meta is None:
         await deps.channel.send(
-            chat_id, f"Khong tim thay {kind} #{target_id}.", use_markdown=False,
+            chat_id, f"Không tìm thấy {kind} #{target_id}.", use_markdown=False,
         )
         return
 
@@ -341,5 +341,5 @@ async def _cmd_xoa_han(
 
     suffix = " (Drive deleted)" if drive_deleted else " (Drive delete failed — file orphaned)"
     await deps.channel.send(
-        chat_id, f"Da xoa han {kind} #{target_id}.{suffix}", use_markdown=False,
+        chat_id, f"Đã xoá hẳn {kind} #{target_id}.{suffix}", use_markdown=False,
     )

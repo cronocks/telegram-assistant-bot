@@ -153,7 +153,7 @@ async def _cmd_them_ky_niem(chat_id, body, user, deps: CoreDeps) -> None:
         await deps.channel.send(
             chat_id,
             "Vui lòng nhập theo định dạng:\n"
-            "  them ky niem: <tên>, âm/dương DD/MM, <loại>\n"
+            "  them ky niem: <tên>, âm/dương DD/MM[/YYYY][ nhuan], <loại>\n"
             "Ví dụ: them ky niem: Giỗ ông nội, âm 10/3, giỗ",
             use_markdown=False,
         )
@@ -265,7 +265,7 @@ async def _cmd_sua_ky_niem(chat_id, body, user, deps: CoreDeps) -> None:
     if len(parts) < 2:
         await deps.channel.send(
             chat_id,
-            "Cú pháp: sua ky niem: <id>, ten=<>, ngay=<âm/dương DD/MM>, loai=<>",
+            "Cú pháp: sua ky niem: <id>, ten=<>, ngay=<âm/dương DD/MM[/YYYY][ nhuan]>, loai=<>",
             use_markdown=False,
         )
         return
