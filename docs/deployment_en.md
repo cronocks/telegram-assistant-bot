@@ -101,6 +101,8 @@ Copy `.env.example` to `.env` (local), `.env.staging`, or `.env.production` and 
 | `LITESTREAM_ENDPOINT` | staging/prod | — | `https://<account-id>.r2.cloudflarestorage.com` |
 | `LITESTREAM_ACCESS_KEY_ID` | staging/prod | — | R2 API token Access Key ID |
 | `LITESTREAM_SECRET_ACCESS_KEY` | staging/prod | — | R2 API token Secret Access Key |
+| `WEB_SECRET_KEY` | ✅ (non-local) | — | Secret key for web session cookies. Generate with: `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Use a different key per environment. |
+| `WEB_SESSION_TTL_DAYS` | ❌ | `7` | Web session cookie TTL in days |
 | `GDRIVE_FOLDER_ID` | ❌ | `""` | Pin notes to a specific Drive folder ID |
 | `CLAUDE_NOTES_FOLDER` | ❌ | `Claude-Notes` | Notes subfolder name |
 | `WIKI_SUBFOLDER` | ❌ | `Wiki` | Wiki subfolder name |
