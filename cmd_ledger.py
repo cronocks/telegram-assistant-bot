@@ -176,7 +176,7 @@ async def _cmd_sua_ghi_chep(chat_id, body, user, deps: CoreDeps) -> None:
     parts = [p.strip() for p in body.split(",", 1)]
     if not parts[0].isdigit():
         await deps.channel.send(
-            chat_id, "⚠️ Cú pháp: sua ghi chep: <id>, so=<số>[, mo ta=<text>]",
+            chat_id, "⚠️ Cú pháp: sua ghi chep: <id>, so=<số>[, mo ta=<text>][, danh muc=<id>]",
             use_markdown=False,
         )
         return

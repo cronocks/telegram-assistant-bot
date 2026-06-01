@@ -41,7 +41,7 @@ async def _cmd_dat_mat_khau(
     if base is None or base.role != "admin":
         await deps.channel.send(
             chat_id,
-            "Chi tai khoan admin (khong qua sudo) moi co the dat mat khau.",
+            "Chỉ tài khoản admin (không qua sudo) mới có thể đặt mật khẩu.",
             use_markdown=False,
         )
         return
@@ -50,7 +50,7 @@ async def _cmd_dat_mat_khau(
     if deps.elevation_store.get_active_session("telegram", chat_id) is not None:
         await deps.channel.send(
             chat_id,
-            "Lenh nay khong dung khi dang sudo. Hay dung tu tai khoan admin goc.",
+            "Lệnh này không dùng khi đang sudo. Hãy dùng từ tài khoản admin gốc.",
             use_markdown=False,
         )
         return
@@ -58,7 +58,7 @@ async def _cmd_dat_mat_khau(
     password = password.strip()
     if len(password) < 8:
         await deps.channel.send(
-            chat_id, "Mat khau phai dai it nhat 8 ky tu.", use_markdown=False,
+            chat_id, "Mật khẩu phải dài ít nhất 8 ký tự.", use_markdown=False,
         )
         return
 
@@ -66,7 +66,7 @@ async def _cmd_dat_mat_khau(
         deps.user_store.set_password(base.id, password)
     except Exception as e:
         await deps.channel.send(
-            chat_id, f"Loi khi dat mat khau: {str(e)[:200]}", use_markdown=False,
+            chat_id, f"Lỗi khi đặt mật khẩu: {str(e)[:200]}", use_markdown=False,
         )
         return
 
@@ -80,7 +80,7 @@ async def _cmd_dat_mat_khau(
     )
     await deps.channel.send(
         chat_id,
-        "Da dat mat khau admin. Tin nhan chua mat khau da bi xoa khoi chat.",
+        "Đã đặt mật khẩu admin. Tin nhắn chứa mật khẩu đã bị xoá khỏi chat.",
         use_markdown=False,
     )
 
@@ -98,7 +98,7 @@ async def _cmd_dat_web_pass(
     """
     if not user.is_admin:
         await deps.channel.send(
-            chat_id, "Chi admin moi co the dat mat khau web cho nguoi khac.", use_markdown=False,
+            chat_id, "Chỉ admin mới có thể đặt mật khẩu web cho người khác.", use_markdown=False,
         )
         return
 
@@ -106,7 +106,7 @@ async def _cmd_dat_web_pass(
     if len(parts) != 2:
         await deps.channel.send(
             chat_id,
-            "Cu phap: dat web pass: <ten_user>, <mat_khau>",
+            "Cú pháp: dat web pass: <tên_user>, <mật_khẩu>",
             use_markdown=False,
         )
         return
@@ -116,14 +116,14 @@ async def _cmd_dat_web_pass(
 
     if len(password) < 8:
         await deps.channel.send(
-            chat_id, "Mat khau phai co it nhat 8 ky tu.", use_markdown=False,
+            chat_id, "Mật khẩu phải có ít nhất 8 ký tự.", use_markdown=False,
         )
         return
 
     target = deps.user_store.find_by_username_or_name(target_name)
     if target is None or not target.is_active:
         await deps.channel.send(
-            chat_id, f"Khong tim thay user: {target_name}", use_markdown=False,
+            chat_id, f"Không tìm thấy user: {target_name}", use_markdown=False,
         )
         return
 
@@ -138,7 +138,7 @@ async def _cmd_dat_web_pass(
     )
     await deps.channel.send(
         chat_id,
-        f"Da dat mat khau web cho {target.name}. Ho se phai doi mat khau khi dang nhap lan dau.",
+        f"Đã đặt mật khẩu web cho {target.name}. Họ sẽ phải đổi mật khẩu khi đăng nhập lần đầu.",
         use_markdown=False,
     )
 
@@ -160,7 +160,7 @@ async def _cmd_doi_web_pass_self(
     password = password.strip()
     if len(password) < 8:
         await deps.channel.send(
-            chat_id, "Mat khau phai co it nhat 8 ky tu.", use_markdown=False,
+            chat_id, "Mật khẩu phải có ít nhất 8 ký tự.", use_markdown=False,
         )
         return
 
@@ -169,7 +169,7 @@ async def _cmd_doi_web_pass_self(
         deps.user_store.set_must_change_password(user.id, False)
     except Exception as e:
         await deps.channel.send(
-            chat_id, f"Loi khi dat mat khau: {str(e)[:200]}", use_markdown=False,
+            chat_id, f"Lỗi khi đặt mật khẩu: {str(e)[:200]}", use_markdown=False,
         )
         return
 
@@ -189,8 +189,8 @@ async def _cmd_doi_web_pass_self(
     )
     await deps.channel.send(
         chat_id,
-        "Da dat mat khau web thanh cong. Ban co the dang nhap tai web bang username va mat khau nay.\n"
-        "Tin nhan chua mat khau da bi xoa khoi chat.",
+        "Đã đặt mật khẩu web thành công. Bạn có thể đăng nhập tại web bằng username và mật khẩu này.\n"
+        "Tin nhắn chứa mật khẩu đã bị xoá khỏi chat.",
         use_markdown=False,
     )
 
@@ -214,7 +214,7 @@ async def _cmd_sudo(
     if base.role == "admin":
         await deps.channel.send(
             chat_id,
-            "Ban da la admin, khong can sudo.",
+            "Bạn đã là admin, không cần sudo.",
             use_markdown=False,
         )
         return
@@ -222,7 +222,7 @@ async def _cmd_sudo(
     if base.role != "manager":
         await deps.channel.send(
             chat_id,
-            "Chi role manager moi duoc dung sudo.",
+            "Chỉ role manager mới được dùng sudo.",
             use_markdown=False,
         )
         print(f"[audit] sudo_fail reason=role_not_manager user_id={base.id} role={base.role}")
@@ -237,7 +237,7 @@ async def _cmd_sudo(
     if locked:
         await deps.channel.send(
             chat_id,
-            f"Da bi khoa do nhap sai qua nhieu. Thu lai sau (mo khoa luc {locked_until} UTC).",
+            f"Đã bị khoá do nhập sai quá nhiều. Thử lại sau (mở khoá lúc {locked_until} UTC).",
             use_markdown=False,
         )
         print(f"[audit] sudo_locked user_id={base.id} until={locked_until}")
@@ -251,7 +251,7 @@ async def _cmd_sudo(
     password = password.strip()
     if not password:
         await deps.channel.send(
-            chat_id, "Cu phap: sudo: <mat khau>", use_markdown=False,
+            chat_id, "Cú pháp: sudo: <mật khẩu>", use_markdown=False,
         )
         return
 
@@ -281,14 +281,14 @@ async def _cmd_sudo(
         if state["locked_until"]:
             await deps.channel.send(
                 chat_id,
-                f"Mat khau sai. Da bi khoa den {state['locked_until']} UTC.",
+                f"Mật khẩu sai. Đã bị khoá đến {state['locked_until']} UTC.",
                 use_markdown=False,
             )
         else:
             remaining = config.SUDO_MAX_FAILS - state["failed_count"]
             await deps.channel.send(
                 chat_id,
-                f"Mat khau sai. Con {remaining} lan thu truoc khi bi khoa.",
+                f"Mật khẩu sai. Còn {remaining} lần thử trước khi bị khoá.",
                 use_markdown=False,
             )
         return
@@ -308,8 +308,8 @@ async def _cmd_sudo(
     )
     await deps.channel.send(
         chat_id,
-        f"Da nang quyen admin trong {config.SUDO_TTL_MINUTES} phut. "
-        f"Dung 'thoat sudo' de ha quyen som.",
+        f"Đã nâng quyền admin trong {config.SUDO_TTL_MINUTES} phút. "
+        f"Dùng 'thoat sudo' để hạ quyền sớm.",
         use_markdown=False,
     )
 
@@ -324,9 +324,9 @@ async def _cmd_thoat_sudo(chat_id: str, user: User, deps: CoreDeps) -> None:
             action="sudo_drop",
         )
         await deps.channel.send(
-            chat_id, "Da ha quyen admin.", use_markdown=False,
+            chat_id, "Đã hạ quyền admin.", use_markdown=False,
         )
     else:
         await deps.channel.send(
-            chat_id, "Ban khong dang trong phien sudo.", use_markdown=False,
+            chat_id, "Bạn không đang trong phiên sudo.", use_markdown=False,
         )

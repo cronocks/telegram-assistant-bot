@@ -209,12 +209,14 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
     ),
     "ky niem": (
         "📅 *KY NIEM (ANNIVERSARY)*",
-        "`them ky niem: [ten], am/duong DD/MM, [loai]` — Tao moi (loai: gio/cuoi/khac)\n"
+        "`them ky niem: [ten], am/duong DD/MM[/YYYY][ nhuan], [loai]` — Tao moi (loai: gio/cuoi/khac)\n"
         "  Vi du: `them ky niem: Gio ong noi, am 10/3, gio`\n"
         "  Vi du: `them ky niem: Ky niem cuoi, duong 15/8, cuoi`\n"
+        "  Vi du: `them ky niem: Gio ba, am 9/5/1987, gio` (co nam)\n"
+        "  Vi du: `them ky niem: Gio co, am 3/3 nhuan, gio` (thang nhuan)\n"
         "`danh sach ky niem` — Liet ke tat ca ky niem cua ban\n"
         "`ky niem [id]` — Xem chi tiet 1 ky niem\n"
-        "`sua ky niem: [id], ten=..., ngay=am/duong DD/MM, loai=..., nhac=...` — Cap nhat\n"
+        "`sua ky niem: [id], ten=..., ngay=am/duong DD/MM[/YYYY][ nhuan], loai=..., nhac=...` — Cap nhat\n"
         "`xoa ky niem: [id]` — Xoa (soft-delete)\n\n"
         "Mac dinh nhac truoc: 30/15/7/3/1 ngay + dung ngay (08:00 sang).\n"
         "Ngay am lich tu dong quy doi sang duong moi nam.",
@@ -248,10 +250,10 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`thu: <so> <mo ta>` — Ghi thu nhap (vd: thu: 5tr luong)\n"
         "`ghi chep: <id>` — Xem chi tiet but toan\n"
         "`danh sach ghi chep` — Liet ke 20 but toan gan nhat\n"
-        "`sua ghi chep: <id>, so=<so>[, mo ta=<text>]` — Cap nhat but toan\n"
+        "`sua ghi chep: <id>, so=<so>[, mo ta=<text>][, danh muc=<id>]` — Cap nhat but toan\n"
         "`huy ghi chep: <id>` — Huy (soft-delete) but toan\n"
         "`xem danh muc` — Xem danh muc chi/thu\n"
-        "`them danh muc: <ten>, chi|thu` — Them danh muc moi\n"
+        "`them danh muc: <ten>, chi|thu[, chung]` — Them danh muc moi (chung: chi admin/manager)\n"
         "`xoa danh muc: <id>` — Xoa danh muc\n"
         "`sua danh muc: <id> <ten moi>` — Doi ten danh muc\n"
         "`bao cao thang [YYYY-MM]` — Bao cao thang (mac dinh thang hien tai)\n"
