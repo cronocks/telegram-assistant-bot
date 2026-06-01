@@ -33,3 +33,7 @@ bot.db
 bot.db-journal
 bot.db-wal
 bot.db-shm
+
+# Internal docs (roadmap, FR plans — not for public consumption)
+docs/ROADMAP.md
+docs/FR-*-PLAN.md

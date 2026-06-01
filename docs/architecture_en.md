@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-8** (Anniversary / Memorial Reminders).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-9** (Expense Tracking / Ledger).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -72,6 +72,15 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fires at 08:00 VN, 12h grace window (FR-8) |
 | `lunar_utils.py` | `lunar_to_solar()` + `compute_anniversary_solar_date()`; uses `lunardate==0.2.2` (FR-8) |
 | `cmd_anniversary.py` | 5 Telegram handlers: `them ky niem`, `danh sach ky niem`, `ky niem <id>`, `xoa ky niem`, `sua ky niem` (FR-8) |
+| `category_store.py` | `SqliteCategoryStore` — category CRUD + family-shared scope (`user_id IS NULL`) (FR-9) |
+| `ledger_store.py` | `SqliteLedgerStore` — entry CRUD + monthly aggregates + 7-day query + void (soft-delete) + 30-day purge (FR-9) |
+| `budget_store.py` | `SqliteBudgetStore` — upsert `(user_id, month)`, threshold alert state JSON (FR-9) |
+| `ledger_parser.py` | `LedgerParser` — parse amount (k/tr/m suffix, VND integer) + fast-path Vietnamese keyword + fuzzy category match (FR-9) |
+| `ledger_reports.py` | `LedgerReports` — monthly summary, yearly breakdown, 7-day view, threshold check 80%/100% (FR-9) |
+| `cmd_ledger.py` | 16 Telegram handlers: `chi:`, `thu:`, `danh sach ghi chep`, `sua/huy ghi chep:`, `xem/them/xoa/sua danh muc`, `bao cao thang/nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc` (FR-9) |
+| `csrf.py` | `CSRFMiddleware` — double-submit cookie CSRF; sets cookie non-HttpOnly on GET, validates cookie vs form-field/header on POST/PUT/PATCH/DELETE; `/webhook` is exempt *(Security hardening)* |
+| `rate_limit.py` | `RateLimitMiddleware` — sliding-window per `(IP, path)`; `/login` limited to 10 req/60s, default 120 req/60s for all other routes; no external dependency *(Security hardening)* |
+| `security_headers.py` | `SecurityHeadersMiddleware` — stamps `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Content-Security-Policy`, `Strict-Transport-Security` (staging/prod only) *(Security hardening)* |
 | `channel_telegram.py` | `TelegramAdapter` — parses Telegram webhook payloads, sends replies, `send_with_inline_keyboard` |
 | `claude_client.py` | `AnthropicLLM` — wraps Anthropic SDK |
 | `drive_client.py` | `DriveNoteStore` — Google Drive notes storage |
@@ -87,25 +96,25 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `audit.py` | `SqliteAuditLog` — append-only audit event writer; `AuditLog` Protocol (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — persistent notification queue CRUD (FR-4) |
 | `notification_service.py` | `NotificationService` — bridges store ↔ `ChannelAdapter`; `enqueue()` + `flush_pending()` (FR-4) |
-| `scheduled_jobs.py` | APScheduler jobs: 180d purge, purge-at-18, notification flush, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year (FR-4, FR-7, FR-8) |
+| `scheduled_jobs.py` | APScheduler jobs: 180d purge, purge-at-18, notification flush, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year, weekly_ledger_summary, purge_voided_ledger (FR-4, FR-7, FR-8, FR-9) |
 | `web_session_store.py` | `SqliteWebSessionStore` — DB-revocable web sessions (no JWT); find/revoke/create (FR-5) |
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
-| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD, anniversary CRUD routes (FR-5, FR-5.5, FR-7, FR-8) |
+| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — conversation + message CRUD; LIKE search; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — in-memory ZIP export, transactional parse/apply import, Drive upload to `Claude-Notes/Backups/`, 5-min/user rate-limit (FR-6) |
 | `tools/local_migrate.py` | Standalone CLI: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html` (FR-5 → FR-8) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`, `ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html` (FR-5 → FR-9) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
 | `text_utils.py` | Vietnamese diacritic normalization, multi-prefix command matcher |
 | `timeutils.py` | UTC+7 helpers |
 | `cost_monitor.py` | LLM spend tracking, budget alerts |
-| `security.py` | Drive folder access control, rate limiting |
+| `security.py` | Drive folder access control (OAuth scope, folder whitelist, MIME whitelist, per-hour file rate limit); `set_audit_sink()` to route Drive audit events into SQLite `audit_log` instead of stdout only *(Security hardening)* |
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–024) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–027) |
 
 ---
 
@@ -412,6 +421,49 @@ Annual recurring events: memorials (giỗ), wedding anniversaries, and other yea
 
 Indexes: `(user_id)` WHERE deleted_at IS NULL, `(enabled)` WHERE enabled=1 AND deleted_at IS NULL.
 
+#### `categories` *(FR-9)*
+Expense/income categories. Can be personal (`user_id` = a user) or family-shared (`user_id IS NULL` — admin/manager only).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | NULL = family-shared category |
+| `name` | TEXT NOT NULL | Category name, e.g. "Ăn uống" |
+| `kind` | TEXT NOT NULL | `expense` \| `income` |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps; `deleted_at` for soft-delete |
+
+#### `ledger_entries` *(FR-9)*
+Income/expense transactions. Amount stored as integer VND — never FLOAT (Decision #87). Soft-delete via `voided_at`; auto-purged after 30 days.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `kind` | TEXT NOT NULL | `income` \| `expense` |
+| `amount` | INTEGER NOT NULL | VND — always positive |
+| `category_id` | INTEGER FK → categories | Nullable — category is optional |
+| `note` | TEXT | Raw description from user |
+| `occurred_at` | TEXT | ISO datetime — when the transaction happened |
+| `source` | TEXT | `telegram` \| `web` |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+| `voided_at` | TEXT | NULL = active; set when voided (soft-delete) |
+
+Indexes: `(user_id, occurred_at DESC)`, `(user_id, category_id, occurred_at)`.
+
+#### `monthly_budgets` *(FR-9)*
+Monthly expense budget and savings target, one row per user per month (upsert).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `user_id` | INTEGER FK → users | |
+| `month` | TEXT NOT NULL | `YYYY-MM` |
+| `expense_budget` | INTEGER | Monthly expense cap (VND); NULL = not set |
+| `savings_target` | INTEGER | Savings target (VND); NULL = not set |
+| `alerts_sent` | TEXT | JSON string — tracks 80%/100% thresholds already sent to avoid spam |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+| UNIQUE | `(user_id, month)` | One row per user per month |
+
 #### `anniversary_reminders` *(FR-8)*
 One row per reminder fire point per anniversary per year. UNIQUE constraint ensures the annual compute job is idempotent.
 
@@ -520,6 +572,17 @@ Soft-delete has been present since earlier FRs via `deleted_at` on `notes`, `wik
 | `anniversary_deleted` | `anniversary` | Anniversary soft-deleted *(FR-8)* |
 | `anniversary_reminder_fired` | `anniversary` | Anniversary reminder delivered *(FR-8)* |
 | `anniversary_reminder_missed` | `anniversary` | Anniversary reminder past 12h grace — skipped *(FR-8)* |
+| `ledger_created` | `ledger_entry` | New income/expense entry recorded *(FR-9)* |
+| `ledger_updated` | `ledger_entry` | Entry edited *(FR-9)* |
+| `ledger_voided` | `ledger_entry` | Entry voided (soft-delete) *(FR-9)* |
+| `category_created` | `category` | New category created *(FR-9)* |
+| `category_updated` | `category` | Category renamed *(FR-9)* |
+| `category_deleted` | `category` | Category soft-deleted *(FR-9)* |
+| `folder_registered` | `drive` | Drive folder trusted after bot created/verified it *(Security hardening)* |
+| `scope_validated` | `drive` | OAuth token scope confirmed as `drive.file` *(Security hardening)* |
+| `file_created` | `drive` | File successfully created on Drive *(Security hardening)* |
+| `file_updated` | `drive` | File successfully updated on Drive *(Security hardening)* |
+| `file_deleted` | `drive` | File deleted from Drive *(Security hardening)* |
 
 ### Notification Framework *(FR-4)*
 
@@ -660,6 +723,12 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 - `/logout` — server-side session revocation, immediate
 - Brute-force: 5 failures → 15-minute lockout (reuses `sudo_attempts` table with `channel="web"`)
 
+**HTTP security middleware *(Security hardening)*:**
+- **CSRF:** Cookie `csrf_token` non-HttpOnly + SameSite=Lax set on every GET. POST/PUT/PATCH/DELETE must echo the token via form field `csrf_token` (HTML forms) or header `X-CSRF-Token` (htmx/fetch). `/webhook` is exempt (Telegram has no browser cookie). JS in `base.html` auto-injects the token into form submits and htmx requests.
+- **Rate limiting:** `/login` capped at 10 requests/60s per IP (transport layer, independent of per-user lockout in `elevation_store`); default 120/60s for all other mutating routes.
+- **Security headers:** Every response carries `X-Frame-Options: DENY` (clickjacking protection), `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`, `Content-Security-Policy` (permits unpkg.com + `unsafe-inline/eval` required by Alpine 3), `Strict-Transport-Security` (staging/production only).
+- **SRI:** htmx and Alpine.js loaded from CDN with `integrity="sha384-..."` + `crossorigin="anonymous"` to detect CDN tampering.
+
 ### Web Chat History *(FR-5.5)*
 **Routes:**
 
@@ -703,6 +772,45 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | GET | `/anniversaries/{id}/edit` | Edit form |
 | POST | `/anniversaries/{id}` | Update |
 | POST | `/anniversaries/{id}/delete` | Soft-delete |
+
+### Expense Tracking & Budget *(FR-9)*
+| Command | Description |
+|---------|-------------|
+| `chi: <amount> <description>` | Record an expense. Example: `chi: 50k ăn trưa` |
+| `thu: <amount> <description>` | Record income. Example: `thu: 5tr lương` |
+| `ghi chep: <id>` | View a specific entry |
+| `danh sach ghi chep` | List 20 most recent entries |
+| `sua ghi chep: <id>, so=<amount>[, mo ta=<text>]` | Edit an entry |
+| `huy ghi chep: <id>` | Void an entry (soft-delete, retained 30 days) |
+| `xem danh muc` | List expense/income categories |
+| `them danh muc: <name>, chi\|thu[, chung]` | Create category (add `, chung` for family-shared — admin/manager only) |
+| `xoa danh muc: <id>` | Delete category (soft-delete) |
+| `sua danh muc: <id> <new name>` | Rename category |
+| `bao cao thang [YYYY-MM]` | Monthly income/expense report (default: current month) |
+| `bao cao nam` | Year-to-date breakdown by month |
+| `xem chi tieu` | 7-day income/expense summary |
+| `dat han muc chi: <amount>` | Set monthly expense cap |
+| `dat muc tieu tiet kiem: <amount>` | Set monthly savings target |
+| `xem han muc` | View current expense cap and savings target |
+
+**Amount formats:** `50000`, `50k`, `50.000`, `50tr`, `5m` are all accepted. Displayed as `50.000 đ`.
+
+**Web routes *(FR-9)*:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/ledger` | List entries for current month + income/expense/savings totals |
+| GET | `/ledger/new` | New entry form |
+| POST | `/ledger` | Save new entry |
+| GET | `/ledger/categories` | Manage categories |
+| POST | `/ledger/categories` | Create category |
+| POST | `/ledger/categories/{id}/delete` | Delete category |
+| GET | `/ledger/report` | Monthly report: totals, by category, chart |
+| GET | `/ledger/budget` | View expense cap + savings target |
+| POST | `/ledger/budget` | Update cap / target |
+| GET | `/ledger/{id}/edit` | Edit entry form |
+| POST | `/ledger/{id}` | Update entry |
+| POST | `/ledger/{id}/void` | Void entry |
 
 ### Registration (pre-auth)
 | Command | Description |

@@ -101,6 +101,8 @@ Copy `.env.example` thành `.env` (local), `.env.staging`, hoặc `.env.producti
 | `LITESTREAM_ENDPOINT` | staging/prod | — | `https://<account-id>.r2.cloudflarestorage.com` |
 | `LITESTREAM_ACCESS_KEY_ID` | staging/prod | — | Access Key ID của R2 API token |
 | `LITESTREAM_SECRET_ACCESS_KEY` | staging/prod | — | Secret Access Key của R2 API token |
+| `WEB_SECRET_KEY` | ✅ (non-local) | — | Secret key cho session cookie web. Tạo bằng: `python -c "import secrets; print(secrets.token_urlsafe(48))"`. Dùng key khác nhau cho mỗi môi trường. |
+| `WEB_SESSION_TTL_DAYS` | ❌ | `7` | Thời gian tồn tại session cookie web (ngày) |
 | `GDRIVE_FOLDER_ID` | ❌ | `""` | Ghim ghi chú vào folder Drive cụ thể theo ID |
 | `CLAUDE_NOTES_FOLDER` | ❌ | `Claude-Notes` | Tên subfolder ghi chú |
 | `WIKI_SUBFOLDER` | ❌ | `Wiki` | Tên subfolder wiki |
