@@ -48,6 +48,7 @@ from task_parser import TaskParser
 from anniversary_store import SqliteAnniversaryStore
 from anniversary_engine import AnniversaryEngine
 from category_store import SqliteCategoryStore
+from credit_card_store import SqliteCreditCardStore
 from ledger_store import SqliteLedgerStore
 from budget_store import SqliteBudgetStore
 from ledger_parser import LedgerParser
@@ -113,6 +114,7 @@ anniversary_engine = AnniversaryEngine(
 category_store = SqliteCategoryStore()
 ledger_store = SqliteLedgerStore()
 budget_store = SqliteBudgetStore()
+credit_card_store = SqliteCreditCardStore()
 ledger_parser = LedgerParser()
 ledger_reports = LedgerReports(ledger_store, budget_store)
 
@@ -140,6 +142,7 @@ deps = CoreDeps(
     budget_store=budget_store,
     ledger_parser=ledger_parser,
     ledger_reports=ledger_reports,
+    credit_card_store=credit_card_store,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -167,6 +170,7 @@ web_deps = CoreDeps(
     budget_store=budget_store,
     ledger_parser=ledger_parser,
     ledger_reports=ledger_reports,
+    credit_card_store=credit_card_store,
 )
 
 

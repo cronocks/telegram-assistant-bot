@@ -47,6 +47,7 @@ def _check_enabled(deps: CoreDeps) -> bool:
         and deps.budget_store is not None
         and deps.ledger_parser is not None
         and deps.ledger_reports is not None
+        and deps.credit_card_store is not None
     )
 
 
@@ -83,7 +84,7 @@ async def _cmd_thu(chat_id, body, user, deps: CoreDeps) -> None:
     await _add_entry(chat_id, f"thu: {body}", user, deps)
 
 
-async def _add_entry(chat_id, text, user, deps: CoreDeps) -> None:
+async def _add_entry(chat_id, text, user, deps: CoreDeps, *, credit_card_id=None) -> None:
     categories = deps.category_store.list_for_user(user.id)
     try:
         parsed = deps.ledger_parser.parse_command(text, categories)
@@ -100,6 +101,7 @@ async def _add_entry(chat_id, text, user, deps: CoreDeps) -> None:
         category_id=parsed["category_id"],
         note=parsed["description"] or None,
         source="telegram",
+        credit_card_id=credit_card_id,
     )
     deps.audit.log(
         actor_user_id=user.id,
@@ -387,11 +389,18 @@ async def _cmd_bao_cao_thang(chat_id, body, user, deps: CoreDeps) -> None:
         pct = summary["budget_pct"] or 0
         lines.append(f"\nHạn mức chi: {_format_vnd(summary['expense'])} / {_format_vnd(summary['expense_budget'])} ({pct}%)")
 
-    if summary["by_category"]:
+    expense_rows = [r for r in summary["by_category"] if r["kind"] == "expense"]
+    if expense_rows:
+        cat_map = {
+            c["id"]: c["name"]
+            for c in deps.category_store.list_for_user(user.id)
+        }
+        total_expense = summary["expense"] or 1  # guard against zero division
         lines.append("\nTheo danh mục (chi):")
-        for row in summary["by_category"]:
-            if row["kind"] == "expense":
-                lines.append(f"  #{row['category_id'] or '?'}  {_format_vnd(row['total'])}")
+        for row in expense_rows:
+            name = cat_map.get(row["category_id"], "Chưa phân loại") if row["category_id"] else "Chưa phân loại"
+            pct = int(row["total"] / total_expense * 100)
+            lines.append(f"  {name}  {_format_vnd(row['total'])}  ({pct}%)")
 
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
@@ -416,14 +425,27 @@ async def _cmd_xem_chi_tieu(chat_id, user, deps: CoreDeps) -> None:
         return
     since = _7days_ago()
     result = deps.ledger_reports.last_7_days(user.id, since)
+    cat_map = {
+        c["id"]: c["name"]
+        for c in deps.category_store.list_for_user(user.id)
+    }
+    _KIND_LABEL = {"expense": "Chi", "income": "Thu", "cc_payment": "↩ Trả thẻ"}
     lines = [
         "📋 Chi tiêu 7 ngày qua:",
         f"💸 Tổng chi: {_format_vnd(result['total_expense'])}",
         f"💰 Tổng thu: {_format_vnd(result['total_income'])}",
+        "─────────────────────",
     ]
     for e in result["entries"]:
-        sign = "−" if e["kind"] == "expense" else "+"
-        lines.append(f"  {e['occurred_at'][:10]} {sign}{_format_vnd(e['amount'])}")
+        sign = "+" if e["kind"] == "income" else "−"
+        label = _KIND_LABEL.get(e["kind"], e["kind"])
+        cat_name = cat_map.get(e["category_id"], "") if e.get("category_id") else ""
+        note = e["note"] or ""
+        detail = "  —  ".join(filter(None, [note, f"[{cat_name}]" if cat_name else ""]))
+        line = f"  {e['occurred_at'][:10]}  {label}  {sign}{_format_vnd(e['amount'])}"
+        if detail:
+            line += f"  {detail}"
+        lines.append(line)
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
 
@@ -491,3 +513,157 @@ async def _cmd_xem_han_muc(chat_id, user, deps: CoreDeps) -> None:
         lines.append("  Chưa đặt mục tiêu tiết kiệm.")
 
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+# ── Credit card handlers ──────────────────────────────────────────────────────
+
+
+async def _cmd_them_the(chat_id, body, user, deps: CoreDeps) -> None:
+    if not _check_enabled(deps):
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    name = body.strip()
+    if not name:
+        await deps.channel.send(
+            chat_id,
+            "⚠️ Cú pháp: them the: <tên thẻ>\nVí dụ: them the: Visa ABC",
+            use_markdown=False,
+        )
+        return
+    card = deps.credit_card_store.create_card(name, user_id=user.id)
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="credit_card_created",
+        target_type="credit_card",
+        target_id=card["id"],
+        payload={"name": card["name"]},
+    )
+    await deps.channel.send(
+        chat_id, f"✅ Đã thêm thẻ #{card['id']}: {card['name']}.", use_markdown=False,
+    )
+
+
+async def _cmd_xem_the(chat_id, user, deps: CoreDeps) -> None:
+    if not _check_enabled(deps):
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    cards = deps.credit_card_store.list_for_user(user.id)
+    if not cards:
+        await deps.channel.send(
+            chat_id,
+            "Chưa có thẻ tín dụng nào. Thêm bằng: them the: <tên thẻ>",
+            use_markdown=False,
+        )
+        return
+    outstanding = deps.ledger_store.all_card_outstanding(user.id)
+    lines = ["💳 Thẻ tín dụng:"]
+    for c in cards:
+        shared = " (chung)" if c["user_id"] is None else ""
+        due = outstanding.get(c["id"], 0)
+        lines.append(f"  #{c['id']} {c['name']}{shared} — dư nợ: {_format_vnd(due)} đ")
+    await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+async def _cmd_xoa_the(chat_id, body, user, deps: CoreDeps) -> None:
+    if not _check_enabled(deps):
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    token = body.strip().split()[0] if body.strip() else ""
+    if not token.isdigit():
+        await deps.channel.send(chat_id, "⚠️ Cú pháp: xoa the: <id>", use_markdown=False)
+        return
+    card_id = int(token)
+    card = deps.credit_card_store.get_card(card_id)
+    is_admin = getattr(user, "role", None) in _ADMIN_ROLES
+    if card is None or card["deleted_at"] is not None:
+        await deps.channel.send(chat_id, "Không tìm thấy thẻ.", use_markdown=False)
+        return
+    if card["user_id"] != user.id and not is_admin:
+        await deps.channel.send(chat_id, "⚠️ Bạn không có quyền xóa thẻ này.", use_markdown=False)
+        return
+    deps.credit_card_store.soft_delete_card(card_id)
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="credit_card_deleted",
+        target_type="credit_card",
+        target_id=card_id,
+        payload={},
+    )
+    await deps.channel.send(chat_id, f"✅ Đã xóa thẻ #{card_id}.", use_markdown=False)
+
+
+async def _cmd_chi_the(chat_id, body, user, deps: CoreDeps) -> None:
+    if not _check_enabled(deps):
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    if ":" not in body:
+        await deps.channel.send(
+            chat_id,
+            "⚠️ Cú pháp: chi the <tên thẻ>: <số> <mô tả>\nVí dụ: chi the Visa: 50k ăn trưa",
+            use_markdown=False,
+        )
+        return
+    card_name, rest = body.split(":", 1)
+    card_name, rest = card_name.strip(), rest.strip()
+    card = deps.credit_card_store.get_card_by_name(user.id, card_name)
+    if card is None:
+        await deps.channel.send(
+            chat_id,
+            f"⚠️ Không tìm thấy thẻ '{card_name}'. Thêm bằng: them the: {card_name}",
+            use_markdown=False,
+        )
+        return
+    await _add_entry(chat_id, f"chi: {rest}", user, deps, credit_card_id=card["id"])
+
+
+async def _cmd_tra_the(chat_id, body, user, deps: CoreDeps) -> None:
+    if not _check_enabled(deps):
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    if ":" not in body:
+        await deps.channel.send(
+            chat_id,
+            "⚠️ Cú pháp: tra the <tên thẻ>: <số>\nVí dụ: tra the Visa: 5tr",
+            use_markdown=False,
+        )
+        return
+    card_name, amount_str = body.split(":", 1)
+    card_name, amount_str = card_name.strip(), amount_str.strip()
+    card = deps.credit_card_store.get_card_by_name(user.id, card_name)
+    if card is None:
+        await deps.channel.send(
+            chat_id,
+            f"⚠️ Không tìm thấy thẻ '{card_name}'. Thêm bằng: them the: {card_name}",
+            use_markdown=False,
+        )
+        return
+    try:
+        amount = parse_amount(amount_str)
+    except ValueError as e:
+        await deps.channel.send(chat_id, f"⚠️ {e}", use_markdown=False)
+        return
+
+    now_vn = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    entry = deps.ledger_store.add_entry(
+        user.id,
+        "cc_payment",
+        amount,
+        now_vn,
+        note=f"Trả thẻ {card['name']}",
+        source="telegram",
+        credit_card_id=card["id"],
+    )
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="ledger_created",
+        target_type="ledger_entry",
+        target_id=entry["id"],
+        payload={"kind": "cc_payment", "amount": amount, "credit_card_id": card["id"]},
+    )
+    due = deps.ledger_store.card_outstanding(user.id, card["id"])
+    await deps.channel.send(
+        chat_id,
+        f"✅ Đã trả thẻ {card['name']}: {_format_vnd(amount)} đ.\n"
+        f"Dư nợ còn lại: {_format_vnd(due)} đ.",
+        use_markdown=False,
+    )

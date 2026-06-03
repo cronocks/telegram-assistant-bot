@@ -13,6 +13,7 @@ from cmd_ledger import (
     _cmd_bao_cao_nam,
     _cmd_bao_cao_thang,
     _cmd_chi,
+    _cmd_chi_the,
     _cmd_dat_han_muc_chi,
     _cmd_dat_muc_tieu_tiet_kiem,
     _cmd_danh_sach_ghi_chep,
@@ -21,12 +22,17 @@ from cmd_ledger import (
     _cmd_sua_danh_muc,
     _cmd_sua_ghi_chep,
     _cmd_them_danh_muc,
+    _cmd_them_the,
     _cmd_thu,
+    _cmd_tra_the,
     _cmd_xem_chi_tieu,
     _cmd_xem_danh_muc,
     _cmd_xem_han_muc,
+    _cmd_xem_the,
     _cmd_xoa_danh_muc,
+    _cmd_xoa_the,
 )
+from credit_card_store import SqliteCreditCardStore
 from deps import CoreDeps
 from ledger_parser import LedgerParser
 from ledger_reports import LedgerReports
@@ -60,6 +66,7 @@ def all_stores(db_conn):
         "cat": SqliteCategoryStore(conn=db_conn),
         "ledger": SqliteLedgerStore(conn=db_conn),
         "budget": SqliteBudgetStore(conn=db_conn),
+        "card": SqliteCreditCardStore(conn=db_conn),
         "user_store": SqliteUserStore(conn=db_conn),
         "audit": SqliteAuditLog(conn=db_conn),
     }
@@ -82,6 +89,7 @@ def deps(db_conn, all_stores, fake_channel):
     d.budget_store = budget
     d.ledger_parser = parser
     d.ledger_reports = reports
+    d.credit_card_store = all_stores["card"]
     d.notification_service = MagicMock()
     d.notification_service.enqueue = MagicMock()
     return d
@@ -247,6 +255,37 @@ def test_cmd_bao_cao_thang_current_month(deps, member_user):
     assert "5.000.000" in deps.channel.last_text
 
 
+def test_cmd_bao_cao_thang_shows_category_name(deps, member_user):
+    cat = deps.category_store.create_category("Ăn uống", "expense", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 200_000, "2026-05-10 10:00:00", category_id=cat["id"]
+    )
+    run(_cmd_bao_cao_thang(CHAT, "2026-05", member_user, deps))
+    assert "Ăn uống" in deps.channel.last_text
+
+
+def test_cmd_bao_cao_thang_shows_chua_phan_loai(deps, member_user):
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 100_000, "2026-05-10 10:00:00"
+    )
+    run(_cmd_bao_cao_thang(CHAT, "2026-05", member_user, deps))
+    assert "Chưa phân loại" in deps.channel.last_text
+
+
+def test_cmd_bao_cao_thang_shows_percentage(deps, member_user):
+    cat = deps.category_store.create_category("Di chuyển", "expense", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 300_000, "2026-05-10 10:00:00", category_id=cat["id"]
+    )
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 700_000, "2026-05-11 10:00:00"
+    )
+    run(_cmd_bao_cao_thang(CHAT, "2026-05", member_user, deps))
+    assert "%" in deps.channel.last_text
+    assert "30%" in deps.channel.last_text   # Di chuyển: 300k / 1000k = 30%
+    assert "70%" in deps.channel.last_text   # Chưa phân loại: 700k / 1000k = 70%
+
+
 def test_cmd_bao_cao_thang_specific_month(deps, member_user):
     run(_cmd_bao_cao_thang(CHAT, "2026-04", member_user, deps))
     assert deps.channel.last_text  # any non-empty reply
@@ -261,6 +300,46 @@ def test_cmd_xem_chi_tieu_returns_reply(deps, member_user):
     deps.ledger_store.add_entry(member_user.id, "expense", 100_000, TODAY)
     run(_cmd_xem_chi_tieu(CHAT, member_user, deps))
     assert "100.000" in deps.channel.last_text
+
+
+def _now_str() -> str:
+    from datetime import datetime
+    from timeutils import VIETNAM_TZ
+    return datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def test_cmd_xem_chi_tieu_shows_note(deps, member_user):
+    deps.ledger_store.add_entry(member_user.id, "expense", 50_000, _now_str(), note="Cafe sáng")
+    run(_cmd_xem_chi_tieu(CHAT, member_user, deps))
+    assert "Cafe sáng" in deps.channel.last_text
+
+
+def test_cmd_xem_chi_tieu_shows_category_name(deps, member_user):
+    cat = deps.category_store.create_category("Ăn uống", "expense", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 30_000, _now_str(), category_id=cat["id"]
+    )
+    run(_cmd_xem_chi_tieu(CHAT, member_user, deps))
+    assert "Ăn uống" in deps.channel.last_text
+
+
+def test_cmd_xem_chi_tieu_shows_kind_labels(deps, member_user):
+    deps.ledger_store.add_entry(member_user.id, "expense", 50_000, _now_str(), note="ăn trưa")
+    deps.ledger_store.add_entry(member_user.id, "income", 200_000, _now_str(), note="lương")
+    run(_cmd_xem_chi_tieu(CHAT, member_user, deps))
+    text = deps.channel.last_text
+    assert "Chi" in text
+    assert "Thu" in text
+
+
+def test_cmd_xem_chi_tieu_shows_cc_payment_label(deps, member_user):
+    card = deps.credit_card_store.create_card("Visa", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "cc_payment", 500_000, _now_str(),
+        note="Trả thẻ Visa", credit_card_id=card["id"]
+    )
+    run(_cmd_xem_chi_tieu(CHAT, member_user, deps))
+    assert "Trả thẻ" in deps.channel.last_text
 
 
 # ── Budget ────────────────────────────────────────────────────────────────────
@@ -284,3 +363,91 @@ def test_cmd_xem_han_muc_returns_reply(deps, member_user):
     deps.budget_store.upsert_budget(member_user.id, "2026-05", expense_budget=5_000_000)
     run(_cmd_xem_han_muc(CHAT, member_user, deps))
     assert "5.000.000" in deps.channel.last_text
+
+
+# ── Credit card ───────────────────────────────────────────────────────────────
+
+
+def test_cmd_them_the_creates_card(deps, member_user):
+    run(_cmd_them_the(CHAT, "Visa ABC", member_user, deps))
+    cards = deps.credit_card_store.list_for_user(member_user.id)
+    assert any(c["name"] == "Visa ABC" for c in cards)
+    assert "✅" in deps.channel.last_text
+
+
+def test_cmd_them_the_empty_body_replies_usage(deps, member_user):
+    run(_cmd_them_the(CHAT, "", member_user, deps))
+    assert "⚠" in deps.channel.last_text
+
+
+def test_cmd_chi_the_creates_card_expense(deps, member_user):
+    deps.credit_card_store.create_card("Visa", user_id=member_user.id)
+    run(_cmd_chi_the(CHAT, "Visa: 50k ăn trưa", member_user, deps))
+    entries = deps.ledger_store.list_for_user(member_user.id)
+    assert len(entries) == 1
+    assert entries[0]["kind"] == "expense"
+    assert entries[0]["amount"] == 50_000
+    assert entries[0]["credit_card_id"] is not None
+    assert "✅" in deps.channel.last_text
+
+
+def test_cmd_chi_the_unknown_card_replies_error(deps, member_user):
+    run(_cmd_chi_the(CHAT, "KhongCo: 50k cafe", member_user, deps))
+    assert "⚠" in deps.channel.last_text
+    assert deps.ledger_store.list_for_user(member_user.id) == []
+
+
+def test_cmd_chi_the_bad_format_replies_error(deps, member_user):
+    deps.credit_card_store.create_card("Visa", user_id=member_user.id)
+    run(_cmd_chi_the(CHAT, "Visa 50k thiếu dấu hai chấm", member_user, deps))
+    assert "⚠" in deps.channel.last_text
+
+
+def test_cmd_tra_the_creates_cc_payment(deps, member_user):
+    card = deps.credit_card_store.create_card("Visa", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 1_000_000, TODAY, credit_card_id=card["id"]
+    )
+    run(_cmd_tra_the(CHAT, "Visa: 1tr", member_user, deps))
+    entries = deps.ledger_store.list_for_user(member_user.id)
+    payments = [e for e in entries if e["kind"] == "cc_payment"]
+    assert len(payments) == 1
+    assert payments[0]["amount"] == 1_000_000
+    # The payment must NOT inflate monthly expense (anti double-count).
+    totals = deps.ledger_store.monthly_totals(member_user.id, "2026-05")
+    assert totals["expense"] == 1_000_000
+
+
+def test_cmd_tra_the_unknown_card_replies_error(deps, member_user):
+    run(_cmd_tra_the(CHAT, "KhongCo: 1tr", member_user, deps))
+    assert "⚠" in deps.channel.last_text
+
+
+def test_cmd_xem_the_shows_outstanding(deps, member_user):
+    card = deps.credit_card_store.create_card("Visa", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 300_000, TODAY, credit_card_id=card["id"]
+    )
+    deps.ledger_store.add_entry(
+        member_user.id, "cc_payment", 100_000, TODAY, credit_card_id=card["id"]
+    )
+    run(_cmd_xem_the(CHAT, member_user, deps))
+    assert "Visa" in deps.channel.last_text
+    assert "200.000" in deps.channel.last_text  # 300k - 100k outstanding
+
+
+def test_cmd_xem_the_empty(deps, member_user):
+    run(_cmd_xem_the(CHAT, member_user, deps))
+    assert deps.channel.last_text
+
+
+def test_cmd_xoa_the_soft_deletes(deps, member_user):
+    card = deps.credit_card_store.create_card("Tạm", user_id=member_user.id)
+    run(_cmd_xoa_the(CHAT, str(card["id"]), member_user, deps))
+    assert deps.credit_card_store.get_card(card["id"])["deleted_at"] is not None
+
+
+def test_cmd_xoa_the_wrong_owner(deps, member_user, another_user):
+    card = deps.credit_card_store.create_card("Riêng", user_id=another_user.id)
+    run(_cmd_xoa_the(CHAT, str(card["id"]), member_user, deps))
+    assert deps.credit_card_store.get_card(card["id"])["deleted_at"] is None

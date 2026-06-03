@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from backup_engine import BackupEngine
     from budget_store import SqliteBudgetStore
     from category_store import SqliteCategoryStore
+    from credit_card_store import SqliteCreditCardStore
     from interfaces import ReminderStore, TaskStore
     from ledger_parser import LedgerParser
     from ledger_reports import LedgerReports
@@ -62,3 +63,4 @@ class CoreDeps:
     budget_store: "SqliteBudgetStore | None" = None
     ledger_parser: "LedgerParser | None" = None
     ledger_reports: "LedgerReports | None" = None
+    credit_card_store: "SqliteCreditCardStore | None" = None

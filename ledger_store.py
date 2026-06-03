@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from db.connection import get_connection
 
-VALID_KINDS = {"income", "expense"}
+VALID_KINDS = {"income", "expense", "cc_payment"}
 VALID_SOURCES = {"telegram", "web"}
 
 
@@ -36,9 +36,10 @@ class SqliteLedgerStore:
         category_id: int | None = None,
         note: str | None = None,
         source: str = "telegram",
+        credit_card_id: int | None = None,
     ) -> dict:
         if kind not in VALID_KINDS:
-            raise ValueError(f"ledger: kind must be income|expense, got {kind!r}")
+            raise ValueError(f"ledger: kind must be income|expense|cc_payment, got {kind!r}")
         if amount <= 0:
             raise ValueError(f"ledger: amount must be positive, got {amount}")
 
@@ -47,10 +48,12 @@ class SqliteLedgerStore:
             cur = self._conn.execute(
                 """
                 INSERT INTO ledger_entries
-                    (user_id, kind, amount, category_id, note, occurred_at, source, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (user_id, kind, amount, category_id, note, occurred_at, source,
+                     created_at, updated_at, credit_card_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (user_id, kind, amount, category_id, note, occurred_at, source, now, now),
+                (user_id, kind, amount, category_id, note, occurred_at, source,
+                 now, now, credit_card_id),
             )
         return self.get_entry(cur.lastrowid)
 
@@ -159,6 +162,42 @@ class SqliteLedgerStore:
             (user_id, f"{month}%"),
         ).fetchone()
         return {"income": row["income"], "expense": row["expense"]}
+
+    def card_outstanding(self, user_id: int, card_id: int) -> int:
+        """Outstanding balance on a card = charged expenses - statement payments.
+
+        Non-voided entries only.
+        """
+        row = self._conn.execute(
+            """
+            SELECT COALESCE(SUM(
+                CASE WHEN kind = 'expense' THEN amount
+                     WHEN kind = 'cc_payment' THEN -amount
+                     ELSE 0 END
+            ), 0) AS outstanding
+            FROM ledger_entries
+            WHERE user_id = ? AND credit_card_id = ? AND voided_at IS NULL
+            """,
+            (user_id, card_id),
+        ).fetchone()
+        return row["outstanding"]
+
+    def all_card_outstanding(self, user_id: int) -> dict:
+        """Return {credit_card_id: outstanding} for every card with activity."""
+        rows = self._conn.execute(
+            """
+            SELECT credit_card_id, COALESCE(SUM(
+                CASE WHEN kind = 'expense' THEN amount
+                     WHEN kind = 'cc_payment' THEN -amount
+                     ELSE 0 END
+            ), 0) AS outstanding
+            FROM ledger_entries
+            WHERE user_id = ? AND credit_card_id IS NOT NULL AND voided_at IS NULL
+            GROUP BY credit_card_id
+            """,
+            (user_id,),
+        ).fetchall()
+        return {r["credit_card_id"]: r["outstanding"] for r in rows}
 
     def monthly_by_category(self, user_id: int, month: str) -> list[dict]:
         """Return [{category_id, kind, total}, ...] grouped by category for the month."""
