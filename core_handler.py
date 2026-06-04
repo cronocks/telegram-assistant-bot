@@ -71,14 +71,19 @@ from cmd_ledger import (
     _cmd_danh_sach_ghi_chep,
     _cmd_ghi_chep_xem,
     _cmd_huy_ghi_chep,
+    _cmd_chi_the,
     _cmd_sua_danh_muc,
     _cmd_sua_ghi_chep,
     _cmd_them_danh_muc,
+    _cmd_them_the,
     _cmd_thu,
+    _cmd_tra_the,
     _cmd_xem_chi_tieu,
     _cmd_xem_danh_muc,
     _cmd_xem_han_muc,
+    _cmd_xem_the,
     _cmd_xoa_danh_muc,
+    _cmd_xoa_the,
 )
 from cmd_user import (
     _cmd_dat_birthdate,
@@ -261,7 +266,12 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "`xem chi tieu` — Chi tieu 7 ngay qua\n"
         "`dat han muc chi: <so>` — Dat han muc chi thang nay\n"
         "`dat muc tieu tiet kiem: <so>` — Dat muc tieu tiet kiem\n"
-        "`xem han muc` — Xem han muc chi va muc tieu tiet kiem",
+        "`xem han muc` — Xem han muc chi va muc tieu tiet kiem\n"
+        "`them the: <ten>` — Them the tin dung (vd: them the: Visa)\n"
+        "`xem the` — Liet ke the + du no tung the\n"
+        "`xoa the: <id>` — Xoa the tin dung\n"
+        "`chi the <ten>: <so> <mo ta>` — Ghi mot khoan tieu bang the (van tinh la chi)\n"
+        "`tra the <ten>: <so>` — Ghi tra tien sao ke the (KHONG tinh la chi)",
     ),
 }
 
@@ -685,6 +695,12 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "BAO_CAO_NAM":          ["bao cao nam", "báo cáo năm"],
     "DAT_HAN_MUC":          ["dat han muc chi: ", "đặt hạn mức chi: "],
     "DAT_MUC_TIEU":         ["dat muc tieu tiet kiem: ", "đặt mục tiêu tiết kiệm: "],
+    # ── FR-9 credit card commands ─────────────────────────────────────────────
+    "CHI_THE":              ["chi the ", "chi thẻ "],
+    "TRA_THE":              ["tra the ", "trả thẻ "],
+    "THEM_THE":             ["them the: ", "thêm thẻ: "],
+    "XOA_THE":              ["xoa the: ", "xóa thẻ: "],
+    "XEM_THE":              ["xem the", "xem thẻ"],
 }
 
 
@@ -919,6 +935,16 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_dat_muc_tieu_tiet_kiem(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_HAN_MUC":
             await _cmd_xem_han_muc(chat_id, user, deps); return
+        if cmd_id == "CHI_THE":
+            await _cmd_chi_the(chat_id, remainder, user, deps); return
+        if cmd_id == "TRA_THE":
+            await _cmd_tra_the(chat_id, remainder, user, deps); return
+        if cmd_id == "THEM_THE":
+            await _cmd_them_the(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_THE":
+            await _cmd_xoa_the(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_THE":
+            await _cmd_xem_the(chat_id, user, deps); return
 
     # ── Step 4: free-form question → wiki + smart search + Claude ──────────
     await _handle_general_question(chat_id, text, deps, user=user)
