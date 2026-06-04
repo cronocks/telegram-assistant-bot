@@ -163,10 +163,22 @@ async def _cmd_danh_sach_ghi_chep(chat_id, user, deps: CoreDeps) -> None:
     if not entries:
         await deps.channel.send(chat_id, "Chưa có bút toán nào.", use_markdown=False)
         return
+    cat_map = {
+        c["id"]: c["name"]
+        for c in deps.category_store.list_for_user(user.id)
+    }
+    _KIND_LABEL = {"expense": "Chi", "income": "Thu", "cc_payment": "↩ Trả thẻ"}
     lines = ["📋 Ghi chép gần đây:"]
     for e in entries:
-        sign = "−" if e["kind"] == "expense" else "+"
-        lines.append(f"  #{e['id']} {sign}{_format_vnd(e['amount'])} — {e['occurred_at'][:10]}")
+        sign = "+" if e["kind"] == "income" else "−"
+        label = _KIND_LABEL.get(e["kind"], e["kind"])
+        cat_name = cat_map.get(e["category_id"], "") if e.get("category_id") else ""
+        note = e["note"] or ""
+        detail = "  —  ".join(filter(None, [note, f"[{cat_name}]" if cat_name else ""]))
+        line = f"  #{e['id']}  {e['occurred_at'][:10]}  {label}  {sign}{_format_vnd(e['amount'])}"
+        if detail:
+            line += f"  {detail}"
+        lines.append(line)
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
 
 
