@@ -173,6 +173,30 @@ def test_cmd_danh_sach_ghi_chep_empty(deps, member_user):
     assert "chưa có" in deps.channel.last_text.lower() or deps.channel.last_text
 
 
+def test_cmd_danh_sach_ghi_chep_shows_note(deps, member_user):
+    deps.ledger_store.add_entry(member_user.id, "expense", 50_000, TODAY, note="ăn trưa")
+    run(_cmd_danh_sach_ghi_chep(CHAT, member_user, deps))
+    assert "ăn trưa" in deps.channel.last_text
+
+
+def test_cmd_danh_sach_ghi_chep_shows_category_name(deps, member_user):
+    cat = deps.category_store.create_category("Ăn uống", "expense", user_id=member_user.id)
+    deps.ledger_store.add_entry(
+        member_user.id, "expense", 50_000, TODAY, category_id=cat["id"]
+    )
+    run(_cmd_danh_sach_ghi_chep(CHAT, member_user, deps))
+    assert "Ăn uống" in deps.channel.last_text
+
+
+def test_cmd_danh_sach_ghi_chep_shows_kind_label(deps, member_user):
+    deps.ledger_store.add_entry(member_user.id, "expense", 50_000, TODAY)
+    deps.ledger_store.add_entry(member_user.id, "income", 200_000, TODAY)
+    run(_cmd_danh_sach_ghi_chep(CHAT, member_user, deps))
+    text = deps.channel.last_text
+    assert "Chi" in text
+    assert "Thu" in text
+
+
 # ── _cmd_huy_ghi_chep ────────────────────────────────────────────────────────
 
 
