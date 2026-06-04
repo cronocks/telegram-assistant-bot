@@ -175,6 +175,33 @@ thu: 500k tiền thưởng
 ```
 > Định dạng số linh hoạt: `50k` = 50.000 đ, `5tr` hoặc `5m` = 5.000.000 đ
 
+### Thẻ tín dụng
+
+Dùng thẻ tín dụng? Bot phân biệt **tiêu bằng thẻ** (tính chi phí thật) với **trả tiền sao kê** (chuyển khoản tất toán, không tính chi phí lần 2).
+
+**Quản lý thẻ:**
+```
+them the: Visa Techcombank      — thêm thẻ tín dụng
+xem the                         — xem danh sách thẻ + dư nợ hiện tại
+xoa the: 1                      — xóa thẻ #1
+```
+
+**Ghi chi tiêu bằng thẻ:**
+```
+chi the Visa: 150k ăn tối       — ghi khoản chi, nguồn = thẻ Visa
+chi the Visa: 2tr mua sắm
+```
+> Khoản này **được tính vào tổng chi** và hạn mức tháng — đúng thời điểm phát sinh.
+
+**Trả tiền sao kê thẻ:**
+```
+tra the Visa: 3500000           — chuyển khoản trả thẻ Visa
+```
+> Khoản này **KHÔNG tính vào tổng chi** (chỉ là tất toán dư nợ). Bot tự trừ dư nợ thẻ.
+
+**Xem dư nợ:**
+`xem the` hiển thị dư nợ hiện tại của từng thẻ = tổng tiêu chưa trả.
+
 ### Xem & quản lý bút toán
 ```
 danh sach ghi chep        — 20 bút toán gần nhất
@@ -196,12 +223,14 @@ sua danh muc: 3 Giao thông — đổi tên danh mục #3
 
 ### Báo cáo
 ```
-xem chi tieu              — tổng thu/chi 7 ngày qua
-bao cao thang             — báo cáo tháng hiện tại (tổng + theo danh mục)
+xem chi tieu              — chi tiêu 7 ngày qua (ngày, loại, số tiền, mô tả, danh mục)
+bao cao thang             — báo cáo tháng hiện tại (tổng + theo danh mục + %)
 bao cao thang 2026-04     — báo cáo tháng 4/2026
 bao cao nam               — báo cáo từng tháng trong năm nay
 xem han muc               — xem hạn mức chi và mục tiêu tiết kiệm
 ```
+> `bao cao thang` hiển thị tên danh mục và phần trăm (%) của từng danh mục so với tổng chi.
+> `xem chi tieu` hiển thị đầy đủ: ngày, loại giao dịch (Chi / Thu / ↩ Trả thẻ), số tiền, mô tả và danh mục.
 
 ### Hạn mức & mục tiêu tiết kiệm
 ```
