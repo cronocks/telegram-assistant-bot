@@ -59,6 +59,13 @@ CATEGORIES = [
     {"id": 3, "name": "Lương", "kind": "income"},
 ]
 
+CATEGORIES_WITH_NHAN = [
+    {"id": 1, "name": "Ăn uống", "kind": "expense"},
+    {"id": 2, "name": "Di chuyển", "kind": "expense"},
+    {"id": 9, "name": "Mua sắm cá nhân", "kind": "expense"},
+    {"id": 3, "name": "Lương", "kind": "income"},
+]
+
 
 @pytest.fixture()
 def parser_no_llm():
@@ -74,6 +81,18 @@ def test_fast_path_exact_match_returns_category_id(parser_no_llm):
 def test_fast_path_no_match_returns_none(parser_no_llm):
     result = parser_no_llm.classify_category("mua đồ xyz không rõ", CATEGORIES)
     assert result is None
+
+
+def test_fast_path_word_match_not_substring(parser_no_llm):
+    # "an" from "ăn trưa" must NOT match "nhân" in "Mua sắm cá nhân" (substring false positive)
+    # With "Mua sắm cá nhân" present, "ăn trưa" should still resolve to "Ăn uống" (1 match)
+    result = parser_no_llm.classify_category("ăn trưa", CATEGORIES_WITH_NHAN)
+    assert result == 1  # "Ăn uống" — not None due to false multi-match
+
+
+def test_fast_path_an_sang_word_match(parser_no_llm):
+    result = parser_no_llm.classify_category("ăn sáng", CATEGORIES_WITH_NHAN)
+    assert result == 1  # "Ăn uống"
 
 
 # ── classify_category — LLM fallback ─────────────────────────────────────────

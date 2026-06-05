@@ -99,14 +99,23 @@ def parse_amount(text: str) -> int:
     return result
 
 
+_UNSET = object()  # sentinel to distinguish "not passed" from explicit None
+
+
 class LedgerParser:
     """Hybrid ledger command parser: deterministic amount + 2-tier category."""
 
     def __init__(
         self,
-        client: Any | None = None,
+        client: Any | None = _UNSET,
         cost_monitor: Any | None = None,
     ) -> None:
+        if client is _UNSET:
+            # Auto-initialize real Anthropic client when caller omits argument.
+            # Pass client=None explicitly to disable LLM (e.g. in tests).
+            import anthropic
+            from config import ANTHROPIC_API_KEY
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         self._client = client
         self._cost_monitor = cost_monitor
 
@@ -118,10 +127,10 @@ class LedgerParser:
         categories: list[dict],
     ) -> int | None:
         """Return category_id via fast-path or LLM; None if unresolvable."""
-        desc_words = [w for w in _normalize(description).split() if len(w) >= 2]
+        desc_words = {w for w in _normalize(description).split() if len(w) >= 2}
         matches = [
             cat for cat in categories
-            if any(word in _normalize(cat["name"]) for word in desc_words)
+            if desc_words & set(_normalize(cat["name"]).split())
         ]
         if len(matches) == 1:
             return matches[0]["id"]
