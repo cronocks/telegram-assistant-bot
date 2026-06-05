@@ -49,7 +49,7 @@ def _make_deps(conn: sqlite3.Connection) -> tuple[CoreDeps, SqliteLedgerStore, S
     category_store = SqliteCategoryStore(conn=conn)
     budget_store = SqliteBudgetStore(conn=conn)
     ledger_reports = LedgerReports(ledger_store, budget_store)
-    ledger_parser = LedgerParser()
+    ledger_parser = LedgerParser(client=None)  # disable LLM in integration tests
 
     audit = MagicMock()
     audit.log = MagicMock()
@@ -203,3 +203,9 @@ def test_dispatch_xem_han_muc_no_llm(conn, alice):
     msg = _make_msg("xem han muc")
     _run(handle_message(msg, alice, deps))
     deps.channel.send.assert_awaited()
+
+
+def test_ledger_parser_has_llm_client():
+    """LedgerParser must self-initialize an Anthropic client (same pattern as TaskParser)."""
+    parser = LedgerParser()
+    assert parser._client is not None
