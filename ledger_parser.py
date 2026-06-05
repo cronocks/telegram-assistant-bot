@@ -127,6 +127,9 @@ class LedgerParser:
         categories: list[dict],
     ) -> int | None:
         """Return category_id via fast-path or LLM; None if unresolvable."""
+        if not categories:
+            return None  # nothing to classify against — skip LLM entirely
+
         desc_words = {w for w in _normalize(description).split() if len(w) >= 2}
         matches = [
             cat for cat in categories
@@ -144,6 +147,7 @@ class LedgerParser:
         if self._client is None:
             return None
 
+        valid_ids = {c["id"] for c in categories}
         cat_list = "\n".join(
             f"- id={c['id']} name={c['name']} kind={c['kind']}" for c in categories
         )
@@ -166,6 +170,9 @@ class LedgerParser:
             if getattr(block, "type", None) == "tool_use" and block.name == "classify_category":
                 cat_id = block.input.get("category_id")
                 confidence = block.input.get("confidence", 0.0)
+                if cat_id not in valid_ids:
+                    logger.warning("ledger_parser: LLM returned unknown category_id=%s, ignoring", cat_id)
+                    return None
                 if confidence >= LLM_CONFIDENCE_THRESHOLD:
                     return cat_id
                 return None

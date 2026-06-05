@@ -147,6 +147,27 @@ def test_llm_fallback_called_when_multiple_matches():
     client.messages.create.assert_called_once()
 
 
+def test_llm_returns_invalid_id_falls_back_to_none():
+    # LLM hallucinates a category_id not in the provided list → must return None
+    # Use "cafe" — no fast-path match → forces LLM fallback
+    client = MagicMock()
+    client.messages.create.return_value = _make_llm_response(999, 0.95)
+    parser = LedgerParser(client=client)
+
+    result = parser.classify_category("cafe", CATEGORIES)
+    assert result is None  # id=999 not in CATEGORIES → rejected
+
+
+def test_llm_skipped_when_no_categories():
+    # Empty category list → skip LLM entirely, return None immediately
+    client = MagicMock()
+    parser = LedgerParser(client=client)
+
+    result = parser.classify_category("ăn sáng", [])
+    assert result is None
+    client.messages.create.assert_not_called()
+
+
 # ── parse_command ─────────────────────────────────────────────────────────────
 
 
