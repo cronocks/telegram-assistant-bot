@@ -32,6 +32,10 @@ def _build_app(exempt_paths: set | None = None) -> FastAPI:
     async def protected(csrf_token: str = Form(default="")):
         return JSONResponse({"ok": True})
 
+    @app.post("/login")
+    async def login(username: str = Form(...), password: str = Form(...)):
+        return JSONResponse({"username": username, "password": password})
+
     @app.post("/webhook")
     async def webhook():
         return JSONResponse({"ok": True})
@@ -91,6 +95,22 @@ def test_post_with_mismatched_header_returns_403():
     client.cookies.set("csrf_token", _TOKEN)
     r = client.post("/protected", headers={"X-CSRF-Token": "bad"}, data={})
     assert r.status_code == 403
+
+
+# ── Body available after CSRF pass ───────────────────────────────────────────
+
+def test_form_body_available_to_handler_after_csrf_pass():
+    """Route handler must still read username/password after CSRF middleware
+    has consumed the form body to validate the csrf_token field.
+    Regression test for Starlette BaseHTTPMiddleware body-consumption bug."""
+    client = TestClient(_build_app(), raise_server_exceptions=False)
+    client.cookies.set("csrf_token", _TOKEN)
+    r = client.post(
+        "/login",
+        data={"username": "alice", "password": "secret", "csrf_token": _TOKEN},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"username": "alice", "password": "secret"}
 
 
 # ── Exempt paths ──────────────────────────────────────────────────────────────
