@@ -277,6 +277,8 @@ init_web_router(
     category_store=category_store,
     budget_store=budget_store,
     ledger_reports=ledger_reports,
+    family_store=family_store,
+    burial_store=burial_store,
 )
 
 

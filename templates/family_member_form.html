@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}{% if member %}Sửa thành viên{% else %}Thêm thành viên{% endif %} — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .form-container { max-width: 580px; margin: 2rem auto; padding: 0 1rem; }
+  .form-container h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 1.5rem; color: var(--text); }
+  .form-row { margin-bottom: 0.9rem; }
+  .form-row label { display: block; font-size: 0.82rem; font-weight: 600; margin-bottom: 0.3rem; color: var(--text-muted); }
+  .form-row input, .form-row select, .form-row textarea {
+    width: 100%; padding: 0.5rem 0.7rem; border-radius: 0.5rem;
+    border: 1px solid var(--border); background: var(--surface);
+    color: var(--text); font-size: 0.95rem;
+  }
+  .form-row textarea { min-height: 80px; resize: vertical; }
+  .form-inline { display: flex; gap: 0.5rem; }
+  .form-inline > div { flex: 1; }
+  .section-sep { margin: 1.25rem 0 0.75rem; font-size: 0.78rem; font-weight: 700;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;
+    border-bottom: 1px solid var(--border); padding-bottom: 0.35rem; }
+  .form-actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; flex-wrap: wrap; }
+  .btn { padding: 0.5rem 1.1rem; border-radius: 0.5rem; text-decoration: none; cursor: pointer; border: none; font-size: 0.95rem; }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .error { color: #ef4444; margin-bottom: 1rem; padding: 0.6rem 0.8rem; border-radius: 0.5rem; background: rgba(239,68,68,.08); border: 1px solid rgba(239,68,68,.2); }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Gia phả</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/family">🌳 Cây gia phả</a>
+    <a href="/family/members">👥 Thành viên</a>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post"><button type="submit">Đăng xuất</button></form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block theme_toggle %}{% endblock %}
+
+{% block content %}
+<div class="form-container">
+  <h1>{% if member %}✏️ Sửa thành viên #{{ member.id }}{% else %}➕ Thêm thành viên{% endif %}</h1>
+
+  {% if error %}<div class="error">⚠️ {{ error }}</div>{% endif %}
+
+  <form method="POST" action="{% if member %}/family/members/{{ member.id }}{% else %}/family/members{% endif %}">
+
+    <div class="form-row">
+      <label for="full_name">Họ và tên *</label>
+      <input type="text" id="full_name" name="full_name" required maxlength="120"
+             value="{{ member.full_name if member else '' }}"
+             placeholder="vd: Nguyễn Văn An">
+    </div>
+
+    <div class="form-row">
+      <label for="alias_name">Tên gọi / bí danh</label>
+      <input type="text" id="alias_name" name="alias_name" maxlength="80"
+             value="{{ member.alias_name if member and member.alias_name else '' }}"
+             placeholder="vd: Ông Hai">
+    </div>
+
+    <div class="form-inline">
+      <div class="form-row">
+        <label for="gender">Giới tính</label>
+        <select id="gender" name="gender">
+          <option value="">— Không rõ —</option>
+          <option value="nam" {% if member and member.gender == 'nam' %}selected{% endif %}>Nam</option>
+          <option value="nu"  {% if member and member.gender == 'nu'  %}selected{% endif %}>Nữ</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="generation">Đời (số)</label>
+        <input type="number" id="generation" name="generation" min="1" max="99"
+               value="{{ member.generation if member and member.generation else '' }}"
+               placeholder="vd: 3">
+      </div>
+    </div>
+
+    <div class="form-row">
+      <label for="branch">Chi</label>
+      <input type="text" id="branch" name="branch" maxlength="80"
+             value="{{ member.branch if member and member.branch else '' }}"
+             placeholder="vd: Chi trưởng">
+    </div>
+
+    <div class="section-sep">Ngày sinh</div>
+
+    <div class="form-inline">
+      <div class="form-row">
+        <label for="birth_date_type">Loại lịch</label>
+        <select id="birth_date_type" name="birth_date_type">
+          <option value="">— Không rõ —</option>
+          <option value="solar" {% if member and member.birth_date_type == 'solar' %}selected{% endif %}>Dương lịch</option>
+          <option value="lunar" {% if member and member.birth_date_type == 'lunar' %}selected{% endif %}>Âm lịch</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="birth_year">Năm</label>
+        <input type="number" id="birth_year" name="birth_year" min="1" max="2100"
+               value="{{ member.birth_year if member and member.birth_year else '' }}"
+               placeholder="vd: 1940">
+      </div>
+    </div>
+    <div class="form-inline">
+      <div class="form-row">
+        <label for="birth_month">Tháng</label>
+        <input type="number" id="birth_month" name="birth_month" min="1" max="12"
+               value="{{ member.birth_month if member and member.birth_month else '' }}">
+      </div>
+      <div class="form-row">
+        <label for="birth_day">Ngày</label>
+        <input type="number" id="birth_day" name="birth_day" min="1" max="31"
+               value="{{ member.birth_day if member and member.birth_day else '' }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <label>
+        <input type="checkbox" name="birth_approx" value="1"
+               {% if member and member.birth_approx %}checked{% endif %}>
+        Ngày sinh ước lượng (khoảng)
+      </label>
+    </div>
+
+    <div class="section-sep">Ngày mất</div>
+
+    <div class="form-inline">
+      <div class="form-row">
+        <label for="death_date_type">Loại lịch</label>
+        <select id="death_date_type" name="death_date_type">
+          <option value="">— Không rõ —</option>
+          <option value="solar" {% if member and member.death_date_type == 'solar' %}selected{% endif %}>Dương lịch</option>
+          <option value="lunar" {% if member and member.death_date_type == 'lunar' %}selected{% endif %}>Âm lịch</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <label for="death_year">Năm</label>
+        <input type="number" id="death_year" name="death_year" min="1" max="2100"
+               value="{{ member.death_year if member and member.death_year else '' }}"
+               placeholder="vd: 2010">
+      </div>
+    </div>
+    <div class="form-inline">
+      <div class="form-row">
+        <label for="death_month">Tháng</label>
+        <input type="number" id="death_month" name="death_month" min="1" max="12"
+               value="{{ member.death_month if member and member.death_month else '' }}">
+      </div>
+      <div class="form-row">
+        <label for="death_day">Ngày</label>
+        <input type="number" id="death_day" name="death_day" min="1" max="31"
+               value="{{ member.death_day if member and member.death_day else '' }}">
+      </div>
+    </div>
+    <div class="form-row">
+      <label>
+        <input type="checkbox" name="death_approx" value="1"
+               {% if member and member.death_approx %}checked{% endif %}>
+        Ngày mất ước lượng (khoảng)
+      </label>
+    </div>
+
+    <div class="section-sep">Tiểu sử</div>
+
+    <div class="form-row">
+      <label for="bio">Tiểu sử / ghi chú</label>
+      <textarea id="bio" name="bio" maxlength="2000"
+                placeholder="Ghi chú về cuộc đời, nghề nghiệp, đóng góp…">{{ member.bio if member and member.bio else '' }}</textarea>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary">
+        {% if member %}💾 Lưu{% else %}➕ Tạo{% endif %}
+      </button>
+      <a href="{% if member %}/family/members/{{ member.id }}{% else %}/family/members{% endif %}" class="btn btn-secondary">← Quay lại</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

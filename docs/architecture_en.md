@@ -1,6 +1,6 @@
 # System Architecture
 
-> This document describes the architecture of the Telegram Claude Bot as of **FR-9** (Expense Tracking / Ledger).
+> This document describes the architecture of the Telegram Claude Bot as of **FR-11** (Family Genealogy).
 > For the full feature roadmap, see [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -68,8 +68,8 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `cmd_sudo.py` | Sudo handlers: `sudo`, `thoat sudo`, `dat mat khau`, `dat web pass` (FR-7) |
 | `cmd_wiki.py` | Wiki + memory handlers: `wiki`, `hoi wiki`, `xem tri nho`, `cap nhat tri nho` (FR-7) |
 | `cmd_task.py` | Task + study schedule handlers + inline keyboard callback dispatcher (FR-7) |
-| `anniversary_store.py` | `SqliteAnniversaryStore` — anniversary CRUD + soft-delete + validation (FR-8) |
-| `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fires at 08:00 VN, 12h grace window (FR-8) |
+| `anniversary_store.py` | `SqliteAnniversaryStore` — anniversary CRUD + soft-delete + validation; `family_member_id` link to genealogy records (FR-8, FR-11) |
+| `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fires at 08:00 VN, 12h grace window; accepts `burial_store` to append burial info to memorial (giỗ) reminders (FR-8, FR-11) |
 | `lunar_utils.py` | `lunar_to_solar()` + `compute_anniversary_solar_date()`; uses `lunardate==0.2.2` (FR-8) |
 | `cmd_anniversary.py` | 5 Telegram handlers: `them ky niem`, `danh sach ky niem`, `ky niem <id>`, `xoa ky niem`, `sua ky niem` (FR-8) |
 | `category_store.py` | `SqliteCategoryStore` — category CRUD + family-shared scope (`user_id IS NULL`) (FR-9) |
@@ -78,6 +78,10 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `ledger_parser.py` | `LedgerParser` — parse amount (k/tr/m suffix, VND integer) + fast-path Vietnamese keyword + fuzzy category match (FR-9) |
 | `ledger_reports.py` | `LedgerReports` — monthly summary, yearly breakdown, 7-day view, threshold check 80%/100% (FR-9) |
 | `cmd_ledger.py` | 16 Telegram handlers: `chi:`, `thu:`, `danh sach ghi chep`, `sua/huy ghi chep:`, `xem/them/xoa/sua danh muc`, `bao cao thang/nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc` (FR-9) |
+| `family_store.py` | `SqliteFamilyStore` — family member CRUD + `normalize_vn` search + relationship management (cha/mẹ/vợ/chồng/con nuôi) with cycle detection via recursive CTE (FR-11) |
+| `burial_store.py` | `SqliteBurialStore` — burial record CRUD; rotates `is_current` when a new burial record is added (relocation); validates GPS coordinates (FR-11) |
+| `family_tree.py` | `ancestors()`, `descendants()`, `family_roots()`, `render_tree()` — builds text family tree via recursive CTEs; consumed by the `gia pha` Telegram command and `GET /family` web route (FR-11) |
+| `cmd_family.py` | Telegram handlers for genealogy: `them nguoi than`, `xem nguoi than`, `danh sach nguoi than`, `sua nguoi than`, `xoa nguoi than`, `them mo phan`, `sua mo phan`, `xoa mo phan`, `tim mo`, `them quan he`, `xoa quan he`, `gia pha` (FR-11) |
 | `csrf.py` | `CSRFMiddleware` — double-submit cookie CSRF; sets cookie non-HttpOnly on GET, validates cookie vs form-field/header on POST/PUT/PATCH/DELETE; `/webhook` is exempt *(Security hardening)* |
 | `rate_limit.py` | `RateLimitMiddleware` — sliding-window per `(IP, path)`; `/login` limited to 10 req/60s, default 120 req/60s for all other routes; no external dependency *(Security hardening)* |
 | `security_headers.py` | `SecurityHeadersMiddleware` — stamps `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Content-Security-Policy`, `Strict-Transport-Security` (staging/prod only) *(Security hardening)* |
@@ -99,11 +103,11 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `scheduled_jobs.py` | APScheduler jobs: 180d purge, purge-at-18, notification flush, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year, weekly_ledger_summary, purge_voided_ledger (FR-4, FR-7, FR-8, FR-9) |
 | `web_session_store.py` | `SqliteWebSessionStore` — DB-revocable web sessions (no JWT); find/revoke/create (FR-5) |
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
-| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9) |
+| `web_router.py` | FastAPI web router: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD, family CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9, FR-11) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — conversation + message CRUD; LIKE search; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — in-memory ZIP export, transactional parse/apply import, Drive upload to `Claude-Notes/Backups/`, 5-min/user rate-limit (FR-6) |
 | `tools/local_migrate.py` | Standalone CLI: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`, `ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html` (FR-5 → FR-9) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`, `ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html`, `family_members.html`, `family_member_view.html`, `family_member_form.html`, `family_tree.html` (FR-5 → FR-11) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) consumed by retrieval paths |
 | `auth.py` | Argon2id password hashing (FR-2 infrastructure; consumed by FR-3.5 to verify sudo password) |
 | `permissions.py` | Role-based permission helpers |
@@ -114,7 +118,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `config.py` | Environment variable loading |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | File-based idempotent migration runner |
-| `db/migrations/*.sql` | Plain SQL migration files (001–027) |
+| `db/migrations/*.sql` | Plain SQL migration files (001–032) |
 
 ---
 
@@ -412,6 +416,7 @@ Annual recurring events: memorials (giỗ), wedding anniversaries, and other yea
 | `month` | INTEGER NOT NULL | 1–12 |
 | `day` | INTEGER NOT NULL | 1–30 (lunar) or 1–31 (solar) |
 | `year` | INTEGER | Original year of the event (optional) |
+| `family_member_id` | INTEGER FK → family_members | Nullable — links to the family member record (FR-11) |
 | `category` | TEXT NOT NULL | `gio` \| `cuoi` \| `khac` — default `khac` |
 | `is_leap_month` | INTEGER NOT NULL | 1 = lunar leap month — default 0 |
 | `reminder_offsets` | TEXT NOT NULL | CSV days before: default `30,15,7,3,1,0` |
@@ -463,6 +468,61 @@ Monthly expense budget and savings target, one row per user per month (upsert).
 | `alerts_sent` | TEXT | JSON string — tracks 80%/100% thresholds already sent to avoid spam |
 | `created_at` / `updated_at` | TEXT | ISO timestamps |
 | UNIQUE | `(user_id, month)` | One row per user per month |
+
+#### `family_members` *(FR-11)*
+Family genealogy records. Stores both living and deceased family members. Soft-delete via `deleted_at`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `full_name` | TEXT NOT NULL | Full name |
+| `alias_name` | TEXT | Common family name / nickname — nullable |
+| `gender` | TEXT | `nam` \| `nu` — nullable |
+| `generation` | INTEGER | Generation number in the family lineage — nullable |
+| `branch` | TEXT | Family branch/line — nullable |
+| `bio` | TEXT | Biographical notes — nullable |
+| `birth_date_type` | TEXT | `lunar` \| `solar` \| `year_only` \| `approx` — nullable |
+| `birth_year` / `birth_month` / `birth_day` | INTEGER | Birth date (each nullable independently) |
+| `birth_approx` | INTEGER | 1 = approximate birth year — default 0 |
+| `death_date_type` | TEXT | `lunar` \| `solar` \| `year_only` \| `approx` — nullable |
+| `death_year` / `death_month` / `death_day` | INTEGER | Death date (each nullable independently) |
+| `death_approx` | INTEGER | 1 = approximate death year — default 0 |
+| `created_by` | INTEGER FK → users | |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Indexes: `(full_name)`, `(generation)`.
+
+#### `burial_records` *(FR-11)*
+Burial records for a family member. One member may have multiple records (relocation / reburial); `is_current=1` marks the current location.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `member_id` | INTEGER FK → family_members | |
+| `cemetery_name` | TEXT | Cemetery name — nullable |
+| `address` | TEXT | Full address — nullable |
+| `plot_info` | TEXT | Plot/row location within the cemetery — nullable |
+| `lat` | REAL | GPS latitude — nullable |
+| `lng` | REAL | GPS longitude — nullable |
+| `note` | TEXT | Additional notes — nullable |
+| `is_current` | INTEGER | 1 = current burial site; 0 = historical record — default 1 |
+| `created_by` | INTEGER FK → users | |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+
+Index: `(member_id, is_current)`.
+
+#### `family_relationships` *(FR-11)*
+Genealogy relationships between family members. Used to build the family tree and detect cycles. Each `(from_id, rel_type)` pair is unique (enforcing at most one father and one mother per person).
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | INTEGER PK | Auto-increment |
+| `from_member_id` | INTEGER FK → family_members | The member the relationship is declared from |
+| `to_member_id` | INTEGER FK → family_members | The member the relationship points to |
+| `rel_type` | TEXT NOT NULL | `cha` \| `me` \| `vo` \| `chong` \| `con_nuoi` |
+| `created_by` | INTEGER FK → users | |
+| `created_at` | TEXT | ISO timestamp |
+| UNIQUE | `(from_member_id, rel_type)` | Ensures at most one father and one mother; `vo`/`chong`/`con_nuoi` also unique per from |
 
 #### `anniversary_reminders` *(FR-8)*
 One row per reminder fire point per anniversary per year. UNIQUE constraint ensures the annual compute job is idempotent.
@@ -578,6 +638,11 @@ Soft-delete has been present since earlier FRs via `deleted_at` on `notes`, `wik
 | `category_created` | `category` | New category created *(FR-9)* |
 | `category_updated` | `category` | Category renamed *(FR-9)* |
 | `category_deleted` | `category` | Category soft-deleted *(FR-9)* |
+| `family_member_created` | `family_member` | New family member record added *(FR-11)* |
+| `family_member_updated` | `family_member` | Family member record edited *(FR-11)* |
+| `family_member_deleted` | `family_member` | Family member record soft-deleted *(FR-11)* |
+| `family_relationship_created` | `family_relationship` | Genealogy relationship added (cha/mẹ/vợ/chồng/con nuôi) *(FR-11)* |
+| `family_relationship_deleted` | `family_relationship` | Genealogy relationship removed *(FR-11)* |
 | `folder_registered` | `drive` | Drive folder trusted after bot created/verified it *(Security hardening)* |
 | `scope_validated` | `drive` | OAuth token scope confirmed as `drive.file` *(Security hardening)* |
 | `file_created` | `drive` | File successfully created on Drive *(Security hardening)* |
@@ -625,6 +690,8 @@ Production does NOT use admin as the default account. The primary account runs a
 | Notes / journal / wiki | ✅ | ✅ | ✅ | read-only |
 | Recycle bin (view / restore / hard delete) | ✅ | ❌ | ❌ | ❌ |
 | View audit log | ✅ | ❌ | ❌ | ❌ |
+| View genealogy / look up burial records | ✅ | ✅ | ✅ | ✅ |
+| Add / edit / delete family members & relationships | ✅ | ✅ | ❌ | ❌ |
 
 ---
 
@@ -811,6 +878,34 @@ Commands are matched via a diacritic-agnostic prefix matcher — both accented (
 | GET | `/ledger/{id}/edit` | Edit entry form |
 | POST | `/ledger/{id}` | Update entry |
 | POST | `/ledger/{id}/void` | Void entry |
+
+### Family Genealogy & Burial Records *(FR-11)*
+| Command | Description | Who |
+|---------|-------------|-----|
+| `them nguoi than: <name>[, doi <n>][, sinh <date>][, mat <date>][, gioi tinh nam/nu][, ten goi <alias>][, chi <branch>][, ghi chu <text>]` | Add a family member record | admin/manager |
+| `xem nguoi than <id/name>` | View full profile (includes current burial record if present) | all users |
+| `danh sach nguoi than [doi <n>]` | List family members (optionally filtered by generation) | all users |
+| `sua nguoi than: <id>, <field>=<value>[, ...]` | Edit a family member record | admin/manager |
+| `xoa nguoi than: <id>` | Soft-delete (must remove burial records first) | admin/manager |
+| `them mo phan: <id>, <cemetery>[, dia chi <address>][, gps <lat>,<lng>][, lo <plot>][, ghi chu <text>]` | Add burial record (previous becomes historical) | admin/manager |
+| `sua mo phan: <id>, <field>=<value>[, ...]` | Edit current burial record | admin/manager |
+| `xoa mo phan: <id>` | Delete a burial record | admin/manager |
+| `tim mo <id/name>` | Quick-lookup burial location + Google Maps link | all users |
+| `them quan he: <id> la <type> cua <id>` | Create genealogy relationship (type: cha/me/vo/chong/con nuoi) | admin/manager |
+| `xoa quan he: <id> <type> <id>` | Remove genealogy relationship | admin/manager |
+| `gia pha [<id/name>]` | View full family tree, or subtree from a specific person | all users |
+
+**Web routes *(FR-11)*:**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/family/members` | List family members + `?q=` search |
+| GET | `/family/members/new` | Create form (admin/manager) |
+| POST | `/family/members` | Save new record → redirect to detail |
+| GET | `/family/members/{id}` | Member detail + burial record + Google Maps link |
+| GET | `/family/members/{id}/edit` | Edit form (admin/manager) |
+| POST | `/family/members/{id}` | Update record → redirect to detail |
+| GET | `/family` | Family tree as `<pre>` text block |
 
 ### Registration (pre-auth)
 | Command | Description |

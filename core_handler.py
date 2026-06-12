@@ -254,7 +254,13 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "  Vi du: `them mo phan: 5, Nghia trang Van Dien, gps 20.9456,105.8231, lo B3 hang 12`\n"
         "`tim mo [ten | id]` — Tra cuu mo phan nhanh (kem link Google Maps)\n"
         "`sua mo phan: [id], [muc]=[gia tri], ...` — Cap nhat mo phan\n"
-        "`xoa mo phan: [id]` — Xoa ban ghi mo phan",
+        "`xoa mo phan: [id]` — Xoa ban ghi mo phan\n\n"
+        "`them quan he: [id] la [loai] cua [id]` — Tao quan he gia dinh (admin/manager)\n"
+        "  Loai: cha, me, vo, chong, con nuoi\n"
+        "  Vi du: `them quan he: 3 la cha cua 5`\n"
+        "`xoa quan he: [id] la [loai] cua [id]` — Xoa quan he gia dinh\n"
+        "`gia pha` — Xem cay gia pha toan bo\n"
+        "`gia pha [id]` — Xem cay gia pha tinh tu mot nguoi than",
     ),
     "sudo": (
         "🔐 *QUAN TRI (SUDO)*",

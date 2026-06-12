@@ -310,6 +310,20 @@ gia pha 3                           — cây con từ người thân #3
 gia pha ong noi                     — cây con từ tên/tên gọi (không cần dấu)
 ```
 
+### Web UI
+
+Trang gia phả trên Web UI cung cấp giao diện trực quan để xem và quản lý hồ sơ người thân:
+
+| Trang | URL | Mô tả |
+|-------|-----|-------|
+| Danh sách | `/family/members` | Liệt kê toàn bộ người thân, có ô tìm kiếm nhanh |
+| Hồ sơ chi tiết | `/family/members/<id>` | Xem thông tin đầy đủ + mộ phần + link Google Maps |
+| Cây gia phả | `/family` | Cây gia phả dạng text theo cấu trúc đời |
+| Thêm hồ sơ | `/family/members/new` | Form tạo hồ sơ mới (admin/manager) |
+| Sửa hồ sơ | `/family/members/<id>/edit` | Form chỉnh sửa (admin/manager) |
+
+> Mọi thành viên đều có thể xem. Chỉ admin/manager mới thấy nút **Thêm** và **Sửa**.
+
 ---
 
 ## 9. Hỏi đáp tự do
@@ -377,5 +391,5 @@ xuat du lieu: An                    — admin export data của user An
 
 - **Không cân dấu:** `ghi nho`, `ghi nhớ`, `GHI NHO` đều hoạt động
 - **Xem tất cả lệnh:** `/help` → chọn nhóm → `/help chi tieu`, `/help cong viec`, v.v.
-- **Web UI:** `https://assistant-bot.onrender.com` — có thể xem/thêm/sửa task, kỷ niệm, chi tiêu qua trình duyệt
+- **Web UI:** `https://assistant-bot.onrender.com` — có thể xem/thêm/sửa task, kỷ niệm, chi tiêu và gia phả qua trình duyệt
 - **Hỏi đáp thông minh:** Gõ câu hỏi tự nhiên, bot tự tìm trong wiki + ghi chú của bạn trước khi trả lời

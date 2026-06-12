@@ -1,6 +1,6 @@
 # Kiến Trúc Hệ Thống
 
-> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-9** (Expense Tracking / Ledger).
+> Tài liệu này mô tả kiến trúc của Telegram Claude Bot tính đến **FR-11** (Family Genealogy / Gia phả).
 > Xem lộ trình phát triển đầy đủ tại [`ROADMAP.md`](ROADMAP.md).
 
 ---
@@ -68,8 +68,8 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `cmd_sudo.py` | Sudo handlers: `sudo`, `thoat sudo`, `dat mat khau`, `dat web pass` (FR-7) |
 | `cmd_wiki.py` | Wiki + memory handlers: `wiki`, `hoi wiki`, `xem tri nho`, `cap nhat tri nho` (FR-7) |
 | `cmd_task.py` | Task + study schedule handlers + inline keyboard callback dispatcher (FR-7) |
-| `anniversary_store.py` | `SqliteAnniversaryStore` — CRUD kỷ niệm + soft-delete + validation (FR-8) |
-| `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fire 08:00 VN, grace 12h (FR-8) |
+| `anniversary_store.py` | `SqliteAnniversaryStore` — CRUD kỷ niệm + soft-delete + validation; `family_member_id` link tới gia phả (FR-8, FR-11) |
+| `anniversary_engine.py` | `AnniversaryEngine` — `compute_year()`, `tick()`, `cancel_all_for_anniversary()`; fire 08:00 VN, grace 12h; nhận `burial_store` để đính kèm thông tin mộ phần vào nhắc giỗ (FR-8, FR-11) |
 | `lunar_utils.py` | `lunar_to_solar()` + `compute_anniversary_solar_date()`; lib `lunardate==0.2.2` (FR-8) |
 | `cmd_anniversary.py` | 5 Telegram handlers: `them ky niem`, `danh sach ky niem`, `ky niem <id>`, `xoa ky niem`, `sua ky niem` (FR-8) |
 | `category_store.py` | `SqliteCategoryStore` — CRUD danh mục chi/thu + family-shared scope (`user_id IS NULL`) (FR-9) |
@@ -78,6 +78,10 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `ledger_parser.py` | `LedgerParser` — parse amount (k/tr/m suffix, VND integer) + fast-path Vietnamese keyword + fuzzy category match (FR-9) |
 | `ledger_reports.py` | `LedgerReports` — monthly summary, yearly breakdown, 7-day view, threshold check 80%/100% (FR-9) |
 | `cmd_ledger.py` | 16 Telegram handlers: `chi:`, `thu:`, `danh sach ghi chep`, `sua/huy ghi chep:`, `xem/them/xoa/sua danh muc`, `bao cao thang/nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc` (FR-9) |
+| `family_store.py` | `SqliteFamilyStore` — CRUD hồ sơ người thân + tìm kiếm `normalize_vn` + quản lý quan hệ (cha/mẹ/vợ/chồng/con nuôi) với phát hiện vòng lặp qua recursive CTE (FR-11) |
+| `burial_store.py` | `SqliteBurialStore` — CRUD bản ghi mộ phần; xoay `is_current` khi thêm mộ mới (cải táng); validate GPS (FR-11) |
+| `family_tree.py` | `ancestors()`, `descendants()`, `family_roots()`, `render_tree()` — xây cây gia phả text qua recursive CTE; dùng bởi lệnh `gia pha` và route `GET /family` (FR-11) |
+| `cmd_family.py` | Telegram handlers cho gia phả: `them nguoi than`, `xem nguoi than`, `danh sach nguoi than`, `sua nguoi than`, `xoa nguoi than`, `them mo phan`, `sua mo phan`, `xoa mo phan`, `tim mo`, `them quan he`, `xoa quan he`, `gia pha` (FR-11) |
 | `csrf.py` | `CSRFMiddleware` — double-submit cookie CSRF; set cookie non-HttpOnly trên GET, validate cookie vs form-field/header trên POST/PUT/PATCH/DELETE; `/webhook` được exempt *(Security hardening)* |
 | `rate_limit.py` | `RateLimitMiddleware` — sliding-window per `(IP, path)`; `/login` giới hạn 10 req/60s, default 120 req/60s cho các route khác; không dùng external dependency *(Security hardening)* |
 | `security_headers.py` | `SecurityHeadersMiddleware` — stamp `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Content-Security-Policy`, `Strict-Transport-Security` (chỉ staging/prod) *(Security hardening)* |
@@ -99,11 +103,11 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `scheduled_jobs.py` | APScheduler jobs: purge 180d, purge-at-18, flush notifications, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year, weekly_ledger_summary, purge_voided_ledger (FR-4, FR-7, FR-8, FR-9) |
 | `web_session_store.py` | `SqliteWebSessionStore` — session web DB-revocable (không JWT); find/revoke/create (FR-5) |
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
-| `web_router.py` | FastAPI router web: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9) |
+| `web_router.py` | FastAPI router web: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD, family CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9, FR-11) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — CRUD conversation + message; search LIKE; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — export ZIP in-memory, parse/apply import transactional, upload Drive `Claude-Notes/Backups/`, rate-limit 5 phút/user (FR-6) |
 | `tools/local_migrate.py` | CLI standalone: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
-| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`, `ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html` (FR-5 → FR-9) |
+| `templates/` | Jinja2 templates: `login.html`, `setup_password.html`, `chat.html`, `import.html`, `tasks.html`, `task_form.html`, `task_view.html`, `anniversaries.html`, `anniversary_form.html`, `anniversary_view.html`, `ledger.html`, `ledger_entry_form.html`, `ledger_categories.html`, `ledger_report.html`, `ledger_budget.html`, `family_members.html`, `family_member_view.html`, `family_member_form.html`, `family_tree.html` (FR-5 → FR-11) |
 | `acl.py` | ACL helpers (`can_read`, `filter_visible`) dùng bởi các retrieval path |
 | `auth.py` | Argon2id password hashing (hạ tầng từ FR-2; FR-3.5 dùng để verify mật khẩu sudo) |
 | `permissions.py` | Permission helpers theo role |
@@ -114,7 +118,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `config.py` | Load biến môi trường |
 | `db/connection.py` | SQLite connection factory |
 | `db/migrations.py` | Migration runner idempotent dựa trên file |
-| `db/migrations/*.sql` | File SQL migration (001–027) |
+| `db/migrations/*.sql` | File SQL migration (001–032) |
 
 ---
 
@@ -412,6 +416,7 @@ Sự kiện kỷ niệm hàng năm: giỗ, kỷ niệm cưới, dịp khác. Lư
 | `month` | INTEGER NOT NULL | 1–12 |
 | `day` | INTEGER NOT NULL | 1–30 (âm) hoặc 1–31 (dương) |
 | `year` | INTEGER | Năm gốc của sự kiện (tùy chọn) |
+| `family_member_id` | INTEGER FK → family_members | Nullable — link tới hồ sơ người thân (FR-11) |
 | `category` | TEXT NOT NULL | `gio` \| `cuoi` \| `khac` — default `khac` |
 | `is_leap_month` | INTEGER NOT NULL | 1 = tháng nhuận âm lịch — default 0 |
 | `reminder_offsets` | TEXT NOT NULL | CSV số ngày trước: default `30,15,7,3,1,0` |
@@ -463,6 +468,61 @@ Hạn mức chi tiêu và mục tiêu tiết kiệm theo tháng, mỗi user mộ
 | `alerts_sent` | TEXT | JSON string — track ngưỡng 80%/100% đã gửi để không spam |
 | `created_at` / `updated_at` | TEXT | ISO timestamps |
 | UNIQUE | `(user_id, month)` | Một row mỗi user mỗi tháng |
+
+#### `family_members` *(FR-11)*
+Hồ sơ người thân trong gia phả. Lưu cả người còn sống lẫn người đã mất. Soft-delete qua `deleted_at`.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `full_name` | TEXT NOT NULL | Họ và tên đầy đủ |
+| `alias_name` | TEXT | Tên thường gọi / tên gọi trong gia đình |
+| `gender` | TEXT | `nam` \| `nu` — nullable |
+| `generation` | INTEGER | Đời thứ mấy trong gia tộc — nullable |
+| `branch` | TEXT | Chi/nhánh họ — nullable |
+| `bio` | TEXT | Ghi chú tiểu sử — nullable |
+| `birth_date_type` | TEXT | `lunar` \| `solar` \| `year_only` \| `approx` — nullable |
+| `birth_year` / `birth_month` / `birth_day` | INTEGER | Ngày sinh (nullable từng phần) |
+| `birth_approx` | INTEGER | 1 = năm sinh ước chừng — default 0 |
+| `death_date_type` | TEXT | `lunar` \| `solar` \| `year_only` \| `approx` — nullable |
+| `death_year` / `death_month` / `death_day` | INTEGER | Ngày mất (nullable từng phần) |
+| `death_approx` | INTEGER | 1 = năm mất ước chừng — default 0 |
+| `created_by` | INTEGER FK → users | |
+| `created_at` / `updated_at` / `deleted_at` | TEXT | ISO timestamps |
+
+Index: `(full_name)`, `(generation)`.
+
+#### `burial_records` *(FR-11)*
+Bản ghi mộ phần của một người thân. Một người có thể có nhiều bản ghi (cải táng/di dời); `is_current=1` là bản ghi hiện tại.
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `member_id` | INTEGER FK → family_members | |
+| `cemetery_name` | TEXT | Tên nghĩa trang — nullable |
+| `address` | TEXT | Địa chỉ đầy đủ — nullable |
+| `plot_info` | TEXT | Vị trí lô/hàng trong nghĩa trang — nullable |
+| `lat` | REAL | Vĩ độ GPS — nullable |
+| `lng` | REAL | Kinh độ GPS — nullable |
+| `note` | TEXT | Ghi chú thêm — nullable |
+| `is_current` | INTEGER | 1 = bản ghi hiện tại; 0 = lịch sử (cải táng cũ) — default 1 |
+| `created_by` | INTEGER FK → users | |
+| `created_at` / `updated_at` | TEXT | ISO timestamps |
+
+Index: `(member_id, is_current)`.
+
+#### `family_relationships` *(FR-11)*
+Quan hệ gia phả giữa các thành viên. Dùng để xây cây gia phả và phát hiện vòng lặp. Mỗi cặp `(from_id, rel_type)` là duy nhất (ràng buộc tối đa 1 cha, 1 mẹ mỗi người).
+
+| Cột | Kiểu | Ghi chú |
+|-----|------|---------|
+| `id` | INTEGER PK | Auto-increment |
+| `from_member_id` | INTEGER FK → family_members | Người mà quan hệ được đặt từ phía họ |
+| `to_member_id` | INTEGER FK → family_members | Người mà quan hệ hướng tới |
+| `rel_type` | TEXT NOT NULL | `cha` \| `me` \| `vo` \| `chong` \| `con_nuoi` |
+| `created_by` | INTEGER FK → users | |
+| `created_at` | TEXT | ISO timestamp |
+| UNIQUE | `(from_member_id, rel_type)` | Đảm bảo 1 cha và 1 mẹ tối đa; `vo`/`chong`/`con_nuoi` cũng unique per from |
 
 #### `anniversary_reminders` *(FR-8)*
 Mỗi mốc nhắc của một kỷ niệm trong một năm cụ thể là một row. UNIQUE constraint đảm bảo compute job idempotent.
@@ -578,6 +638,11 @@ Soft-delete đã có từ trước qua cột `deleted_at` trên `notes`, `wiki_p
 | `category_created` | `category` | Tạo danh mục mới *(FR-9)* |
 | `category_updated` | `category` | Đổi tên danh mục *(FR-9)* |
 | `category_deleted` | `category` | Xóa danh mục (soft-delete) *(FR-9)* |
+| `family_member_created` | `family_member` | Thêm hồ sơ người thân mới *(FR-11)* |
+| `family_member_updated` | `family_member` | Sửa hồ sơ người thân *(FR-11)* |
+| `family_member_deleted` | `family_member` | Soft-delete hồ sơ người thân *(FR-11)* |
+| `family_relationship_created` | `family_relationship` | Thêm quan hệ gia phả (cha/mẹ/vợ/chồng/con nuôi) *(FR-11)* |
+| `family_relationship_deleted` | `family_relationship` | Xóa quan hệ gia phả *(FR-11)* |
 | `folder_registered` | `drive` | Drive folder được trust sau khi bot tự tạo/xác minh *(Security hardening)* |
 | `scope_validated` | `drive` | OAuth token scope đã xác minh là `drive.file` *(Security hardening)* |
 | `file_created` | `drive` | File tạo thành công trên Drive *(Security hardening)* |
@@ -625,6 +690,8 @@ Production KHÔNG dùng admin làm tài khoản mặc định. Tài khoản chí
 | Ghi chú / nhật ký / wiki | ✅ | ✅ | ✅ | chỉ đọc |
 | Xem thung rác / khôi phục / xóa hẳn | ✅ | ❌ | ❌ | ❌ |
 | Xem audit log | ✅ | ❌ | ❌ | ❌ |
+| Xem gia phả / tra cứu mộ phần | ✅ | ✅ | ✅ | ✅ |
+| Gia phả thêm/sửa/xóa thành viên & quan hệ | ✅ | ✅ | ❌ | ❌ |
 
 ---
 
@@ -842,6 +909,34 @@ Lệnh được match qua prefix matcher không phân biệt dấu tiếng Việ
 | GET | `/ledger/{id}/edit` | Form sửa bút toán |
 | POST | `/ledger/{id}` | Cập nhật bút toán |
 | POST | `/ledger/{id}/void` | Hủy bút toán |
+
+### Gia phả & Mộ phần *(FR-11)*
+| Lệnh | Mô tả | Ai dùng |
+|------|-------|---------|
+| `them nguoi than: <tên>[, doi <n>][, sinh <ngày>][, mat <ngày>][, gioi tinh nam/nu][, ten goi <alias>][, chi <chi>][, ghi chu <text>]` | Thêm hồ sơ người thân | admin/manager |
+| `xem nguoi than <id/tên>` | Xem hồ sơ đầy đủ (kèm mộ phần hiện tại) | mọi user |
+| `danh sach nguoi than [doi <n>]` | Liệt kê người thân (tùy chọn lọc theo đời) | mọi user |
+| `sua nguoi than: <id>, <field>=<giá trị>[, ...]` | Sửa hồ sơ | admin/manager |
+| `xoa nguoi than: <id>` | Soft-delete (phải xóa mộ phần trước) | admin/manager |
+| `them mo phan: <id>, <nghĩa trang>[, dia chi <địa chỉ>][, gps <lat>,<lng>][, lo <vị trí>][, ghi chu <text>]` | Thêm bản ghi mộ phần (cũ trở thành lịch sử) | admin/manager |
+| `sua mo phan: <id>, <field>=<giá trị>[, ...]` | Sửa mộ phần hiện tại | admin/manager |
+| `xoa mo phan: <id>` | Xóa bản ghi mộ phần | admin/manager |
+| `tim mo <id/tên>` | Tra cứu nhanh địa điểm mộ + link Google Maps | mọi user |
+| `them quan he: <id> la <loại> cua <id>` | Tạo quan hệ gia phả (loại: cha/me/vo/chong/con nuoi) | admin/manager |
+| `xoa quan he: <id> <loại> <id>` | Xóa quan hệ gia phả | admin/manager |
+| `gia pha [<id/tên>]` | Xem cây gia phả toàn bộ hoặc từ một người cụ thể | mọi user |
+
+**Web routes *(FR-11)*:**
+
+| Method | Path | Mô tả |
+|--------|------|-------|
+| GET | `/family/members` | Danh sách người thân + tìm kiếm `?q=` |
+| GET | `/family/members/new` | Form tạo hồ sơ (admin/manager) |
+| POST | `/family/members` | Lưu hồ sơ mới → redirect về detail |
+| GET | `/family/members/{id}` | Chi tiết hồ sơ + mộ phần + link Google Maps |
+| GET | `/family/members/{id}/edit` | Form sửa hồ sơ (admin/manager) |
+| POST | `/family/members/{id}` | Cập nhật hồ sơ → redirect về detail |
+| GET | `/family` | Cây gia phả text (dạng `<pre>`) |
 
 ### Đăng ký (trước khi xác thực)
 | Lệnh | Mô tả |
