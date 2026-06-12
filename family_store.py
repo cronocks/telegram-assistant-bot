@@ -14,6 +14,9 @@ from text_utils import normalize_vn
 
 VALID_DATE_TYPES = {"lunar", "solar"}
 VALID_GENDERS = {"nam", "nu"}
+VALID_REL_TYPES = {"cha", "me", "vo", "chong", "con_nuoi"}
+# rel_types where at most one active edge may target the same related_id
+_UNIQUE_PARENT_TYPES = {"cha", "me"}
 
 _DATE_PREFIXES = ("birth", "death")
 
@@ -187,5 +190,103 @@ class SqliteFamilyStore:
                 "UPDATE family_members SET deleted_at = NULL, updated_at = ? "
                 "WHERE id = ? AND deleted_at IS NOT NULL",
                 (now, member_id),
+            )
+        return cur.rowcount > 0
+
+    # ── Relationships ─────────────────────────────────────────────────────────
+
+    def _has_cycle(self, ancestor_candidate_id: int, descendant_start_id: int) -> bool:
+        """Return True if ancestor_candidate_id is already an ancestor of descendant_start_id.
+
+        Uses a recursive CTE that walks upward through cha/me/con_nuoi edges.
+        If the candidate appears in the ancestor set, inserting the reverse edge
+        would create a cycle.
+        """
+        row = self._conn.execute(
+            """
+            WITH RECURSIVE ancestors(id) AS (
+                SELECT related_id FROM family_relationships
+                WHERE member_id = ? AND deleted_at IS NULL
+                UNION ALL
+                SELECT fr.related_id FROM family_relationships fr
+                JOIN ancestors a ON fr.member_id = a.id
+                WHERE fr.deleted_at IS NULL
+            )
+            SELECT 1 FROM ancestors WHERE id = ? LIMIT 1
+            """,
+            (descendant_start_id, ancestor_candidate_id),
+        ).fetchone()
+        return row is not None
+
+    def create_relationship(
+        self,
+        created_by: int,
+        member_id: int,
+        related_id: int,
+        rel_type: str,
+        note: str | None = None,
+    ) -> dict:
+        if rel_type not in VALID_REL_TYPES:
+            raise ValueError(
+                f"family: rel_type phải là một trong {sorted(VALID_REL_TYPES)}, nhận '{rel_type}'"
+            )
+        if member_id == related_id:
+            raise ValueError("family: member_id và related_id không được trùng nhau")
+
+        # Unique parent constraint: each child may have at most one cha and one me.
+        if rel_type in _UNIQUE_PARENT_TYPES:
+            existing = self._conn.execute(
+                "SELECT id FROM family_relationships "
+                "WHERE related_id = ? AND rel_type = ? AND deleted_at IS NULL",
+                (related_id, rel_type),
+            ).fetchone()
+            if existing:
+                raise ValueError(
+                    f"family: người thân #{related_id} đã có '{rel_type}' — xóa quan hệ cũ trước"
+                )
+
+        # Cycle guard: reject if member_id is already an ancestor of related_id.
+        if self._has_cycle(member_id, related_id):
+            raise ValueError(
+                f"family: không thể thêm quan hệ — sẽ tạo vòng lặp trong cây gia phả"
+            )
+
+        now = _utcnow_iso()
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT INTO family_relationships "
+                "(member_id, related_id, rel_type, note, created_by, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (member_id, related_id, rel_type, note, created_by, now),
+            )
+        row = self._conn.execute(
+            "SELECT * FROM family_relationships WHERE id = ?", (cur.lastrowid,),
+        ).fetchone()
+        return dict(row)
+
+    def list_relationships(self, member_id: int) -> list[dict]:
+        """Return all active relationships where member_id is the source."""
+        rows = self._conn.execute(
+            "SELECT * FROM family_relationships WHERE member_id = ? AND deleted_at IS NULL",
+            (member_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def list_relationships_for_member(self, member_id: int) -> list[dict]:
+        """Return active relationships involving member_id (as source or target)."""
+        rows = self._conn.execute(
+            "SELECT * FROM family_relationships "
+            "WHERE (member_id = ? OR related_id = ?) AND deleted_at IS NULL",
+            (member_id, member_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def delete_relationship(self, member_id: int, related_id: int, rel_type: str) -> bool:
+        now = _utcnow_iso()
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE family_relationships SET deleted_at = ? "
+                "WHERE member_id = ? AND related_id = ? AND rel_type = ? AND deleted_at IS NULL",
+                (now, member_id, related_id, rel_type),
             )
         return cur.rowcount > 0

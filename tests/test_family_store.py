@@ -1,4 +1,4 @@
-"""Tests for SqliteFamilyStore — FR-11 Phase A."""
+"""Tests for SqliteFamilyStore — FR-11 Phase A & B."""
 import pytest
 
 from family_store import SqliteFamilyStore
@@ -212,3 +212,95 @@ def test_soft_delete_twice_returns_false(family_store, sample_admin):
     row = family_store.create_member(created_by=sample_admin.id, full_name="A")
     family_store.soft_delete_member(row["id"])
     assert family_store.soft_delete_member(row["id"]) is False
+
+
+# ── Relationships ─────────────────────────────────────────────────────────────
+
+
+@pytest.fixture()
+def two_members(family_store, sample_admin):
+    a = family_store.create_member(created_by=sample_admin.id, full_name="Cha", generation=2)
+    b = family_store.create_member(created_by=sample_admin.id, full_name="Con", generation=3)
+    return a, b
+
+
+def test_create_relationship_returns_row(family_store, sample_admin, two_members):
+    a, b = two_members
+    rel = family_store.create_relationship(
+        created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="cha",
+    )
+    assert rel["id"] > 0
+    assert rel["member_id"] == a["id"]
+    assert rel["related_id"] == b["id"]
+    assert rel["rel_type"] == "cha"
+
+
+def test_create_relationship_invalid_type(family_store, sample_admin, two_members):
+    a, b = two_members
+    with pytest.raises(ValueError):
+        family_store.create_relationship(
+            created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="ban",
+        )
+
+
+def test_create_relationship_self_loop_rejected(family_store, sample_admin, two_members):
+    a, _ = two_members
+    with pytest.raises(ValueError):
+        family_store.create_relationship(
+            created_by=sample_admin.id, member_id=a["id"], related_id=a["id"], rel_type="cha",
+        )
+
+
+def test_create_relationship_unique_cha_per_member(family_store, sample_admin):
+    """A child member may only have one active 'cha' edge."""
+    p1 = family_store.create_member(created_by=sample_admin.id, full_name="Cha1")
+    p2 = family_store.create_member(created_by=sample_admin.id, full_name="Cha2")
+    child = family_store.create_member(created_by=sample_admin.id, full_name="Con")
+    family_store.create_relationship(
+        created_by=sample_admin.id, member_id=p1["id"], related_id=child["id"], rel_type="cha",
+    )
+    with pytest.raises(ValueError, match="đã có"):
+        family_store.create_relationship(
+            created_by=sample_admin.id, member_id=p2["id"], related_id=child["id"], rel_type="cha",
+        )
+
+
+def test_create_relationship_cycle_rejected(family_store, sample_admin):
+    """Inserting an edge that would create a cycle must be rejected."""
+    a = family_store.create_member(created_by=sample_admin.id, full_name="A")
+    b = family_store.create_member(created_by=sample_admin.id, full_name="B")
+    # A là cha của B
+    family_store.create_relationship(
+        created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="cha",
+    )
+    # B là cha của A — cycle
+    with pytest.raises(ValueError, match="vòng lặp"):
+        family_store.create_relationship(
+            created_by=sample_admin.id, member_id=b["id"], related_id=a["id"], rel_type="cha",
+        )
+
+
+def test_list_relationships_for_member(family_store, sample_admin, two_members):
+    a, b = two_members
+    family_store.create_relationship(
+        created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="cha",
+    )
+    rels = family_store.list_relationships(member_id=a["id"])
+    assert len(rels) == 1
+    assert rels[0]["rel_type"] == "cha"
+
+
+def test_delete_relationship_returns_true(family_store, sample_admin, two_members):
+    a, b = two_members
+    family_store.create_relationship(
+        created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="cha",
+    )
+    ok = family_store.delete_relationship(member_id=a["id"], related_id=b["id"], rel_type="cha")
+    assert ok is True
+    assert family_store.list_relationships(member_id=a["id"]) == []
+
+
+def test_delete_relationship_missing_returns_false(family_store, sample_admin, two_members):
+    a, b = two_members
+    ok = family_store.delete_relationship(member_id=a["id"], related_id=b["id"], rel_type="me")
+    assert ok is False

@@ -64,14 +64,17 @@ from cmd_anniversary import (
 )
 from cmd_family import (
     _cmd_danh_sach_nguoi_than,
+    _cmd_gia_pha,
     _cmd_sua_mo_phan,
     _cmd_sua_nguoi_than,
     _cmd_them_mo_phan,
     _cmd_them_nguoi_than,
+    _cmd_them_quan_he,
     _cmd_tim_mo,
     _cmd_xem_nguoi_than,
     _cmd_xoa_mo_phan,
     _cmd_xoa_nguoi_than,
+    _cmd_xoa_quan_he,
 )
 from cmd_ledger import (
     _cmd_bao_cao_nam,
@@ -741,6 +744,9 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "SUA_MO_PHAN":          ["sửa mộ phần: ", "sua mo phan: "],
     "XOA_MO_PHAN":          ["xóa mộ phần: ", "xoa mo phan: "],
     "TIM_MO":               ["tìm mộ ", "tim mo "],
+    "THEM_QUAN_HE":         ["thêm quan hệ: ", "them quan he: "],
+    "XOA_QUAN_HE":          ["xóa quan hệ: ", "xoa quan he: "],
+    "GIA_PHA":              ["gia phả", "gia pha"],
 }
 
 
@@ -798,6 +804,7 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         "THEM_NGUOI_THAN", "SUA_NGUOI_THAN", "XOA_NGUOI_THAN",
         "DANH_SACH_NGUOI_THAN", "XEM_NGUOI_THAN",
         "THEM_MO_PHAN", "SUA_MO_PHAN", "XOA_MO_PHAN", "TIM_MO",
+        "THEM_QUAN_HE", "XOA_QUAN_HE", "GIA_PHA",
         # FR-9 ledger commands — no LLM, all structured.
         "CHI", "THU", "GHI_CHEP_XEM", "DANH_SACH_GHI_CHEP",
         "SUA_GHI_CHEP", "HUY_GHI_CHEP",
@@ -1005,6 +1012,12 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_xoa_mo_phan(chat_id, remainder, user, deps); return
         if cmd_id == "TIM_MO":
             await _cmd_tim_mo(chat_id, remainder, user, deps); return
+        if cmd_id == "THEM_QUAN_HE":
+            await _cmd_them_quan_he(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_QUAN_HE":
+            await _cmd_xoa_quan_he(chat_id, remainder, user, deps); return
+        if cmd_id == "GIA_PHA":
+            await _cmd_gia_pha(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_THE":
             await _cmd_xem_the(chat_id, user, deps); return
 

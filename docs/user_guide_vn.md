@@ -286,6 +286,30 @@ xoa mo phan: 3
 xoa nguoi than: 5                   — phải xóa hết mộ phần của người đó trước
 ```
 
+### Quan hệ gia phả (admin/manager)
+
+Kết nối các hồ sơ người thân với nhau để xây dựng cây gia phả.
+
+```
+them quan he: 3 la cha cua 5        — #3 là cha của #5
+them quan he: 4 la me cua 5        — #4 là mẹ của #5
+them quan he: 3 la vo cua 4        — #3 là vợ của #4
+them quan he: 6 la con nuoi cua 3  — #6 là con nuôi của #3
+xoa quan he: 3 cha 5               — xóa quan hệ cha trên
+```
+
+> Các loại quan hệ hợp lệ: `cha`, `me`, `vo`, `chong`, `con nuoi`
+> Hệ thống tự phát hiện và từ chối nếu việc thêm quan hệ sẽ tạo vòng lặp trong cây.
+> Mỗi người chỉ có tối đa 1 cha và 1 mẹ.
+
+### Xem cây gia phả
+
+```
+gia pha                             — toàn bộ cây từ tổ cao nhất
+gia pha 3                           — cây con từ người thân #3
+gia pha ong noi                     — cây con từ tên/tên gọi (không cần dấu)
+```
+
 ---
 
 ## 9. Hỏi đáp tự do

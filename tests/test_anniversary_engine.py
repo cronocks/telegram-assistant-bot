@@ -366,3 +366,63 @@ def test_tick_mirrors_to_parent_when_owner_under_18(
     target_ids = [c.args[0] for c in mock_notif.enqueue.call_args_list]
     assert child.id in target_ids
     assert parent.id in target_ids
+
+
+# ── _build_text burial integration (FR-11 Phase B) ───────────────────────────
+
+
+def test_build_text_no_burial_no_family_member_id():
+    from anniversary_engine import _build_text
+    row = {
+        "name": "Giỗ ông", "category": "gio", "offset_days": 0,
+        "fire_at": "2026-06-12 08:00:00",
+    }
+    text = _build_text(row, burial=None)
+    assert "Hôm nay" in text
+    assert "Giỗ ông" in text
+    assert "Địa điểm" not in text
+
+
+def test_build_text_with_burial_appends_location():
+    from anniversary_engine import _build_text
+    row = {
+        "name": "Giỗ bà", "category": "gio", "offset_days": 1,
+        "fire_at": "2026-06-11 08:00:00",
+    }
+    burial = {
+        "cemetery_name": "Nghĩa trang Văn Điển",
+        "address": "Thanh Trì, Hà Nội",
+        "lat": 20.95, "lng": 105.83, "plot_info": None, "note": None,
+    }
+    text = _build_text(row, burial=burial)
+    assert "Nghĩa trang Văn Điển" in text
+    assert "Thanh Trì" in text
+    assert "maps.google.com" in text
+
+
+def test_build_text_burial_without_gps_no_link():
+    from anniversary_engine import _build_text
+    row = {
+        "name": "Giỗ cụ", "category": "gio", "offset_days": 7,
+        "fire_at": "2026-06-05 08:00:00",
+    }
+    burial = {
+        "cemetery_name": "Nghĩa trang quê", "address": None,
+        "lat": None, "lng": None, "plot_info": "Hàng A", "note": None,
+    }
+    text = _build_text(row, burial=burial)
+    assert "Nghĩa trang quê" in text
+    assert "Hàng A" in text
+    assert "maps.google.com" not in text
+
+
+def test_build_text_non_gio_ignores_burial():
+    from anniversary_engine import _build_text
+    row = {
+        "name": "Sinh nhật", "category": "khac", "offset_days": 0,
+        "fire_at": "2026-06-12 08:00:00",
+    }
+    burial = {"cemetery_name": "Nơi nào đó", "address": None, "lat": None, "lng": None,
+              "plot_info": None, "note": None}
+    text = _build_text(row, burial=burial)
+    assert "Nơi nào đó" not in text

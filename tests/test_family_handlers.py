@@ -493,3 +493,151 @@ def test_wiring_xoa_nguoi_than_dispatches(wired_deps, sample_admin):
     )
     _run(handle_message(_make_msg(f"xoa nguoi than: {row['id']}"), sample_admin, wired_deps))
     assert wired_deps.family_store.get_member(row["id"])["deleted_at"] is not None
+
+
+# ── Phase B: parse_relationship ───────────────────────────────────────────────
+
+
+def test_parse_relationship_cha(family_store, sample_admin):
+    from cmd_family import parse_relationship
+    member_id, rel_type, related_id = parse_relationship("3 la cha cua 5")
+    assert member_id == 3
+    assert rel_type == "cha"
+    assert related_id == 5
+
+
+def test_parse_relationship_me_accented(family_store, sample_admin):
+    from cmd_family import parse_relationship
+    member_id, rel_type, related_id = parse_relationship("2 là mẹ của 7")
+    assert rel_type == "me"
+
+
+def test_parse_relationship_vo(family_store, sample_admin):
+    from cmd_family import parse_relationship
+    member_id, rel_type, related_id = parse_relationship("4 la vo cua 6")
+    assert rel_type == "vo"
+
+
+def test_parse_relationship_con_nuoi(family_store, sample_admin):
+    from cmd_family import parse_relationship
+    member_id, rel_type, related_id = parse_relationship("10 la con nuoi cua 2")
+    assert rel_type == "con_nuoi"
+
+
+def test_parse_relationship_bad_syntax(family_store, sample_admin):
+    from cmd_family import parse_relationship, ParseFamilyError
+    with pytest.raises(ParseFamilyError):
+        parse_relationship("garbage input")
+
+
+def test_parse_relationship_invalid_rel_type(family_store, sample_admin):
+    from cmd_family import parse_relationship, ParseFamilyError
+    with pytest.raises(ParseFamilyError):
+        parse_relationship("1 la ban cua 2")
+
+
+# ── Phase B: _cmd_them_quan_he ────────────────────────────────────────────────
+
+
+def test_them_quan_he_creates_relationship(deps, family_store, sample_admin):
+    from cmd_family import _cmd_them_quan_he
+    a = family_store.create_member(created_by=sample_admin.id, full_name="Cha")
+    b = family_store.create_member(created_by=sample_admin.id, full_name="Con")
+    _run(_cmd_them_quan_he("c1", f"{a['id']} la cha cua {b['id']}", sample_admin, deps))
+    rels = family_store.list_relationships(member_id=a["id"])
+    assert len(rels) == 1
+    assert rels[0]["rel_type"] == "cha"
+
+
+def test_them_quan_he_requires_admin(deps, family_store, member_user):
+    from cmd_family import _cmd_them_quan_he
+    _run(_cmd_them_quan_he("c1", "1 la cha cua 2", member_user, deps))
+    assert "quyền" in deps.channel.last_text
+
+
+def test_them_quan_he_member_not_found(deps, family_store, sample_admin):
+    from cmd_family import _cmd_them_quan_he
+    _run(_cmd_them_quan_he("c1", "9999 la cha cua 9998", sample_admin, deps))
+    assert "Không tìm thấy" in deps.channel.last_text
+
+
+def test_them_quan_he_cycle_rejected(deps, family_store, sample_admin):
+    from cmd_family import _cmd_them_quan_he
+    a = family_store.create_member(created_by=sample_admin.id, full_name="A")
+    b = family_store.create_member(created_by=sample_admin.id, full_name="B")
+    # A is cha of B
+    _run(_cmd_them_quan_he("c1", f"{a['id']} la cha cua {b['id']}", sample_admin, deps))
+    # B is cha of A → cycle
+    _run(_cmd_them_quan_he("c1", f"{b['id']} la cha cua {a['id']}", sample_admin, deps))
+    assert "vòng lặp" in deps.channel.last_text
+
+
+# ── Phase B: _cmd_xoa_quan_he ─────────────────────────────────────────────────
+
+
+def test_xoa_quan_he_removes_relationship(deps, family_store, sample_admin):
+    from cmd_family import _cmd_xoa_quan_he
+    a = family_store.create_member(created_by=sample_admin.id, full_name="Cha")
+    b = family_store.create_member(created_by=sample_admin.id, full_name="Con")
+    family_store.create_relationship(
+        created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="cha",
+    )
+    _run(_cmd_xoa_quan_he("c1", f"{a['id']} cha {b['id']}", sample_admin, deps))
+    assert family_store.list_relationships(member_id=a["id"]) == []
+    assert "✅" in deps.channel.last_text
+
+
+def test_xoa_quan_he_not_found(deps, family_store, sample_admin):
+    from cmd_family import _cmd_xoa_quan_he
+    a = family_store.create_member(created_by=sample_admin.id, full_name="A")
+    b = family_store.create_member(created_by=sample_admin.id, full_name="B")
+    _run(_cmd_xoa_quan_he("c1", f"{a['id']} cha {b['id']}", sample_admin, deps))
+    assert "Không tìm thấy" in deps.channel.last_text
+
+
+# ── Phase B: _cmd_gia_pha ─────────────────────────────────────────────────────
+
+
+def test_gia_pha_empty(deps, sample_admin):
+    from cmd_family import _cmd_gia_pha
+    _run(_cmd_gia_pha("c1", "", sample_admin, deps))
+    assert deps.channel.last_text  # any reply
+
+
+def test_gia_pha_shows_members(deps, family_store, sample_admin):
+    from cmd_family import _cmd_gia_pha
+    family_store.create_member(created_by=sample_admin.id, full_name="Cụ Tổ", generation=1)
+    _run(_cmd_gia_pha("c1", "", sample_admin, deps))
+    assert "Cụ Tổ" in deps.channel.last_text
+
+
+def test_gia_pha_from_specific_member(deps, family_store, sample_admin):
+    from cmd_family import _cmd_gia_pha
+    a = family_store.create_member(created_by=sample_admin.id, full_name="Nhánh A")
+    b = family_store.create_member(created_by=sample_admin.id, full_name="Con A", generation=2)
+    family_store.create_relationship(
+        created_by=sample_admin.id, member_id=a["id"], related_id=b["id"], rel_type="cha",
+    )
+    _run(_cmd_gia_pha("c1", str(a["id"]), sample_admin, deps))
+    assert "Nhánh A" in deps.channel.last_text
+    assert "Con A" in deps.channel.last_text
+
+
+# ── Phase B wiring ────────────────────────────────────────────────────────────
+
+
+def test_wiring_them_quan_he_dispatches(wired_deps, sample_admin):
+    from core_handler import handle_message
+    a = wired_deps.family_store.create_member(created_by=sample_admin.id, full_name="Cha wired")
+    b = wired_deps.family_store.create_member(created_by=sample_admin.id, full_name="Con wired")
+    _run(handle_message(
+        _make_msg(f"them quan he: {a['id']} la cha cua {b['id']}"), sample_admin, wired_deps,
+    ))
+    assert wired_deps.family_store.list_relationships(member_id=a["id"])
+
+
+def test_wiring_gia_pha_dispatches(wired_deps, sample_admin, fake_channel):
+    from core_handler import handle_message
+    wired_deps.family_store.create_member(created_by=sample_admin.id, full_name="Wired Root")
+    _run(handle_message(_make_msg("gia pha"), sample_admin, wired_deps))
+    assert "Wired Root" in fake_channel.last_text

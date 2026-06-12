@@ -106,12 +106,15 @@ reminder_engine = ReminderEngine(
 )
 task_parser = TaskParser()
 anniversary_store = SqliteAnniversaryStore()
+family_store = SqliteFamilyStore()
+burial_store = SqliteBurialStore()
 anniversary_engine = AnniversaryEngine(
     anniv_store=anniversary_store,
     user_store=user_store,
     notification_service=notif_service,
     audit=audit,
     conn=get_connection(),
+    burial_store=burial_store,
 )
 category_store = SqliteCategoryStore()
 ledger_store = SqliteLedgerStore()
@@ -119,8 +122,6 @@ budget_store = SqliteBudgetStore()
 credit_card_store = SqliteCreditCardStore()
 ledger_parser = LedgerParser()
 ledger_reports = LedgerReports(ledger_store, budget_store)
-family_store = SqliteFamilyStore()
-burial_store = SqliteBurialStore()
 
 deps = CoreDeps(
     llm=llm,

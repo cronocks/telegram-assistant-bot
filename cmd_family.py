@@ -11,6 +11,11 @@ Telegram commands (Phase A):
   - xoa mo phan: <id>
   - tim mo <name | id>
 
+Telegram commands (Phase B):
+  - them quan he: <id1> la <cha|me|vo|chong|con nuoi> cua <id2>
+  - xoa quan he: <id1> <rel> <id2>
+  - gia pha [<id | name>]
+
 Date formats: 'am DD/MM/YYYY', 'duong DD/MM/YYYY', 'YYYY' (year only),
 'khoang YYYY' (approximate year), optional trailing 'nhuan' for lunar leap
 months. Parsing is regex/split fast-path — no LLM.
@@ -690,3 +695,168 @@ async def _cmd_tim_mo(chat_id, body, user, deps: CoreDeps) -> None:
     lines = [f"👤 {member['full_name']} (#{member['id']})"]
     lines.extend(_format_burial(burial))
     await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+
+
+# ── Phase B parsers ───────────────────────────────────────────────────────────
+
+# Normalised relationship word → store rel_type
+_REL_WORD_MAP = {
+    "cha": "cha", "me": "me", "vo": "vo", "chong": "chong",
+    "con nuoi": "con_nuoi", "con_nuoi": "con_nuoi",
+}
+
+_REL_RE = re.compile(
+    r"^(\d+)\s+la\s+(.+?)\s+cua\s+(\d+)$",
+    re.IGNORECASE,
+)
+
+
+def parse_relationship(body: str) -> tuple[int, str, int]:
+    """Parse '<id1> la <rel> cua <id2>' → (member_id, rel_type, related_id).
+
+    Accepts diacritic variants via normalize_vn (e.g. 'là', 'của', 'mẹ').
+    """
+    norm = normalize_vn(body).strip()
+    m = _REL_RE.match(norm)
+    if not m:
+        raise ParseFamilyError(
+            "Cú pháp: them quan he: <id1> la <cha|me|vo|chong|con nuoi> cua <id2>\n"
+            "Ví dụ: them quan he: 3 la cha cua 5"
+        )
+    member_id = int(m.group(1))
+    rel_word = m.group(2).strip()
+    related_id = int(m.group(3))
+    rel_type = _REL_WORD_MAP.get(rel_word)
+    if rel_type is None:
+        raise ParseFamilyError(
+            f"Quan hệ '{rel_word}' không hợp lệ. "
+            "Dùng: cha, me, vo, chong, con nuoi."
+        )
+    return member_id, rel_type, related_id
+
+
+def parse_delete_relationship(body: str) -> tuple[int, str, int]:
+    """Parse '<id1> <rel> <id2>' → (member_id, rel_type, related_id) for xoa quan he."""
+    norm = normalize_vn(body).strip()
+    parts = norm.split()
+    if len(parts) < 3 or not parts[0].isdigit() or not parts[-1].isdigit():
+        raise ParseFamilyError(
+            "Cú pháp: xoa quan he: <id1> <cha|me|vo|chong|con nuoi> <id2>"
+        )
+    member_id = int(parts[0])
+    related_id = int(parts[-1])
+    rel_word = " ".join(parts[1:-1])
+    rel_type = _REL_WORD_MAP.get(rel_word)
+    if rel_type is None:
+        raise ParseFamilyError(
+            f"Quan hệ '{rel_word}' không hợp lệ. Dùng: cha, me, vo, chong, con nuoi."
+        )
+    return member_id, rel_type, related_id
+
+
+# ── Phase B handlers ──────────────────────────────────────────────────────────
+
+
+async def _cmd_them_quan_he(chat_id, body, user, deps: CoreDeps) -> None:
+    if deps.family_store is None:
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    if not _is_admin(user):
+        await deps.channel.send(chat_id, _NO_PERMISSION, use_markdown=False)
+        return
+    try:
+        member_id, rel_type, related_id = parse_relationship(body)
+    except ParseFamilyError as e:
+        await deps.channel.send(chat_id, f"⚠️ {e}", use_markdown=False)
+        return
+    member = deps.family_store.get_member(member_id)
+    related = deps.family_store.get_member(related_id)
+    if member is None or (member.get("deleted_at") is not None):
+        await deps.channel.send(
+            chat_id, f"Không tìm thấy người thân #{member_id}.", use_markdown=False,
+        )
+        return
+    if related is None or (related.get("deleted_at") is not None):
+        await deps.channel.send(
+            chat_id, f"Không tìm thấy người thân #{related_id}.", use_markdown=False,
+        )
+        return
+    try:
+        deps.family_store.create_relationship(
+            created_by=user.id, member_id=member_id, related_id=related_id, rel_type=rel_type,
+        )
+    except ValueError as e:
+        await deps.channel.send(chat_id, f"⚠️ {e}", use_markdown=False)
+        return
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="family_relationship_created",
+        target_type="family_relationship",
+        target_id=member_id,
+        payload={"member_id": member_id, "related_id": related_id, "rel_type": rel_type},
+    )
+    rel_display = rel_type.replace("_", " ")
+    await deps.channel.send(
+        chat_id,
+        f"✅ Đã thêm: #{member_id} {member['full_name']} là {rel_display} của "
+        f"#{related_id} {related['full_name']}",
+        use_markdown=False,
+    )
+
+
+async def _cmd_xoa_quan_he(chat_id, body, user, deps: CoreDeps) -> None:
+    if deps.family_store is None:
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    if not _is_admin(user):
+        await deps.channel.send(chat_id, _NO_PERMISSION, use_markdown=False)
+        return
+    try:
+        member_id, rel_type, related_id = parse_delete_relationship(body)
+    except ParseFamilyError as e:
+        await deps.channel.send(chat_id, f"⚠️ {e}", use_markdown=False)
+        return
+    ok = deps.family_store.delete_relationship(
+        member_id=member_id, related_id=related_id, rel_type=rel_type,
+    )
+    if not ok:
+        await deps.channel.send(
+            chat_id,
+            f"Không tìm thấy quan hệ '{rel_type}' giữa #{member_id} và #{related_id}.",
+            use_markdown=False,
+        )
+        return
+    deps.audit.log(
+        actor_user_id=user.id,
+        action="family_relationship_deleted",
+        target_type="family_relationship",
+        target_id=member_id,
+        payload={"member_id": member_id, "related_id": related_id, "rel_type": rel_type},
+    )
+    await deps.channel.send(
+        chat_id,
+        f"✅ Đã xóa quan hệ '{rel_type}' giữa #{member_id} và #{related_id}.",
+        use_markdown=False,
+    )
+
+
+async def _cmd_gia_pha(chat_id, body, user, deps: CoreDeps) -> None:
+    if deps.family_store is None:
+        await deps.channel.send(chat_id, _NOT_ENABLED, use_markdown=False)
+        return
+    from family_tree import render_tree
+    body = body.strip()
+    root_id: int | None = None
+    if body:
+        member, candidates = _resolve_member(body, deps)
+        if member is None:
+            if candidates:
+                lines = ["Có nhiều người trùng tên, chọn theo id:"]
+                lines.extend(_format_member_line(r) for r in candidates)
+                await deps.channel.send(chat_id, "\n".join(lines), use_markdown=False)
+            else:
+                await deps.channel.send(chat_id, "Không tìm thấy người thân.", use_markdown=False)
+            return
+        root_id = member["id"]
+    text = render_tree(deps.family_store._conn, root_id=root_id)
+    await deps.channel.send(chat_id, f"🌳 *Cây gia phả*\n\n{text}", use_markdown=True)

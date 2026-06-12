@@ -285,3 +285,56 @@ def test_update_is_leap_month(anniv_store, member_user):
     assert a["is_leap_month"] == 0
     updated = anniv_store.update_anniversary(a["id"], is_leap_month=1)
     assert updated["is_leap_month"] == 1
+
+
+# ── family_member_id integration (FR-11 Phase B) ─────────────────────────────
+
+
+def test_create_with_family_member_id(anniv_store, db_conn, sample_admin, member_user):
+    from family_store import SqliteFamilyStore
+    fs = SqliteFamilyStore(conn=db_conn)
+    member = fs.create_member(created_by=sample_admin.id, full_name="Ông Nội")
+    row = anniv_store.create_anniversary(
+        user_id=member_user.id,
+        name="Giỗ ông nội",
+        date_type="lunar",
+        month=3,
+        day=10,
+        category="gio",
+        family_member_id=member["id"],
+    )
+    assert row["family_member_id"] == member["id"]
+
+
+def test_create_without_family_member_id_defaults_null(anniv_store, member_user):
+    row = anniv_store.create_anniversary(
+        user_id=member_user.id, name="X", date_type="lunar", month=1, day=1,
+    )
+    assert row.get("family_member_id") is None
+
+
+def test_update_family_member_id(anniv_store, db_conn, sample_admin, member_user):
+    from family_store import SqliteFamilyStore
+    fs = SqliteFamilyStore(conn=db_conn)
+    member = fs.create_member(created_by=sample_admin.id, full_name="Bà Nội")
+    row = anniv_store.create_anniversary(
+        user_id=member_user.id, name="Giỗ bà", date_type="lunar", month=5, day=20,
+    )
+    updated = anniv_store.update_anniversary(row["id"], family_member_id=member["id"])
+    assert updated["family_member_id"] == member["id"]
+
+
+def test_list_for_member(anniv_store, db_conn, sample_admin, member_user):
+    from family_store import SqliteFamilyStore
+    fs = SqliteFamilyStore(conn=db_conn)
+    m = fs.create_member(created_by=sample_admin.id, full_name="Cụ")
+    anniv_store.create_anniversary(
+        user_id=member_user.id, name="Giỗ cụ", date_type="lunar",
+        month=2, day=10, category="gio", family_member_id=m["id"],
+    )
+    anniv_store.create_anniversary(
+        user_id=member_user.id, name="Khác", date_type="lunar", month=4, day=5,
+    )
+    linked = anniv_store.list_for_member(m["id"])
+    assert len(linked) == 1
+    assert linked[0]["name"] == "Giỗ cụ"
