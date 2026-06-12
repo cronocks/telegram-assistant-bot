@@ -62,6 +62,17 @@ from cmd_anniversary import (
     _cmd_xem_ky_niem,
     _cmd_xoa_ky_niem,
 )
+from cmd_family import (
+    _cmd_danh_sach_nguoi_than,
+    _cmd_sua_mo_phan,
+    _cmd_sua_nguoi_than,
+    _cmd_them_mo_phan,
+    _cmd_them_nguoi_than,
+    _cmd_tim_mo,
+    _cmd_xem_nguoi_than,
+    _cmd_xoa_mo_phan,
+    _cmd_xoa_nguoi_than,
+)
 from cmd_ledger import (
     _cmd_bao_cao_nam,
     _cmd_bao_cao_thang,
@@ -132,6 +143,7 @@ async def _cmd_start(chat_id: str, deps: CoreDeps) -> None:
         "🧠 *Tri nho* — `/help tri nho`\n"
         "📋 *Cong viec* — `/help cong viec`\n"
         "📅 *Ky niem* — `/help ky niem`\n"
+        "🌳 *Gia pha* — `/help gia pha`\n"
         "💰 *Chi tieu* — `/help chi tieu`\n"
         "👥 *Nguoi dung* — `/help nguoi dung`\n"
         "💰 *Quota* — `/help quota`\n"
@@ -226,6 +238,21 @@ _HELP_PAGES: dict[str, tuple[str, str]] = {
         "Mac dinh nhac truoc: 30/15/7/3/1 ngay + dung ngay (08:00 sang).\n"
         "Ngay am lich tu dong quy doi sang duong moi nam.",
     ),
+    "gia pha": (
+        "🌳 *GIA PHA (FAMILY TREE)*",
+        "`them nguoi than: [ten], doi [n], sinh [ngay], mat [ngay], gioi tinh [nam/nu], ten goi [..], chi [..], ghi chu [..]` — Tao ho so nguoi than (admin/manager)\n"
+        "  Ngay: `am DD/MM/YYYY`, `duong DD/MM/YYYY`, `YYYY` hoac `khoang YYYY`\n"
+        "  Vi du: `them nguoi than: Nguyen Van A, doi 3, sinh am 10/2/1920, mat am 15/7/1990`\n"
+        "`danh sach nguoi than [doi n]` — Liet ke nguoi than (loc theo doi)\n"
+        "`xem nguoi than [id | ten]` — Xem ho so day du + mo phan\n"
+        "`sua nguoi than: [id], [muc]=[gia tri], ...` — Cap nhat (muc: ten, doi, sinh, mat, gioi tinh, ten goi, chi, ghi chu)\n"
+        "`xoa nguoi than: [id]` — Xoa (soft-delete)\n\n"
+        "`them mo phan: [id nguoi than], [nghia trang], dia chi [..], gps [lat],[lng], lo [..], ghi chu [..]` — Luu thong tin mo phan\n"
+        "  Vi du: `them mo phan: 5, Nghia trang Van Dien, gps 20.9456,105.8231, lo B3 hang 12`\n"
+        "`tim mo [ten | id]` — Tra cuu mo phan nhanh (kem link Google Maps)\n"
+        "`sua mo phan: [id], [muc]=[gia tri], ...` — Cap nhat mo phan\n"
+        "`xoa mo phan: [id]` — Xoa ban ghi mo phan",
+    ),
     "sudo": (
         "🔐 *QUAN TRI (SUDO)*",
         "`sudo: [mat khau]` — Nang quyen len admin trong 15 phut (chi role manager)\n"
@@ -291,6 +318,8 @@ _HELP_ALIASES: dict[str, str] = {
     "task": "cong viec",
     "ky niem": "ky niem",
     "kỷ niệm": "ky niem",
+    "gia pha": "gia pha",
+    "gia phả": "gia pha",
     "he thong": "he thong",
     "hệ thống": "he thong",
     "sudo": "sudo",
@@ -701,6 +730,17 @@ _COMMAND_TABLE: dict[str, list[str]] = {
     "THEM_THE":             ["them the: ", "thêm thẻ: "],
     "XOA_THE":              ["xoa the: ", "xóa thẻ: "],
     "XEM_THE":              ["xem the", "xem thẻ"],
+    # ── FR-11 family tree commands ────────────────────────────────────────────
+    # Longer prefixes first within each group.
+    "THEM_NGUOI_THAN":      ["thêm người thân: ", "them nguoi than: "],
+    "SUA_NGUOI_THAN":       ["sửa người thân: ", "sua nguoi than: "],
+    "XOA_NGUOI_THAN":       ["xóa người thân: ", "xoa nguoi than: "],
+    "DANH_SACH_NGUOI_THAN": ["danh sách người thân", "danh sach nguoi than"],
+    "XEM_NGUOI_THAN":       ["xem người thân ", "xem nguoi than "],
+    "THEM_MO_PHAN":         ["thêm mộ phần: ", "them mo phan: "],
+    "SUA_MO_PHAN":          ["sửa mộ phần: ", "sua mo phan: "],
+    "XOA_MO_PHAN":          ["xóa mộ phần: ", "xoa mo phan: "],
+    "TIM_MO":               ["tìm mộ ", "tim mo "],
 }
 
 
@@ -754,6 +794,10 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
         # FR-8 anniversary commands — no LLM, all structured parse.
         "THEM_KY_NIEM", "XOA_KY_NIEM", "SUA_KY_NIEM",
         "DANH_SACH_KY_NIEM", "XEM_KY_NIEM",
+        # FR-11 family tree commands — no LLM, all structured parse.
+        "THEM_NGUOI_THAN", "SUA_NGUOI_THAN", "XOA_NGUOI_THAN",
+        "DANH_SACH_NGUOI_THAN", "XEM_NGUOI_THAN",
+        "THEM_MO_PHAN", "SUA_MO_PHAN", "XOA_MO_PHAN", "TIM_MO",
         # FR-9 ledger commands — no LLM, all structured.
         "CHI", "THU", "GHI_CHEP_XEM", "DANH_SACH_GHI_CHEP",
         "SUA_GHI_CHEP", "HUY_GHI_CHEP",
@@ -943,6 +987,24 @@ async def handle_message(msg: ChannelMessage, user: User, deps: CoreDeps) -> Non
             await _cmd_them_the(chat_id, remainder, user, deps); return
         if cmd_id == "XOA_THE":
             await _cmd_xoa_the(chat_id, remainder, user, deps); return
+        if cmd_id == "THEM_NGUOI_THAN":
+            await _cmd_them_nguoi_than(chat_id, remainder, user, deps); return
+        if cmd_id == "SUA_NGUOI_THAN":
+            await _cmd_sua_nguoi_than(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_NGUOI_THAN":
+            await _cmd_xoa_nguoi_than(chat_id, remainder, user, deps); return
+        if cmd_id == "DANH_SACH_NGUOI_THAN":
+            await _cmd_danh_sach_nguoi_than(chat_id, remainder, user, deps); return
+        if cmd_id == "XEM_NGUOI_THAN":
+            await _cmd_xem_nguoi_than(chat_id, remainder, user, deps); return
+        if cmd_id == "THEM_MO_PHAN":
+            await _cmd_them_mo_phan(chat_id, remainder, user, deps); return
+        if cmd_id == "SUA_MO_PHAN":
+            await _cmd_sua_mo_phan(chat_id, remainder, user, deps); return
+        if cmd_id == "XOA_MO_PHAN":
+            await _cmd_xoa_mo_phan(chat_id, remainder, user, deps); return
+        if cmd_id == "TIM_MO":
+            await _cmd_tim_mo(chat_id, remainder, user, deps); return
         if cmd_id == "XEM_THE":
             await _cmd_xem_the(chat_id, user, deps); return
 

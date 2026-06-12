@@ -47,6 +47,8 @@ from reminder_engine import ReminderEngine
 from task_parser import TaskParser
 from anniversary_store import SqliteAnniversaryStore
 from anniversary_engine import AnniversaryEngine
+from family_store import SqliteFamilyStore
+from burial_store import SqliteBurialStore
 from category_store import SqliteCategoryStore
 from credit_card_store import SqliteCreditCardStore
 from ledger_store import SqliteLedgerStore
@@ -117,6 +119,8 @@ budget_store = SqliteBudgetStore()
 credit_card_store = SqliteCreditCardStore()
 ledger_parser = LedgerParser()
 ledger_reports = LedgerReports(ledger_store, budget_store)
+family_store = SqliteFamilyStore()
+burial_store = SqliteBurialStore()
 
 deps = CoreDeps(
     llm=llm,
@@ -143,6 +147,8 @@ deps = CoreDeps(
     ledger_parser=ledger_parser,
     ledger_reports=ledger_reports,
     credit_card_store=credit_card_store,
+    family_store=family_store,
+    burial_store=burial_store,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -171,6 +177,8 @@ web_deps = CoreDeps(
     ledger_parser=ledger_parser,
     ledger_reports=ledger_reports,
     credit_card_store=credit_card_store,
+    family_store=family_store,
+    burial_store=burial_store,
 )
 
 
