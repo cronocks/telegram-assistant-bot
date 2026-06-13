@@ -126,50 +126,148 @@ def _render_subtree(
 _PARENT_REL_TYPES = ("cha", "me", "con_nuoi")
 
 
-def build_tree_structure(conn: sqlite3.Connection) -> list[dict]:
-    """Return a nested structure for the web visual tree.
+def build_tree_structure(conn: sqlite3.Connection) -> dict:
+    """Return a generation-grouped structure for the web visual tree.
 
-    Each node is: {"member": dict, "children": [node, ...]}.
-    Only cha/me/con_nuoi edges define the parent→child hierarchy;
-    vo/chong edges are ignored so spouses remain separate root nodes.
+    Return format::
+
+        {
+            "has_data": bool,
+            "rows": [
+                {
+                    "gen": int | None,
+                    "gen_label": str,
+                    "units": [
+                        {
+                            "id": str,
+                            "primary": dict,
+                            "spouse": dict | None,
+                            "parent_unit_id": str | None,
+                            "child_unit_ids": list[str],
+                        }
+                    ],
+                }
+            ],
+        }
+
+    Only cha/me/con_nuoi edges define the parent→child hierarchy.
+    vo/chong edges pair spouses into a single couple unit; their children
+    are merged under that unit.
+    Members without a generation value are placed in a final "unclassified" row.
     """
-    members = {
+    from collections import defaultdict
+
+    members: dict[int, dict] = {
         row["id"]: dict(row)
         for row in conn.execute(
-            "SELECT * FROM family_members WHERE deleted_at IS NULL ORDER BY generation ASC NULLS LAST, full_name ASC"
+            "SELECT * FROM family_members WHERE deleted_at IS NULL"
         ).fetchall()
     }
     if not members:
-        return []
+        return {"has_data": False, "rows": []}
 
-    # Build parent_id → [child_id] mapping from parent-type edges only.
-    children_of: dict[int, list[int]] = {mid: [] for mid in members}
-    child_ids: set[int] = set()
+    # --- parent-child edges (cha / me / con_nuoi) ----------------------------
+    children_of: dict[int, set[int]] = defaultdict(set)
     for row in conn.execute(
         "SELECT member_id, related_id FROM family_relationships "
         "WHERE rel_type IN ('cha', 'me', 'con_nuoi') AND deleted_at IS NULL"
     ).fetchall():
         parent_id, child_id = row["member_id"], row["related_id"]
-        if parent_id in children_of and child_id in members:
-            if child_id not in children_of[parent_id]:
-                children_of[parent_id].append(child_id)
-            child_ids.add(child_id)
+        if parent_id in members and child_id in members:
+            children_of[parent_id].add(child_id)
 
-    def _build_node(mid: int, visited: set[int]) -> dict:
-        visited.add(mid)
-        child_nodes = []
-        for cid in sorted(children_of.get(mid, []), key=lambda x: (members[x].get("generation") or 999, members[x]["full_name"])):
-            if cid not in visited:
-                child_nodes.append(_build_node(cid, visited))
-        return {"member": members[mid], "children": child_nodes}
+    # --- spouse edges (vo / chong) -------------------------------------------
+    spouse_of: dict[int, int] = {}
+    for row in conn.execute(
+        "SELECT member_id, related_id FROM family_relationships "
+        "WHERE rel_type IN ('vo', 'chong') AND deleted_at IS NULL"
+    ).fetchall():
+        a, b = row["member_id"], row["related_id"]
+        if a in members and b in members and a not in spouse_of and b not in spouse_of:
+            spouse_of[a] = b
+            spouse_of[b] = a
 
-    visited: set[int] = set()
-    roots = [
-        mid for mid in members
-        if mid not in child_ids
-    ]
-    roots.sort(key=lambda mid: (members[mid].get("generation") or 999, members[mid]["full_name"]))
-    return [_build_node(mid, visited) for mid in roots]
+    # --- build couple units --------------------------------------------------
+    # Sort deterministically so the member processed first becomes "primary".
+    # Priority: member with children becomes primary; tie-break by name.
+    sorted_ids = sorted(
+        members,
+        key=lambda mid: (0 if children_of.get(mid) else 1, members[mid]["full_name"]),
+    )
+
+    units: dict[str, dict] = {}          # unit_id -> unit
+    member_to_unit: dict[int, str] = {}  # member_id -> unit_id
+    _counter = 0
+
+    for mid in sorted_ids:
+        if mid in member_to_unit:
+            continue
+        _counter += 1
+        uid = f"u{_counter}"
+        spouse_id = spouse_of.get(mid)
+        if spouse_id and spouse_id not in member_to_unit:
+            units[uid] = {"id": uid, "primary_id": mid, "spouse_id": spouse_id}
+            member_to_unit[mid] = uid
+            member_to_unit[spouse_id] = uid
+        else:
+            units[uid] = {"id": uid, "primary_id": mid, "spouse_id": None}
+            member_to_unit[mid] = uid
+
+    # --- compute unit-level edges --------------------------------------------
+    unit_children: dict[str, set[str]] = defaultdict(set)  # parent_uid -> child_uids
+    unit_parent: dict[str, str] = {}                        # child_uid -> parent_uid
+
+    for parent_id, child_ids in children_of.items():
+        parent_uid = member_to_unit.get(parent_id)
+        if parent_uid is None:
+            continue
+        for child_id in child_ids:
+            child_uid = member_to_unit.get(child_id)
+            if child_uid and child_uid != parent_uid:
+                unit_children[parent_uid].add(child_uid)
+                unit_parent[child_uid] = parent_uid
+
+    # --- group units by generation, sort rows --------------------------------
+    gen_to_unit_ids: dict = defaultdict(list)
+    for uid, unit in units.items():
+        gen = members[unit["primary_id"]].get("generation")
+        gen_to_unit_ids[gen].append(uid)
+
+    sorted_gens = sorted(gen_to_unit_ids, key=lambda g: (g is None, g or 0))
+
+    # Track column positions per unit for child-ordering within rows.
+    unit_col: dict[str, int] = {}
+
+    rows = []
+    for gen in sorted_gens:
+        uid_list = gen_to_unit_ids[gen]
+
+        # Sort: units with a parent come after roots, grouped by parent position.
+        def _sort_key(uid: str) -> tuple:
+            p = unit_parent.get(uid)
+            parent_col = unit_col.get(p, -1) if p else -1
+            return (0 if p is None else 1, parent_col, members[units[uid]["primary_id"]]["full_name"])
+
+        uid_list.sort(key=_sort_key)
+
+        row_units = []
+        for col_idx, uid in enumerate(uid_list):
+            unit = units[uid]
+            unit_col[uid] = col_idx
+            primary = members[unit["primary_id"]]
+            spouse = members[unit["spouse_id"]] if unit["spouse_id"] else None
+            row_units.append({
+                "id": uid,
+                "primary": primary,
+                "spouse": spouse,
+                "parent_unit_id": unit_parent.get(uid),
+                "child_unit_ids": sorted(unit_children.get(uid, set())),
+            })
+
+        gen_label = f"Đời {gen}" if gen is not None else "Chưa phân đời"
+        rows.append({"gen": gen, "gen_label": gen_label, "units": row_units})
+
+    return {"has_data": True, "rows": rows}
 
 
 def render_tree(conn: sqlite3.Connection, root_id: int | None = None) -> str:

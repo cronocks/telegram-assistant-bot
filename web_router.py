@@ -1819,10 +1819,10 @@ async def family_tree_view(
         return RedirectResponse(url="/login", status_code=303)
     assert _templates is not None
     from family_tree import build_tree_structure
-    tree_nodes = build_tree_structure(_family_store._conn) if _family_store else []
+    tree_data = build_tree_structure(_family_store._conn) if _family_store else {"has_data": False, "rows": []}
     return _templates.TemplateResponse(
         request, "family_tree.html",
-        {"user": user, "tree_nodes": tree_nodes},
+        {"user": user, "tree_data": tree_data},
     )
 
 
