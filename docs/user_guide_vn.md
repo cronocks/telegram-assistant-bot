@@ -318,7 +318,7 @@ Trang gia phả trên Web UI cung cấp giao diện trực quan để xem và qu
 |-------|-----|-------|
 | Danh sách | `/family/members` | Liệt kê toàn bộ người thân, có ô tìm kiếm nhanh |
 | Hồ sơ chi tiết | `/family/members/<id>` | Xem thông tin đầy đủ + mộ phần + link Google Maps |
-| Cây gia phả | `/family` | Cây gia phả dạng text theo cấu trúc đời |
+| Cây gia phả | `/family` | Cây gia phả trực quan theo đời: card vợ/chồng ghép cặp, đường nối SVG giữa các thế hệ |
 | Thêm hồ sơ | `/family/members/new` | Form tạo hồ sơ mới (admin/manager) |
 | Sửa hồ sơ | `/family/members/<id>/edit` | Form chỉnh sửa (admin/manager) |
 

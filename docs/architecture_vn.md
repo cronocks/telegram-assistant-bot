@@ -80,7 +80,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `cmd_ledger.py` | 16 Telegram handlers: `chi:`, `thu:`, `danh sach ghi chep`, `sua/huy ghi chep:`, `xem/them/xoa/sua danh muc`, `bao cao thang/nam`, `xem chi tieu`, `dat han muc chi:`, `dat muc tieu tiet kiem:`, `xem han muc` (FR-9) |
 | `family_store.py` | `SqliteFamilyStore` — CRUD hồ sơ người thân + tìm kiếm `normalize_vn` + quản lý quan hệ (cha/mẹ/vợ/chồng/con nuôi) với phát hiện vòng lặp qua recursive CTE (FR-11) |
 | `burial_store.py` | `SqliteBurialStore` — CRUD bản ghi mộ phần; xoay `is_current` khi thêm mộ mới (cải táng); validate GPS (FR-11) |
-| `family_tree.py` | `ancestors()`, `descendants()`, `family_roots()`, `render_tree()` — xây cây gia phả text qua recursive CTE; dùng bởi lệnh `gia pha` và route `GET /family` (FR-11) |
+| `family_tree.py` | `ancestors()`, `descendants()`, `family_roots()`, `render_tree()` — cây gia phả text (chat); `build_tree_structure()` — cây theo đời dạng card (web, vợ/chồng ghép cặp, SVG connector); dùng recursive CTE (FR-11) |
 | `cmd_family.py` | Telegram handlers cho gia phả: `them nguoi than`, `xem nguoi than`, `danh sach nguoi than`, `sua nguoi than`, `xoa nguoi than`, `them mo phan`, `sua mo phan`, `xoa mo phan`, `tim mo`, `them quan he`, `xoa quan he`, `gia pha` (FR-11) |
 | `csrf.py` | `CSRFMiddleware` — double-submit cookie CSRF; set cookie non-HttpOnly trên GET, validate cookie vs form-field/header trên POST/PUT/PATCH/DELETE; `/webhook` được exempt *(Security hardening)* |
 | `rate_limit.py` | `RateLimitMiddleware` — sliding-window per `(IP, path)`; `/login` giới hạn 10 req/60s, default 120 req/60s cho các route khác; không dùng external dependency *(Security hardening)* |
