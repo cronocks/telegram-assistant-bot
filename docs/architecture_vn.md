@@ -103,7 +103,15 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `scheduled_jobs.py` | APScheduler jobs: purge 180d, purge-at-18, flush notifications, scan_reminders, daily_summary, parent_digest, anniversary_tick, compute_anniversary_year, weekly_ledger_summary, purge_voided_ledger (FR-4, FR-7, FR-8, FR-9) |
 | `web_session_store.py` | `SqliteWebSessionStore` — session web DB-revocable (không JWT); find/revoke/create (FR-5) |
 | `web_channel.py` | `WebChannelAdapter` — SSE queue per `conversation_id`; `send_with_inline_keyboard` fallback (FR-5, FR-5.5, FR-7) |
-| `web_router.py` | FastAPI router web: auth, chat, conversations API, task CRUD, anniversary CRUD, ledger CRUD, family CRUD routes (FR-5, FR-5.5, FR-7, FR-8, FR-9, FR-11) |
+| `web_context.py` | Shared globals cho tất cả sub-router: store references, token helpers, cookie helpers, `_resolve_user`, `init_web_router()` — populated một lần khi startup (FR-5 → FR-11) |
+| `web_router.py` | Thin aggregator: re-export `init_web_router`; `include_router` cho tất cả sub-router theo thứ tự; `__getattr__` backward-compat (FR-5 → FR-11) |
+| `web_auth.py` | Routes `/`, `/login`, `/logout`, `/setup-password`, `/settings/password` (FR-5) |
+| `web_chat.py` | Routes `/chat`, `/chat/stream` (SSE), `/chat/{conv_id}`, `/chat/send`, `/chat/{conv_id}/send`, `/api/conversations*` (FR-5, FR-5.5) |
+| `web_tasks.py` | Routes `/tasks`, `/api/tasks*` (FR-7) |
+| `web_anniversaries.py` | Routes `/anniversaries*` (FR-8) |
+| `web_ledger.py` | Routes `/ledger*` — entries, categories, budget, report (FR-9) |
+| `web_admin.py` | Routes `/admin/*`, `/settings/export*` — admin stealth-read, export/import ZIP (FR-5.5.6, FR-6) |
+| `web_family.py` | Routes `/family*` — member CRUD, family tree view (FR-11) |
 | `web_conversation_store.py` | `SqliteWebConversationStore` — CRUD conversation + message; search LIKE; admin stealth-read path (FR-5.5) |
 | `backup_engine.py` | `BackupEngine` — export ZIP in-memory, parse/apply import transactional, upload Drive `Claude-Notes/Backups/`, rate-limit 5 phút/user (FR-6) |
 | `tools/local_migrate.py` | CLI standalone: copy SQLite + mirror Drive files → local FS; `--dry-run`, `--users`, `--include-deleted` (FR-6) |
