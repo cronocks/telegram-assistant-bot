@@ -4,7 +4,7 @@
 
 {% block head %}
 <style>
-/* ── layout ──────────────────────────────────────────────────────────── */
+/* ── page wrapper ─────────────────────────────────────────────────────────── */
 .tree-page { max-width: 100%; padding: 1.5rem 1rem; }
 .tree-header {
   display: flex; justify-content: space-between; align-items: center;
@@ -18,80 +18,82 @@
 }
 .btn-secondary:hover { background: var(--border); }
 
-/* ── scroll wrapper ──────────────────────────────────────────────────── */
+/* ── scroll wrapper ──────────────────────────────────────────────────────── */
 .tree-scroll {
   overflow-x: auto; overflow-y: visible;
   padding-bottom: 2rem;
+  position: relative;          /* SVG overlay is positioned inside */
 }
 
-/* ── empty state ─────────────────────────────────────────────────────── */
-.empty { color: var(--text-muted); text-align: center; padding: 4rem 1rem; font-size: 1rem; }
-
-/* ── tree structure ──────────────────────────────────────────────────── */
-.tree-roots {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 3rem;
-  justify-content: center;
-  align-items: flex-start;
-  padding: 1rem 2rem;
-  min-width: max-content;
+/* ── SVG connector layer (drawn by JS after layout) ─────────────────────── */
+#tree-connectors {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  overflow: visible;
+}
+#tree-connectors path {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 2;
 }
 
-.tree-node {
+/* ── generation grid ─────────────────────────────────────────────────────── */
+.tree-grid {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  position: relative;
+  gap: 0;
+  min-width: max-content;
+  padding: 1rem 2rem;
 }
 
-/* vertical line from card down to children bar */
-.tree-node.has-children > .tree-card-wrap::after {
-  content: '';
-  display: block;
-  width: 2px;
-  height: 1.5rem;
-  background: var(--border);
-  margin: 0 auto;
+/* ── single generation row ───────────────────────────────────────────────── */
+.gen-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  padding: 2.5rem 0 1rem;    /* vertical spacing between rows */
 }
 
-/* ── children row ────────────────────────────────────────────────────── */
-.tree-children {
+.gen-label {
+  width: 5rem;
+  flex-shrink: 0;
+  padding-top: 0.9rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  text-align: right;
+  padding-right: 1rem;
+}
+
+.gen-units {
   display: flex;
   flex-wrap: nowrap;
-  gap: 2rem;
   align-items: flex-start;
-  position: relative;
-  padding-top: 1.5rem;
+  gap: 2rem;
+  flex: 1;
 }
 
-/* horizontal bar spanning across children */
-.tree-children::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: calc(50% - (100% - 2px) / 2 * var(--child-span, 1));
-  right: calc(50% - (100% - 2px) / 2 * var(--child-span, 1));
-  height: 2px;
-  background: var(--border);
+/* ── couple / single unit ────────────────────────────────────────────────── */
+.tree-unit {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.3rem;
 }
 
-/* vertical line down from horizontal bar to each child */
-.tree-children > .tree-node::before {
-  content: '';
-  position: absolute;
-  top: -1.5rem;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 2px;
-  height: 1.5rem;
-  background: var(--border);
+.couple-link {
+  align-self: center;
+  font-size: 0.9rem;
+  color: #f472b6;
+  padding: 0 0.1rem;
+  line-height: 1;
 }
 
-/* single child: no bar, just a vertical line */
-.tree-children.single-child::before { display: none; }
-
-/* ── card ────────────────────────────────────────────────────────────── */
+/* ── card ────────────────────────────────────────────────────────────────── */
 .tree-card {
   width: 148px;
   border-radius: 0.75rem;
@@ -109,17 +111,12 @@
   border-color: var(--accent, #4f8ef7);
 }
 
-/* gender color strip at top */
-.card-strip {
-  height: 5px;
-  background: var(--border);
-}
-.card-strip.nam  { background: #4f8ef7; }
-.card-strip.nu   { background: #f472b6; }
+.card-strip { height: 5px; background: var(--border); }
+.card-strip.nam { background: #4f8ef7; }
+.card-strip.nu  { background: #f472b6; }
 
 .card-body { padding: 0.65rem 0.6rem 0.6rem; }
 
-/* avatar circle */
 .card-avatar {
   width: 2.4rem; height: 2.4rem;
   border-radius: 50%;
@@ -134,13 +131,11 @@
 
 .card-name {
   font-size: 0.78rem; font-weight: 600; color: var(--text);
-  text-align: center; line-height: 1.35;
-  word-break: break-word;
+  text-align: center; line-height: 1.35; word-break: break-word;
 }
 .card-alias {
   font-size: 0.7rem; color: var(--text-muted);
-  text-align: center; margin-top: 0.2rem;
-  font-style: italic;
+  text-align: center; margin-top: 0.2rem; font-style: italic;
 }
 .card-meta {
   display: flex; justify-content: center; flex-wrap: wrap; gap: 0.25rem;
@@ -152,8 +147,10 @@
   background: var(--border); color: var(--text-muted);
 }
 .badge.gen   { background: rgba(79,142,247,0.15); color: #4f8ef7; }
-.badge.years { background: rgba(0,0,0,0.06); }
 .badge.dead  { background: rgba(156,163,175,0.2); color: var(--text-muted); }
+
+/* ── empty state ─────────────────────────────────────────────────────────── */
+.empty { color: var(--text-muted); text-align: center; padding: 4rem 1rem; font-size: 1rem; }
 </style>
 {% endblock %}
 
@@ -170,49 +167,32 @@
 </nav>
 {% endblock %}
 
-{% block theme_toggle %}{% endblock %}
-
 {% block content %}
 
-{# ── recursive macro ──────────────────────────────────────────────────────── #}
-{% macro render_node(node) %}
-{% set m = node.member %}
+{# ── card macro ────────────────────────────────────────────────────────────── #}
+{% macro render_card(m) %}
 {% set gender = m.gender or '' %}
 {% set initials = m.full_name.split()[0][0] | upper if m.full_name else '?' %}
-{% set is_deceased = m.death_year %}
-{% set children = node.children %}
-<div class="tree-node {{ 'has-children' if children else '' }}">
-  <div class="tree-card-wrap">
-    <a class="tree-card" href="/family/members/{{ m.id }}">
-      <div class="card-strip {{ gender }}"></div>
-      <div class="card-body">
-        <div class="card-avatar {{ gender }}">{{ initials }}</div>
-        <div class="card-name">{{ m.full_name }}</div>
-        {% if m.alias_name %}
-          <div class="card-alias">{{ m.alias_name }}</div>
-        {% endif %}
-        <div class="card-meta">
-          {% if m.generation %}
-            <span class="badge gen">Đời {{ m.generation }}</span>
-          {% endif %}
-          {% if m.birth_year or m.death_year %}
-            <span class="badge {{ 'dead' if is_deceased else 'years' }}">
-              {{ m.birth_year or '?' }} – {{ m.death_year or 'nay' }}
-            </span>
-          {% endif %}
-        </div>
-      </div>
-    </a>
-  </div>
-
-  {% if children %}
-    <div class="tree-children {{ 'single-child' if children | length == 1 else '' }}">
-      {% for child in children %}
-        {{ render_node(child) }}
-      {% endfor %}
+<a class="tree-card" href="/family/members/{{ m.id }}" data-unit-member="{{ m.id }}">
+  <div class="card-strip {{ gender }}"></div>
+  <div class="card-body">
+    <div class="card-avatar {{ gender }}">{{ initials }}</div>
+    <div class="card-name">{{ m.full_name }}</div>
+    {% if m.alias_name %}
+      <div class="card-alias">{{ m.alias_name }}</div>
+    {% endif %}
+    <div class="card-meta">
+      {% if m.generation %}
+        <span class="badge gen">Đời {{ m.generation }}</span>
+      {% endif %}
+      {% if m.birth_year or m.death_year %}
+        <span class="badge {{ 'dead' if m.death_year else '' }}">
+          {{ m.birth_year or '?' }} – {{ m.death_year or 'nay' }}
+        </span>
+      {% endif %}
     </div>
-  {% endif %}
-</div>
+  </div>
+</a>
 {% endmacro %}
 
 <div class="tree-page">
@@ -221,11 +201,28 @@
     <a href="/family/members" class="btn-secondary">👥 Danh sách thành viên</a>
   </div>
 
-  {% if tree_nodes %}
-    <div class="tree-scroll">
-      <div class="tree-roots">
-        {% for root in tree_nodes %}
-          {{ render_node(root) }}
+  {% if tree_data.has_data %}
+    <div class="tree-scroll" id="tree-scroll">
+      <svg id="tree-connectors" aria-hidden="true"></svg>
+      <div class="tree-grid" id="tree-grid">
+        {% for row in tree_data.rows %}
+          <div class="gen-row">
+            <div class="gen-label">{{ row.gen_label }}</div>
+            <div class="gen-units">
+              {% for unit in row.units %}
+                <div class="tree-unit" id="unit-{{ unit.id }}"
+                     data-unit-id="{{ unit.id }}"
+                     data-parent-unit="{{ unit.parent_unit_id or '' }}"
+                     data-child-units="{{ unit.child_unit_ids | join(',') }}">
+                  {{ render_card(unit.primary) }}
+                  {% if unit.spouse %}
+                    <span class="couple-link" aria-hidden="true">♥</span>
+                    {{ render_card(unit.spouse) }}
+                  {% endif %}
+                </div>
+              {% endfor %}
+            </div>
+          </div>
         {% endfor %}
       </div>
     </div>
@@ -236,4 +233,70 @@
     </div>
   {% endif %}
 </div>
+
+<script>
+(function () {
+  /* Draw bezier curves from each parent unit to its child units.
+     Runs after layout so getBoundingClientRect is accurate. */
+  function drawConnectors() {
+    const scroll = document.getElementById('tree-scroll');
+    const svg = document.getElementById('tree-connectors');
+    if (!scroll || !svg) return;
+
+    svg.innerHTML = '';
+    const scrollRect = scroll.getBoundingClientRect();
+    const scrollLeft = scroll.scrollLeft;
+    const scrollTop = scroll.scrollTop;
+
+    const units = scroll.querySelectorAll('.tree-unit[data-unit-id]');
+    const unitRect = {};  // unit_id -> DOMRect relative to scroll container
+    units.forEach(function (el) {
+      const r = el.getBoundingClientRect();
+      unitRect[el.dataset.unitId] = {
+        top:    r.top    - scrollRect.top  + scrollTop,
+        bottom: r.bottom - scrollRect.top  + scrollTop,
+        left:   r.left   - scrollRect.left + scrollLeft,
+        right:  r.right  - scrollRect.left + scrollLeft,
+        cx:     (r.left + r.right) / 2 - scrollRect.left + scrollLeft,
+      };
+    });
+
+    units.forEach(function (el) {
+      const parentId = el.dataset.parentUnit;
+      if (!parentId) return;
+      const pr = unitRect[parentId];
+      const cr = unitRect[el.dataset.unitId];
+      if (!pr || !cr) return;
+
+      const x1 = pr.cx, y1 = pr.bottom;
+      const x2 = cr.cx, y2 = cr.top;
+      const mid = (y1 + y2) / 2;
+
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d',
+        `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`
+      );
+      svg.appendChild(path);
+    });
+  }
+
+  /* Update SVG dimensions to match scroll content. */
+  function resizeSvg() {
+    const grid = document.getElementById('tree-grid');
+    const svg = document.getElementById('tree-connectors');
+    if (!grid || !svg) return;
+    svg.setAttribute('width',  grid.scrollWidth);
+    svg.setAttribute('height', grid.scrollHeight);
+  }
+
+  function refresh() { resizeSvg(); drawConnectors(); }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refresh);
+  } else {
+    refresh();
+  }
+  window.addEventListener('resize', refresh);
+})();
+</script>
 {% endblock %}
