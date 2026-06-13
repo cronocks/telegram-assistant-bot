@@ -86,28 +86,22 @@ def _format_node(row: dict) -> str:
     return f"{row['full_name']}{gen}{years}"
 
 
-def _render_subtree(
-    conn: sqlite3.Connection,
-    member_id: int,
-    visited: set[int],
-    indent: int,
-) -> list[str]:
-    """Recursively render a subtree rooted at member_id."""
-    if member_id in visited:
-        return []  # safety guard against unexpected cycles in data
-    visited.add(member_id)
+def _build_spouse_map(conn: sqlite3.Connection) -> dict[int, int]:
+    """Return {member_id: spouse_id} from active vo/chong edges (deduped pairs)."""
+    spouse_of: dict[int, int] = {}
+    for row in conn.execute(
+        "SELECT member_id, related_id FROM family_relationships "
+        "WHERE rel_type IN ('vo', 'chong') AND deleted_at IS NULL"
+    ).fetchall():
+        a, b = row["member_id"], row["related_id"]
+        if a not in spouse_of and b not in spouse_of:
+            spouse_of[a] = b
+            spouse_of[b] = a
+    return spouse_of
 
-    row = conn.execute(
-        "SELECT * FROM family_members WHERE id = ? AND deleted_at IS NULL",
-        (member_id,),
-    ).fetchone()
-    if row is None:
-        return []
 
-    prefix = "  " * indent + ("└─ " if indent > 0 else "")
-    lines = [prefix + _format_node(dict(row))]
-
-    children = conn.execute(
+def _children_of(conn: sqlite3.Connection, member_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
         """
         SELECT fm.* FROM family_members fm
         JOIN family_relationships fr ON fr.related_id = fm.id
@@ -118,8 +112,57 @@ def _render_subtree(
         (member_id,),
     ).fetchall()
 
-    for child in children:
-        lines.extend(_render_subtree(conn, child["id"], visited, indent + 1))
+
+def _render_subtree(
+    conn: sqlite3.Connection,
+    member_id: int,
+    visited: set[int],
+    indent: int,
+    spouse_of: dict[int, int],
+) -> list[str]:
+    """Recursively render a subtree; shows spouse inline, merges their children."""
+    if member_id in visited:
+        return []
+    visited.add(member_id)
+
+    row = conn.execute(
+        "SELECT * FROM family_members WHERE id = ? AND deleted_at IS NULL",
+        (member_id,),
+    ).fetchone()
+    if row is None:
+        return []
+
+    label = _format_node(dict(row))
+
+    # Attach spouse inline if they exist and haven't been rendered yet.
+    spouse_id = spouse_of.get(member_id)
+    if spouse_id and spouse_id not in visited:
+        spouse_row = conn.execute(
+            "SELECT * FROM family_members WHERE id = ? AND deleted_at IS NULL",
+            (spouse_id,),
+        ).fetchone()
+        if spouse_row:
+            visited.add(spouse_id)
+            label += " ♥ " + _format_node(dict(spouse_row))
+
+    prefix = "  " * indent + ("└─ " if indent > 0 else "")
+    lines = [prefix + label]
+
+    # Collect children from primary and spouse, deduplicated.
+    child_rows = _children_of(conn, member_id)
+    seen_child_ids: set[int] = {r["id"] for r in child_rows}
+    if spouse_id:
+        for r in _children_of(conn, spouse_id):
+            if r["id"] not in seen_child_ids:
+                child_rows = list(child_rows) + [r]
+                seen_child_ids.add(r["id"])
+
+    child_rows_sorted = sorted(
+        child_rows,
+        key=lambda r: (r["generation"] or 999, r["full_name"]),
+    )
+    for child in child_rows_sorted:
+        lines.extend(_render_subtree(conn, child["id"], visited, indent + 1, spouse_of))
 
     return lines
 
@@ -276,7 +319,10 @@ def render_tree(conn: sqlite3.Connection, root_id: int | None = None) -> str:
 
     If root_id is given, render the subtree rooted at that member.
     Otherwise render all roots and their subtrees.
+    Spouses are shown inline (A ♥ B) and their children are merged.
     """
+    spouse_of = _build_spouse_map(conn)
+
     if root_id is not None:
         roots = [conn.execute(
             "SELECT * FROM family_members WHERE id = ? AND deleted_at IS NULL",
@@ -289,9 +335,22 @@ def render_tree(conn: sqlite3.Connection, root_id: int | None = None) -> str:
     if not roots:
         return "Gia phả chưa có ai."
 
+    # Spouse nodes that will be rendered inline → skip when iterating roots.
+    # Only embed the *second* member of each couple so the first is not lost.
+    root_ids: set[int] = {r["id"] for r in roots}
+    embedded: set[int] = set()
+    for r in roots:
+        if r["id"] in embedded:
+            continue  # already embedded as someone else's spouse
+        sp = spouse_of.get(r["id"])
+        if sp and sp in root_ids and sp not in embedded:
+            embedded.add(sp)
+
     visited: set[int] = set()
     lines: list[str] = []
     for root in roots:
-        lines.extend(_render_subtree(conn, root["id"], visited, indent=0))
+        if root["id"] in embedded:
+            continue
+        lines.extend(_render_subtree(conn, root["id"], visited, indent=0, spouse_of=spouse_of))
 
     return "\n".join(lines)
