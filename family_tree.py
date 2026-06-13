@@ -123,6 +123,55 @@ def _render_subtree(
     return lines
 
 
+_PARENT_REL_TYPES = ("cha", "me", "con_nuoi")
+
+
+def build_tree_structure(conn: sqlite3.Connection) -> list[dict]:
+    """Return a nested structure for the web visual tree.
+
+    Each node is: {"member": dict, "children": [node, ...]}.
+    Only cha/me/con_nuoi edges define the parent→child hierarchy;
+    vo/chong edges are ignored so spouses remain separate root nodes.
+    """
+    members = {
+        row["id"]: dict(row)
+        for row in conn.execute(
+            "SELECT * FROM family_members WHERE deleted_at IS NULL ORDER BY generation ASC NULLS LAST, full_name ASC"
+        ).fetchall()
+    }
+    if not members:
+        return []
+
+    # Build parent_id → [child_id] mapping from parent-type edges only.
+    children_of: dict[int, list[int]] = {mid: [] for mid in members}
+    child_ids: set[int] = set()
+    for row in conn.execute(
+        "SELECT member_id, related_id FROM family_relationships "
+        "WHERE rel_type IN ('cha', 'me', 'con_nuoi') AND deleted_at IS NULL"
+    ).fetchall():
+        parent_id, child_id = row["member_id"], row["related_id"]
+        if parent_id in children_of and child_id in members:
+            if child_id not in children_of[parent_id]:
+                children_of[parent_id].append(child_id)
+            child_ids.add(child_id)
+
+    def _build_node(mid: int, visited: set[int]) -> dict:
+        visited.add(mid)
+        child_nodes = []
+        for cid in sorted(children_of.get(mid, []), key=lambda x: (members[x].get("generation") or 999, members[x]["full_name"])):
+            if cid not in visited:
+                child_nodes.append(_build_node(cid, visited))
+        return {"member": members[mid], "children": child_nodes}
+
+    visited: set[int] = set()
+    roots = [
+        mid for mid in members
+        if mid not in child_ids
+    ]
+    roots.sort(key=lambda mid: (members[mid].get("generation") or 999, members[mid]["full_name"]))
+    return [_build_node(mid, visited) for mid in roots]
+
+
 def render_tree(conn: sqlite3.Connection, root_id: int | None = None) -> str:
     """Render the family tree as indented text.
 
