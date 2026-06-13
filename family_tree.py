@@ -112,6 +112,7 @@ def _render_subtree(
         SELECT fm.* FROM family_members fm
         JOIN family_relationships fr ON fr.related_id = fm.id
         WHERE fr.member_id = ? AND fr.deleted_at IS NULL AND fm.deleted_at IS NULL
+          AND fr.rel_type IN ('cha', 'me', 'con_nuoi')
         ORDER BY fm.generation ASC NULLS LAST, fm.full_name ASC
         """,
         (member_id,),

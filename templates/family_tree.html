@@ -163,9 +163,15 @@
     <a href="/family/members">👥 Thành viên</a>
     <a href="/chat">Chat</a>
     <form action="/logout" method="post"><button type="submit">Đăng xuất</button></form>
+    <button class="theme-toggle" type="button" onclick="toggleTheme()" aria-label="Đổi chế độ sáng/tối" title="Đổi chế độ sáng/tối">
+      <span class="icon-dark">🌙</span>
+      <span class="icon-light">☀️</span>
+    </button>
   </div>
 </nav>
 {% endblock %}
+
+{% block theme_toggle %}{% endblock %}
 
 {% block content %}
 
