@@ -124,10 +124,13 @@ def test_ledger_list_renders_empty(alice):
 
 
 def test_ledger_list_renders_entries(alice):
+    from datetime import datetime
+    from timeutils import VIETNAM_TZ
+    now = datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d 12:00:00")
     client, conn, ledger_store, category_store, _ = _build_client(alice)
     category_store.create_category("Ăn uống", "expense", user_id=alice.id)
     ledger_store.add_entry(
-        alice.id, "expense", 50000, "2026-05-01 12:00:00",
+        alice.id, "expense", 50000, now,
         note="ăn trưa", source="web",
     )
     _insert_session(conn, alice.id, "t2")

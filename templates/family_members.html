@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+
+{% block title %}Thành viên gia phả — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .fm-container { max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  .fm-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.5rem; }
+  .fm-header h1 { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+  .fm-search { display: flex; gap: 0.5rem; }
+  .fm-search input { padding: 0.45rem 0.75rem; border-radius: 0.5rem; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-size: 0.95rem; }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; padding: 0.45rem 0.9rem; border-radius: 0.5rem; text-decoration: none; font-size: 0.9rem; }
+  .fm-list { list-style: none; padding: 0; }
+  .fm-item { padding: 0.75rem 1rem; border-radius: 0.5rem; background: var(--surface); margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center; }
+  .fm-item a { color: var(--text); text-decoration: none; font-weight: 500; }
+  .fm-item a:hover { color: var(--primary); }
+  .fm-meta { font-size: 0.82rem; color: var(--text-muted); margin-top: 0.1rem; }
+  .empty { color: var(--text-muted); text-align: center; padding: 2rem; }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Gia phả</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/family">🌳 Cây gia phả</a>
+    <a href="/family/members">👥 Thành viên</a>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post"><button type="submit">Đăng xuất</button></form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block theme_toggle %}{% endblock %}
+
+{% block content %}
+<div class="fm-container">
+  <div class="fm-header">
+    <h1>👥 Thành viên gia phả</h1>
+    <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+      <form method="GET" action="/family/members" class="fm-search">
+        <input type="text" name="q" value="{{ q }}" placeholder="Tìm theo tên…" />
+        <button type="submit" class="btn-primary">🔍</button>
+        {% if q %}<a href="/family/members" class="btn-primary" style="background:var(--surface);color:var(--text);border:1px solid var(--border);">✕</a>{% endif %}
+      </form>
+      {% if user.role in ('admin', 'manager') %}
+      <a href="/family/members/new" class="btn-primary">+ Thêm</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if q %}
+  <p style="color:var(--text-muted);margin-bottom:1rem;">Kết quả tìm kiếm cho <strong>"{{ q }}"</strong>: {{ members|length }} thành viên</p>
+  {% endif %}
+
+  {% if members %}
+    <ul class="fm-list">
+      {% for m in members %}
+      <li class="fm-item">
+        <div>
+          <a href="/family/members/{{ m.id }}">
+            {% if m.gender == 'nam' %}👨{% elif m.gender == 'nu' %}👩{% else %}👤{% endif %}
+            <strong>{{ m.full_name }}</strong>
+            {% if m.alias_name %}<em style="color:var(--text-muted)">({{ m.alias_name }})</em>{% endif %}
+          </a>
+          <div class="fm-meta">
+            {% if m.generation %}Đời {{ m.generation }}{% endif %}
+            {% if m.birth_year %} · Sinh {{ m.birth_year }}{% endif %}
+            {% if m.death_year %} · Mất {{ m.death_year }}{% endif %}
+            {% if m.branch %} · {{ m.branch }}{% endif %}
+          </div>
+        </div>
+        {% if user.role in ('admin', 'manager') %}
+        <a href="/family/members/{{ m.id }}/edit">✏️</a>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">
+      {% if q %}Không tìm thấy thành viên nào phù hợp.{% else %}Chưa có thành viên nào trong gia phả.<br>
+      {% if user.role in ('admin', 'manager') %}Bấm <a href="/family/members/new">+ Thêm</a> để bắt đầu.{% endif %}
+      {% endif %}
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

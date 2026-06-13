@@ -64,6 +64,7 @@ class AnniversaryEngine:
         audit,
         conn: sqlite3.Connection,
         now_fn: Callable[[], datetime] | None = None,
+        burial_store=None,
     ) -> None:
         self._anniv = anniv_store
         self._users = user_store
@@ -71,6 +72,7 @@ class AnniversaryEngine:
         self._audit = audit
         self._conn = conn
         self._now_fn = now_fn or (lambda: datetime.now(VIETNAM_TZ))
+        self._burial_store = burial_store
 
     # ── compute_year ──────────────────────────────────────────────────────────
 
@@ -126,7 +128,7 @@ class AnniversaryEngine:
         rows = self._conn.execute(
             """
             SELECT ar.*, a.user_id, a.name, a.category, a.enabled,
-                   a.deleted_at AS anniv_deleted_at
+                   a.deleted_at AS anniv_deleted_at, a.family_member_id
             FROM anniversary_reminders ar
             JOIN anniversaries a ON a.id = ar.anniversary_id
             WHERE ar.status = 'pending' AND ar.fire_at <= ?
@@ -186,7 +188,10 @@ class AnniversaryEngine:
     # ── Internal ──────────────────────────────────────────────────────────────
 
     def _emit(self, row: dict, owner) -> None:
-        text = _build_text(row)
+        burial = None
+        if self._burial_store is not None and row.get("family_member_id"):
+            burial = self._burial_store.get_current_for_member(row["family_member_id"])
+        text = _build_text(row, burial=burial)
         payload = {
             "kind": "anniversary",
             "anniversary_id": row["anniversary_id"],
@@ -246,8 +251,12 @@ class AnniversaryEngine:
             )
 
 
-def _build_text(row: dict) -> str:
-    """Compose the user-facing reminder text with solar date and day-of-week."""
+def _build_text(row: dict, burial: dict | None = None) -> str:
+    """Compose the user-facing reminder text with solar date and day-of-week.
+
+    When burial is provided and category is 'gio', appends burial location info
+    (cemetery name, address, GPS link, plot info).
+    """
     name = row.get("name", "Kỷ niệm")
     offset = row.get("offset_days", 0)
     category = row.get("category", "khac")
@@ -260,7 +269,22 @@ def _build_text(row: dict) -> str:
     date_str = f"{anniv_date.day:02d}/{anniv_date.month:02d}/{anniv_date.year}"
 
     if offset == 0:
-        return f"{emoji} Hôm nay: {name} — {dow}, {date_str}"
-    if offset == 1:
-        return f"{emoji} Ngày mai: {name} — {dow}, {date_str}"
-    return f"{emoji} Còn {offset} ngày: {name} — {dow}, {date_str}"
+        text = f"{emoji} Hôm nay: {name} — {dow}, {date_str}"
+    elif offset == 1:
+        text = f"{emoji} Ngày mai: {name} — {dow}, {date_str}"
+    else:
+        text = f"{emoji} Còn {offset} ngày: {name} — {dow}, {date_str}"
+
+    if burial and category == "gio":
+        cemetery = burial.get("cemetery_name", "")
+        if cemetery:
+            text += f"\n🪦 {cemetery}"
+        if burial.get("address"):
+            text += f"\n📍 {burial['address']}"
+        lat, lng = burial.get("lat"), burial.get("lng")
+        if lat is not None and lng is not None:
+            text += f"\n🗺 https://maps.google.com/?q={lat},{lng}"
+        if burial.get("plot_info"):
+            text += f"\n🧭 {burial['plot_info']}"
+
+    return text

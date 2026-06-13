@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Cây gia phả — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .tree-container { max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+  .tree-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.5rem; }
+  .tree-header h1 { font-size: 1.4rem; font-weight: 700; color: var(--text); }
+  .tree-pre {
+    font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+    font-size: 0.9rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 0.75rem;
+    padding: 1.25rem 1.5rem;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.7;
+    color: var(--text);
+  }
+  .empty { color: var(--text-muted); text-align: center; padding: 3rem; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); padding: 0.45rem 0.9rem; border-radius: 0.5rem; text-decoration: none; font-size: 0.9rem; }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Gia phả</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/family">🌳 Cây gia phả</a>
+    <a href="/family/members">👥 Thành viên</a>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post"><button type="submit">Đăng xuất</button></form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block theme_toggle %}{% endblock %}
+
+{% block content %}
+<div class="tree-container">
+  <div class="tree-header">
+    <h1>🌳 Cây gia phả</h1>
+    <a href="/family/members" class="btn-secondary">👥 Danh sách thành viên</a>
+  </div>
+
+  {% if tree_text and tree_text != "Gia phả chưa có ai." %}
+    <pre class="tree-pre">{{ tree_text }}</pre>
+  {% else %}
+    <div class="empty">
+      Gia phả chưa có ai.<br>
+      <a href="/family/members">Xem danh sách thành viên</a> hoặc dùng lệnh Telegram để thêm.
+    </div>
+  {% endif %}
+</div>
+{% endblock %}

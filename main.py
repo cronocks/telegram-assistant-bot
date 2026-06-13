@@ -47,6 +47,8 @@ from reminder_engine import ReminderEngine
 from task_parser import TaskParser
 from anniversary_store import SqliteAnniversaryStore
 from anniversary_engine import AnniversaryEngine
+from family_store import SqliteFamilyStore
+from burial_store import SqliteBurialStore
 from category_store import SqliteCategoryStore
 from credit_card_store import SqliteCreditCardStore
 from ledger_store import SqliteLedgerStore
@@ -104,12 +106,15 @@ reminder_engine = ReminderEngine(
 )
 task_parser = TaskParser()
 anniversary_store = SqliteAnniversaryStore()
+family_store = SqliteFamilyStore()
+burial_store = SqliteBurialStore()
 anniversary_engine = AnniversaryEngine(
     anniv_store=anniversary_store,
     user_store=user_store,
     notification_service=notif_service,
     audit=audit,
     conn=get_connection(),
+    burial_store=burial_store,
 )
 category_store = SqliteCategoryStore()
 ledger_store = SqliteLedgerStore()
@@ -143,6 +148,8 @@ deps = CoreDeps(
     ledger_parser=ledger_parser,
     ledger_reports=ledger_reports,
     credit_card_store=credit_card_store,
+    family_store=family_store,
+    burial_store=burial_store,
 )
 
 # CoreDeps for web channel — same adapters, different channel adapter.
@@ -171,6 +178,8 @@ web_deps = CoreDeps(
     ledger_parser=ledger_parser,
     ledger_reports=ledger_reports,
     credit_card_store=credit_card_store,
+    family_store=family_store,
+    burial_store=burial_store,
 )
 
 
@@ -268,6 +277,8 @@ init_web_router(
     category_store=category_store,
     budget_store=budget_store,
     ledger_reports=ledger_reports,
+    family_store=family_store,
+    burial_store=burial_store,
 )
 
 

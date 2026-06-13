@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+
+{% block title %}{{ member.full_name }} — Family Assistant{% endblock %}
+
+{% block head %}
+<style>
+  .view-container { max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+  .view-container h1 { font-size: 1.5rem; font-weight: 700; margin-bottom: 1.25rem; color: var(--text); }
+  .meta-row { display: flex; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+  .meta-label { width: 9rem; color: var(--text-muted); font-size: 0.88rem; flex-shrink: 0; }
+  .meta-value { color: var(--text); }
+  .section-title { font-size: 1rem; font-weight: 700; margin: 1.5rem 0 0.5rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.8rem; }
+  .actions { display: flex; gap: 0.5rem; margin-top: 1.5rem; flex-wrap: wrap; }
+  .btn { padding: 0.5rem 1rem; border-radius: 0.5rem; text-decoration: none; border: none; font-size: 0.95rem; cursor: pointer; }
+  .btn-primary { background: linear-gradient(135deg, #6366f1, #8b5cf6); color: white; }
+  .btn-secondary { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
+  .burial-box { background: var(--surface); border: 1px solid var(--border); border-radius: 0.75rem; padding: 1rem; margin-top: 0.5rem; }
+  .burial-box a { word-break: break-all; }
+</style>
+{% endblock %}
+
+{% block nav %}
+<nav>
+  <span class="brand">Family Assistant <span style="color:var(--text-muted);font-size:0.82rem;margin-left:0.4rem">/ Gia phả</span></span>
+  <div class="actions">
+    <span>{{ user.name }}</span>
+    <a href="/family">🌳 Cây gia phả</a>
+    <a href="/family/members">👥 Thành viên</a>
+    <a href="/chat">Chat</a>
+    <form action="/logout" method="post"><button type="submit">Đăng xuất</button></form>
+  </div>
+</nav>
+{% endblock %}
+
+{% block theme_toggle %}{% endblock %}
+
+{% block content %}
+<div class="view-container">
+  <h1>
+    {% if member.gender == 'nam' %}👨{% elif member.gender == 'nu' %}👩{% else %}👤{% endif %}
+    {{ member.full_name }}
+    {% if member.alias_name %}<span style="font-size:0.85rem;color:var(--text-muted);font-weight:400">({{ member.alias_name }})</span>{% endif %}
+  </h1>
+
+  <p class="section-title">Thông tin cá nhân</p>
+
+  {% if member.generation %}
+  <div class="meta-row">
+    <div class="meta-label">Đời</div>
+    <div class="meta-value">{{ member.generation }}</div>
+  </div>
+  {% endif %}
+  {% if member.branch %}
+  <div class="meta-row">
+    <div class="meta-label">Chi</div>
+    <div class="meta-value">{{ member.branch }}</div>
+  </div>
+  {% endif %}
+  {% if member.birth_year %}
+  <div class="meta-row">
+    <div class="meta-label">Ngày sinh</div>
+    <div class="meta-value">
+      {% if member.birth_day %}{{ "%02d"|format(member.birth_day) }}/{% endif %}{% if member.birth_month %}{{ "%02d"|format(member.birth_month) }}/{% endif %}{{ member.birth_year }}
+      {% if member.birth_date_type == 'lunar' %}<em style="color:var(--text-muted)">(Âm lịch)</em>{% endif %}
+      {% if member.birth_approx %}<em style="color:var(--text-muted)">(khoảng)</em>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% if member.death_year %}
+  <div class="meta-row">
+    <div class="meta-label">Ngày mất</div>
+    <div class="meta-value">
+      {% if member.death_day %}{{ "%02d"|format(member.death_day) }}/{% endif %}{% if member.death_month %}{{ "%02d"|format(member.death_month) }}/{% endif %}{{ member.death_year }}
+      {% if member.death_date_type == 'lunar' %}<em style="color:var(--text-muted)">(Âm lịch)</em>{% endif %}
+      {% if member.death_approx %}<em style="color:var(--text-muted)">(khoảng)</em>{% endif %}
+    </div>
+  </div>
+  {% endif %}
+  {% if member.bio %}
+  <div class="meta-row">
+    <div class="meta-label">Tiểu sử</div>
+    <div class="meta-value" style="white-space:pre-wrap;">{{ member.bio }}</div>
+  </div>
+  {% endif %}
+
+  {% if burial %}
+  <p class="section-title">🪦 Mộ phần</p>
+  <div class="burial-box">
+    <strong>{{ burial.cemetery_name }}</strong>
+    {% if burial.address %}<div style="margin-top:0.35rem;">📍 {{ burial.address }}</div>{% endif %}
+    {% if burial.plot_info %}<div style="margin-top:0.35rem;">🧭 {{ burial.plot_info }}</div>{% endif %}
+    {% if maps_url %}<div style="margin-top:0.5rem;">🗺 <a href="{{ maps_url }}" target="_blank" rel="noopener">Xem trên Google Maps</a></div>{% endif %}
+  </div>
+  {% endif %}
+
+  <div class="actions">
+    {% if user.role in ('admin', 'manager') %}
+    <a href="/family/members/{{ member.id }}/edit" class="btn btn-primary">✏️ Sửa</a>
+    {% endif %}
+    <a href="/family/members" class="btn btn-secondary">← Danh sách</a>
+    <a href="/family" class="btn btn-secondary">🌳 Cây gia phả</a>
+  </div>
+</div>
+{% endblock %}

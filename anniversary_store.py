@@ -57,6 +57,7 @@ class SqliteAnniversaryStore:
         reminder_offsets: str = DEFAULT_OFFSETS,
         enabled: int = 1,
         note: str | None = None,
+        family_member_id: int | None = None,
     ) -> dict:
         if not name or not name.strip():
             raise ValueError("anniversary: name must be non-empty")
@@ -72,12 +73,12 @@ class SqliteAnniversaryStore:
                 """
                 INSERT INTO anniversaries (
                     user_id, name, date_type, month, day, year, is_leap_month, category,
-                    reminder_offsets, enabled, note, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    reminder_offsets, enabled, note, family_member_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id, name.strip(), date_type, month, day, year, is_leap_month,
-                    category, reminder_offsets, enabled, note, now, now,
+                    category, reminder_offsets, enabled, note, family_member_id, now, now,
                 ),
             )
         return self.get_anniversary(cur.lastrowid)
@@ -109,12 +110,21 @@ class SqliteAnniversaryStore:
         ).fetchall()
         return [_row_to_dict(r) for r in rows]
 
+    def list_for_member(self, member_id: int) -> list[dict]:
+        """Anniversaries linked to a specific family member."""
+        rows = self._conn.execute(
+            "SELECT * FROM anniversaries "
+            "WHERE family_member_id = ? AND deleted_at IS NULL",
+            (member_id,),
+        ).fetchall()
+        return [_row_to_dict(r) for r in rows]
+
     # ── Update ────────────────────────────────────────────────────────────────
 
     def update_anniversary(self, anniversary_id: int, **fields) -> dict | None:
         allowed = {
             "name", "date_type", "month", "day", "year", "is_leap_month", "category",
-            "reminder_offsets", "enabled", "note",
+            "reminder_offsets", "enabled", "note", "family_member_id",
         }
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:

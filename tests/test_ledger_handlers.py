@@ -123,10 +123,10 @@ def test_cmd_chi_empty_body_replies_usage(deps, member_user):
 
 
 def test_cmd_chi_fires_threshold_alert_at_80_pct(deps, member_user):
-    deps.budget_store.upsert_budget(member_user.id, "2026-05", expense_budget=100_000)
+    deps.budget_store.upsert_budget(member_user.id, _current_month(), expense_budget=100_000)
     run(_cmd_chi(CHAT, "80k test", member_user, deps))
     deps.notification_service.enqueue.assert_called_once()
-    assert deps.budget_store.is_alert_sent(member_user.id, "2026-05", "80")
+    assert deps.budget_store.is_alert_sent(member_user.id, _current_month(), "80")
 
 
 # ── _cmd_thu ──────────────────────────────────────────────────────────────────
@@ -274,7 +274,7 @@ def test_cmd_sua_danh_muc_renames(deps, member_user):
 
 
 def test_cmd_bao_cao_thang_current_month(deps, member_user):
-    deps.ledger_store.add_entry(member_user.id, "income", 5_000_000, TODAY)
+    deps.ledger_store.add_entry(member_user.id, "income", 5_000_000, _now_str())
     run(_cmd_bao_cao_thang(CHAT, "", member_user, deps))
     assert "5.000.000" in deps.channel.last_text
 
@@ -321,7 +321,7 @@ def test_cmd_bao_cao_nam_returns_reply(deps, member_user):
 
 
 def test_cmd_xem_chi_tieu_returns_reply(deps, member_user):
-    deps.ledger_store.add_entry(member_user.id, "expense", 100_000, TODAY)
+    deps.ledger_store.add_entry(member_user.id, "expense", 100_000, _now_str())
     run(_cmd_xem_chi_tieu(CHAT, member_user, deps))
     assert "100.000" in deps.channel.last_text
 
@@ -330,6 +330,12 @@ def _now_str() -> str:
     from datetime import datetime
     from timeutils import VIETNAM_TZ
     return datetime.now(VIETNAM_TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _current_month() -> str:
+    from datetime import datetime
+    from timeutils import VIETNAM_TZ
+    return datetime.now(VIETNAM_TZ).strftime("%Y-%m")
 
 
 def test_cmd_xem_chi_tieu_shows_note(deps, member_user):
@@ -371,20 +377,20 @@ def test_cmd_xem_chi_tieu_shows_cc_payment_label(deps, member_user):
 
 def test_cmd_dat_han_muc_chi_sets_budget(deps, member_user):
     run(_cmd_dat_han_muc_chi(CHAT, "10tr", member_user, deps))
-    row = deps.budget_store.get_budget(member_user.id, "2026-05")
+    row = deps.budget_store.get_budget(member_user.id, _current_month())
     assert row is not None
     assert row["expense_budget"] == 10_000_000
 
 
 def test_cmd_dat_muc_tieu_tiet_kiem_sets_target(deps, member_user):
     run(_cmd_dat_muc_tieu_tiet_kiem(CHAT, "2tr", member_user, deps))
-    row = deps.budget_store.get_budget(member_user.id, "2026-05")
+    row = deps.budget_store.get_budget(member_user.id, _current_month())
     assert row is not None
     assert row["savings_target"] == 2_000_000
 
 
 def test_cmd_xem_han_muc_returns_reply(deps, member_user):
-    deps.budget_store.upsert_budget(member_user.id, "2026-05", expense_budget=5_000_000)
+    deps.budget_store.upsert_budget(member_user.id, _current_month(), expense_budget=5_000_000)
     run(_cmd_xem_han_muc(CHAT, member_user, deps))
     assert "5.000.000" in deps.channel.last_text
 

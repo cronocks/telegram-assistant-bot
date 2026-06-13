@@ -123,7 +123,7 @@ class TestXemThungRac:
     def test_admin_empty_recycle_bin(self, store, idx, audit, sample_admin):
         deps = _make_deps(store, idx, audit)
         _run(_cmd_xem_thung_rac("c1", sample_admin, deps))
-        assert "trong" in deps.channel.last_text.lower()
+        assert "trống" in deps.channel.last_text
 
     def test_non_admin_rejected_no_audit(self, store, idx, audit, member_user):
         deps = _make_deps(store, idx, audit)
@@ -146,7 +146,7 @@ class TestXemThungRac:
         _run(_cmd_xem_thung_rac("c1", sample_admin, deps))
 
         text = deps.channel.last_text
-        assert "4 muc" in text
+        assert "4 mục" in text
         assert "Note1" in text and "Note2" in text
         assert "Gone" in text
         assert f"user {u.id}" in text
@@ -214,19 +214,19 @@ class TestKhoiPhuc:
     def test_bad_syntax_returns_usage(self, store, idx, audit, sample_admin):
         deps = _make_deps(store, idx, audit)
         _run(_cmd_khoi_phuc("c1", "garbage", sample_admin, deps))
-        assert "Cu phap" in deps.channel.last_text
+        assert "Cú pháp" in deps.channel.last_text
 
     def test_restore_not_found_reports_error(self, store, idx, audit, sample_admin):
         deps = _make_deps(store, idx, audit)
         _run(_cmd_khoi_phuc("c1", "user 99999", sample_admin, deps))
-        assert "Khong tim thay" in deps.channel.last_text
+        assert "Không tìm thấy" in deps.channel.last_text
         assert audit.list_recent(action="recycle_restore") == []
 
     def test_restore_already_active_user_reports_error(self, store, idx, audit, sample_admin, member_user):
         """member_user is active; restore should report not in recycle bin."""
         deps = _make_deps(store, idx, audit)
         _run(_cmd_khoi_phuc("c1", f"user {member_user.id}", sample_admin, deps))
-        assert "Khong tim thay" in deps.channel.last_text
+        assert "Không tìm thấy" in deps.channel.last_text
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -314,13 +314,13 @@ class TestXoaHan:
     def test_hard_delete_not_found(self, store, idx, audit, sample_admin):
         deps = _make_deps(store, idx, audit)
         _run(_cmd_xoa_han("c1", "note 99999", sample_admin, deps))
-        assert "Khong tim thay" in deps.channel.last_text
+        assert "Không tìm thấy" in deps.channel.last_text
         assert audit.list_recent(action="recycle_purge") == []
 
     def test_bad_syntax_returns_usage(self, store, idx, audit, sample_admin):
         deps = _make_deps(store, idx, audit)
         _run(_cmd_xoa_han("c1", "garbage stuff here", sample_admin, deps))
-        assert "Cu phap" in deps.channel.last_text
+        assert "Cú pháp" in deps.channel.last_text
 
     def test_non_admin_rejected(self, store, idx, audit, member_user):
         deps = _make_deps(store, idx, audit)

@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from anniversary_store import SqliteAnniversaryStore
     from backup_engine import BackupEngine
     from budget_store import SqliteBudgetStore
+    from burial_store import SqliteBurialStore
+    from family_store import SqliteFamilyStore
     from category_store import SqliteCategoryStore
     from credit_card_store import SqliteCreditCardStore
     from interfaces import ReminderStore, TaskStore
@@ -64,3 +66,5 @@ class CoreDeps:
     ledger_parser: "LedgerParser | None" = None
     ledger_reports: "LedgerReports | None" = None
     credit_card_store: "SqliteCreditCardStore | None" = None
+    family_store: "SqliteFamilyStore | None" = None
+    burial_store: "SqliteBurialStore | None" = None

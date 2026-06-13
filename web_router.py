@@ -76,6 +76,8 @@ _ledger_store = None  # SqliteLedgerStore | None — injected at startup (FR-9)
 _category_store = None  # SqliteCategoryStore | None — injected at startup (FR-9)
 _budget_store = None  # SqliteBudgetStore | None — injected at startup (FR-9)
 _ledger_reports = None  # LedgerReports | None — injected at startup (FR-9)
+_family_store = None  # SqliteFamilyStore | None — injected at startup (FR-11)
+_burial_store = None  # SqliteBurialStore | None — injected at startup (FR-11)
 
 # Import preview token store: token → {parsed: ParsedImport, expires_at: datetime}
 _import_tokens: dict[str, dict] = {}
@@ -106,12 +108,15 @@ def init_web_router(
     category_store=None,
     budget_store=None,
     ledger_reports=None,
+    family_store=None,
+    burial_store=None,
 ) -> None:
     """Wire dependencies into this router (called once from main.py lifespan)."""
     global _templates, _web_channel, _session_store, _user_store
     global _audit, _elevation_store, _conv_store, _backup_engine, _task_store
     global _anniversary_store, _anniversary_engine
     global _ledger_store, _category_store, _budget_store, _ledger_reports
+    global _family_store, _burial_store
     _templates = templates
     _web_channel = web_channel
     _session_store = session_store
@@ -127,6 +132,8 @@ def init_web_router(
     _category_store = category_store
     _budget_store = budget_store
     _ledger_reports = ledger_reports
+    _family_store = family_store
+    _burial_store = burial_store
     # Also inject conv_store into the channel adapter for bot-reply persistence
     web_channel.set_conv_store(conv_store)
     # Register format_vnd Jinja2 filter for ledger templates
@@ -1749,3 +1756,208 @@ async def admin_import_apply(
         request, "import.html",
         {"user": result, "state": "result", "preview": None, "result": import_result, "error": None},
     )
+
+
+# ── Family routes (FR-11) ─────────────────────────────────────────────────────
+
+_FAMILY_ADMIN_ROLES = {"admin", "manager"}
+
+
+def _form_to_member_kwargs(form: dict) -> tuple[str, dict]:
+    """Parse POST form into (full_name, kwargs) for create_member / update_member.
+
+    Raises ValueError on validation failure (propagated to caller for re-render).
+    """
+    full_name = (form.get("full_name") or "").strip()
+    if not full_name:
+        raise ValueError("Họ tên không được để trống.")
+    kwargs: dict = {}
+    for key in ("alias_name", "gender", "branch", "bio", "birth_date_type", "death_date_type"):
+        val = (form.get(key) or "").strip() or None
+        if val:
+            kwargs[key] = val
+    for key in (
+        "generation",
+        "birth_year", "birth_month", "birth_day",
+        "death_year", "death_month", "death_day",
+    ):
+        raw = (form.get(key) or "").strip()
+        if raw.isdigit():
+            kwargs[key] = int(raw)
+    for key in ("birth_approx", "death_approx"):
+        kwargs[key] = 1 if form.get(key) == "1" else 0
+    return full_name, kwargs
+
+
+@router.get("/family/members", response_class=HTMLResponse)
+async def family_member_list(
+    request: Request,
+    q: str | None = Query(default=None),
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    assert _templates is not None
+    if q:
+        members = _family_store.search_by_name(q) if _family_store else []
+    else:
+        members = _family_store.list_members() if _family_store else []
+    return _templates.TemplateResponse(
+        request, "family_members.html",
+        {"user": user, "members": members, "q": q or ""},
+    )
+
+
+@router.get("/family", response_class=HTMLResponse)
+async def family_tree_view(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    assert _templates is not None
+    from family_tree import render_tree
+    tree_text = render_tree(_family_store._conn) if _family_store else "Gia phả chưa có ai."
+    return _templates.TemplateResponse(
+        request, "family_tree.html",
+        {"user": user, "tree_text": tree_text},
+    )
+
+
+@router.get("/family/members/new", response_class=HTMLResponse)
+async def family_member_new_form(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if user.role not in _FAMILY_ADMIN_ROLES:
+        return HTMLResponse("403 Forbidden", status_code=403)
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "family_member_form.html",
+        {"user": user, "member": None, "error": None},
+    )
+
+
+@router.post("/family/members")
+async def family_member_create(
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if user.role not in _FAMILY_ADMIN_ROLES:
+        return HTMLResponse("403 Forbidden", status_code=403)
+    if _family_store is None:
+        return HTMLResponse("Family feature not initialised.", status_code=503)
+
+    form = dict(await request.form())
+    try:
+        full_name, kwargs = _form_to_member_kwargs(form)
+        row = _family_store.create_member(created_by=user.id, full_name=full_name, **kwargs)
+    except ValueError as e:
+        assert _templates is not None
+        return _templates.TemplateResponse(
+            request, "family_member_form.html",
+            {"user": user, "member": None, "error": str(e)},
+            status_code=400,
+        )
+
+    if _audit is not None:
+        _audit.log(
+            user.id, "family_member_created", "family_member", str(row["id"]),
+            {"full_name": row["full_name"]},
+        )
+    return RedirectResponse(url=f"/family/members/{row['id']}", status_code=303)
+
+
+@router.get("/family/members/{member_id}", response_class=HTMLResponse)
+async def family_member_view(
+    member_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if _family_store is None:
+        return HTMLResponse("Family feature not initialised.", status_code=503)
+    row = _family_store.get_member(member_id)
+    if row is None or row.get("deleted_at") is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+    burial = _burial_store.get_current_for_member(member_id) if _burial_store else None
+    maps_url = None
+    if burial and burial.get("lat") is not None and burial.get("lng") is not None:
+        maps_url = f"https://maps.google.com/?q={burial['lat']},{burial['lng']}"
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "family_member_view.html",
+        {"user": user, "member": row, "burial": burial, "maps_url": maps_url},
+    )
+
+
+@router.get("/family/members/{member_id}/edit", response_class=HTMLResponse)
+async def family_member_edit_form(
+    member_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if user.role not in _FAMILY_ADMIN_ROLES:
+        return HTMLResponse("403 Forbidden", status_code=403)
+    if _family_store is None:
+        return HTMLResponse("Family feature not initialised.", status_code=503)
+    row = _family_store.get_member(member_id)
+    if row is None or row.get("deleted_at") is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+    assert _templates is not None
+    return _templates.TemplateResponse(
+        request, "family_member_form.html",
+        {"user": user, "member": row, "error": None},
+    )
+
+
+@router.post("/family/members/{member_id}")
+async def family_member_update(
+    member_id: int,
+    request: Request,
+    web_session: str | None = Cookie(default=None),
+):
+    user = _resolve_user(web_session)
+    if user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    if user.role not in _FAMILY_ADMIN_ROLES:
+        return HTMLResponse("403 Forbidden", status_code=403)
+    if _family_store is None:
+        return HTMLResponse("Family feature not initialised.", status_code=503)
+
+    row = _family_store.get_member(member_id)
+    if row is None or row.get("deleted_at") is not None:
+        return HTMLResponse("404 Not Found", status_code=404)
+
+    form = dict(await request.form())
+    try:
+        full_name, kwargs = _form_to_member_kwargs(form)
+        kwargs["full_name"] = full_name
+        _family_store.update_member(member_id, **kwargs)
+    except ValueError as e:
+        assert _templates is not None
+        return _templates.TemplateResponse(
+            request, "family_member_form.html",
+            {"user": user, "member": row, "error": str(e)},
+            status_code=400,
+        )
+
+    if _audit is not None:
+        _audit.log(
+            user.id, "family_member_updated", "family_member", str(member_id),
+            {"changed_fields": list(kwargs.keys())},
+        )
+    return RedirectResponse(url=f"/family/members/{member_id}", status_code=303)
