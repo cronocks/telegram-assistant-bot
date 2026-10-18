@@ -95,7 +95,7 @@ The system uses a **Modular Monolith** with a hexagonal architecture. Business l
 | `task_store.py` | `SqliteTaskStore` — task CRUD, query by user/status/category, soft-delete (FR-7) |
 | `reminder_store.py` | `SqliteReminderStore` — reminder CRUD, ready-to-fire query, cancel by task (FR-7) |
 | `reminder_engine.py` | `ReminderEngine` — scan + emit + lazy recurring expansion + parent mirror + grace window (FR-7) |
-| `task_parser.py` | `TaskParser` — Haiku 4.5 tool-use; parses free-form Vietnamese → `{title, deadline, recurring_rule}` (FR-7) |
+| `task_parser.py` | `TaskParser` — Haiku 5.5 tool-use; parses free-form Vietnamese → `{title, deadline, recurring_rule}` (FR-7) |
 | `elevation_store.py` | `SqliteElevationStore` — sudo elevation sessions + failed-attempt rate-limit (FR-3.5) |
 | `audit.py` | `SqliteAuditLog` — append-only audit event writer; `AuditLog` Protocol (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — persistent notification queue CRUD (FR-4) |
