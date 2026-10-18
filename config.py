@@ -11,6 +11,12 @@ TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 MODEL             = os.getenv("MODEL")
 
+# Cheap model for lightweight calls (titles, task/ledger parsing). Single source of truth.
+HAIKU_MODEL = os.getenv("HAIKU_MODEL", "claude-haiku-5-5")
+# USD per 1M tokens for HAIKU_MODEL (prompts up to 100k tokens). Update when changing model.
+HAIKU_PRICE_INPUT_PER_M  = float(os.getenv("HAIKU_PRICE_INPUT_PER_M", "0.10"))
+HAIKU_PRICE_OUTPUT_PER_M = float(os.getenv("HAIKU_PRICE_OUTPUT_PER_M", "0.50"))
+
 # ── Google Drive ──────────────────────────────────────────────────────────────
 GDRIVE_FOLDER_ID    = os.getenv("GDRIVE_FOLDER_ID", "")
 CLAUDE_NOTES_FOLDER = os.getenv("CLAUDE_NOTES_FOLDER", "Claude-Notes")

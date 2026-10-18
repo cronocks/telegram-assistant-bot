@@ -3,9 +3,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from claude_client import AnthropicLLM
+import importlib
 
-_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+import config
+import ledger_parser
+import task_parser
+from claude_client import AnthropicLLM
+from config import HAIKU_MODEL as _HAIKU_MODEL
 
 
 def _make_llm(response_text: str, in_tok: int = 10, out_tok: int = 5) -> AnthropicLLM:
@@ -22,6 +26,48 @@ def _make_llm(response_text: str, in_tok: int = 10, out_tok: int = 5) -> Anthrop
     llm._client = mock_client
     llm._model = "claude-sonnet-4-6"
     return llm
+
+
+class TestHaikuConfig:
+    """Centralised Haiku model config (single source of truth in config.py)."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_config(self):
+        yield
+        importlib.reload(config)
+
+    def test_default_model_is_haiku_5_5(self, monkeypatch):
+        monkeypatch.delenv("HAIKU_MODEL", raising=False)
+        importlib.reload(config)
+        assert config.HAIKU_MODEL == "claude-haiku-5-5"
+
+    def test_env_overrides_model(self, monkeypatch):
+        monkeypatch.setenv("HAIKU_MODEL", "claude-haiku-custom")
+        importlib.reload(config)
+        assert config.HAIKU_MODEL == "claude-haiku-custom"
+
+    def test_default_prices_match_haiku_5_5(self, monkeypatch):
+        monkeypatch.delenv("HAIKU_PRICE_INPUT_PER_M", raising=False)
+        monkeypatch.delenv("HAIKU_PRICE_OUTPUT_PER_M", raising=False)
+        importlib.reload(config)
+        assert config.HAIKU_PRICE_INPUT_PER_M == 0.10
+        assert config.HAIKU_PRICE_OUTPUT_PER_M == 0.50
+
+    def test_env_overrides_prices(self, monkeypatch):
+        monkeypatch.setenv("HAIKU_PRICE_INPUT_PER_M", "0.25")
+        monkeypatch.setenv("HAIKU_PRICE_OUTPUT_PER_M", "1.5")
+        importlib.reload(config)
+        assert config.HAIKU_PRICE_INPUT_PER_M == 0.25
+        assert config.HAIKU_PRICE_OUTPUT_PER_M == 1.5
+
+    def test_parsers_use_central_model(self):
+        assert ledger_parser.HAIKU_MODEL == config.HAIKU_MODEL
+        assert task_parser.HAIKU_MODEL == config.HAIKU_MODEL
+
+    def test_cost_monitor_uses_central_prices(self):
+        import cost_monitor
+        assert cost_monitor.PRICE_INPUT_PER_M == config.HAIKU_PRICE_INPUT_PER_M
+        assert cost_monitor.PRICE_OUTPUT_PER_M == config.HAIKU_PRICE_OUTPUT_PER_M
 
 
 class TestGenerateChatTitle:

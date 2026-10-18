@@ -2,7 +2,7 @@
 
 Decisions implemented:
   D3  — Hybrid input: prefix dispatched by core_handler; free-form parsed here.
-  D15 — Uses Haiku 4.5 (cheap model) via Anthropic tool-use API.
+  D15 — Uses Haiku 5.5 (cheap model) via Anthropic tool-use API.
   D16 — morning_default_time applied when user omits a specific time.
   D17 — Past-deadline input is rejected with ParseError('past_deadline').
   D19 — LLM parse failure returns ParseError('parse_failed'); no pending state.
@@ -25,11 +25,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from config import HAIKU_MODEL
 from timeutils import VIETNAM_TZ
 
 logger = logging.getLogger(__name__)
-
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
 # ── Tool definition ───────────────────────────────────────────────────────────
 
@@ -141,7 +140,7 @@ class ParseError(Exception):
 # ── Parser ────────────────────────────────────────────────────────────────────
 
 class TaskParser:
-    """Parse free-form Vietnamese task descriptions via Haiku 4.5 tool-use (D15).
+    """Parse free-form Vietnamese task descriptions via Haiku 5.5 tool-use (D15).
 
     The Anthropic client is injectable so tests can run without network access.
     """

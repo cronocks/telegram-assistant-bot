@@ -5,7 +5,7 @@ Public API:
         Deterministic; raises ValueError on bad input.
 
     LedgerParser.classify_category(description, categories) -> int | None
-        Fast-path keyword lookup; LLM fallback (Haiku 4.5) when ambiguous.
+        Fast-path keyword lookup; LLM fallback (Haiku 5.5) when ambiguous.
         Returns category_id or None (handler falls back to "Khác").
 
     LedgerParser.parse_command(text, categories) -> dict
@@ -21,7 +21,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+from config import HAIKU_MODEL
+
 _AMOUNT_RE = re.compile(r"^([\d.,]+)\s*(k|tr|m)?$", re.IGNORECASE)
 _COMMAND_RE = re.compile(r"^(chi|thu)\s*:\s*(.*)$", re.IGNORECASE)
 
