@@ -91,7 +91,10 @@ Copy `.env.example` to `.env` (local), `.env.staging`, or `.env.production` and 
 | `TELEGRAM_TOKEN` | ✅ | — | Bot token from BotFather |
 | `TELEGRAM_CHAT_ID` | ✅ | — | Your Telegram chat ID (bootstrap admin) |
 | `ANTHROPIC_API_KEY` | ✅ | — | Anthropic API key |
-| `MODEL` | ✅ | — | Claude model ID (e.g. `claude-haiku-4-5-20251001`) |
+| `MODEL` | ✅ | — | Claude model ID (e.g. `claude-haiku-5-5`) |
+| `HAIKU_MODEL` | ❌ | `claude-haiku-5-5` | Cheap model for titles, task and ledger parsing (single source: `config.py`) |
+| `HAIKU_PRICE_INPUT_PER_M` | ❌ | `0.10` | USD per 1M input tokens, used by cost monitor |
+| `HAIKU_PRICE_OUTPUT_PER_M` | ❌ | `0.50` | USD per 1M output tokens, used by cost monitor |
 | `GOOGLE_OAUTH_TOKEN_B64` | ✅ | — | Base64-encoded Google OAuth token |
 | `OWNER_EMAIL` | ✅ | — | Google account email for Drive ownership |
 | `APP_ENV` | ✅ | `local` | `local` \| `staging` \| `production` |

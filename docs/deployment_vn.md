@@ -91,7 +91,10 @@ Copy `.env.example` thành `.env` (local), `.env.staging`, hoặc `.env.producti
 | `TELEGRAM_TOKEN` | ✅ | — | Bot token từ BotFather |
 | `TELEGRAM_CHAT_ID` | ✅ | — | Chat ID Telegram của bạn (bootstrap admin) |
 | `ANTHROPIC_API_KEY` | ✅ | — | Anthropic API key |
-| `MODEL` | ✅ | — | Model Claude (ví dụ: `claude-haiku-4-5-20251001`) |
+| `MODEL` | ✅ | — | Model Claude (ví dụ: `claude-haiku-5-5`) |
+| `HAIKU_MODEL` | ❌ | `claude-haiku-5-5` | Model rẻ cho tạo tiêu đề, parse task và sổ thu chi (nguồn duy nhất: `config.py`) |
+| `HAIKU_PRICE_INPUT_PER_M` | ❌ | `0.10` | USD / 1M input tokens, dùng cho cost monitor |
+| `HAIKU_PRICE_OUTPUT_PER_M` | ❌ | `0.50` | USD / 1M output tokens, dùng cho cost monitor |
 | `GOOGLE_OAUTH_TOKEN_B64` | ✅ | — | Google OAuth token mã hóa base64 |
 | `OWNER_EMAIL` | ✅ | — | Email Google để transfer quyền sở hữu Drive |
 | `APP_ENV` | ✅ | `local` | `local` \| `staging` \| `production` |

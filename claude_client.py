@@ -10,7 +10,7 @@ import re
 
 import anthropic
 
-from config import ANTHROPIC_API_KEY, MODEL
+from config import ANTHROPIC_API_KEY, HAIKU_MODEL, MODEL
 
 SYSTEM_PROMPT = """Bạn là trợ lý cá nhân thông minh, giao tiếp qua Telegram.
 Bạn có thể truy cập các ghi chú của người dùng trong Obsidian vault.
@@ -339,7 +339,6 @@ nêu bật những điểm quan trọng nhất:\n\n{notes_text}"""
         Always uses Haiku (cheap model) regardless of the configured MODEL env var.
         Returns (title, total_tokens). Title is 3-7 words, no quotes, no punctuation.
         """
-        _HAIKU_MODEL = "claude-haiku-4-5-20251001"
         prompt = (
             "Tạo tiêu đề ngắn gọn (3-7 từ) cho cuộc hội thoại sau.\n"
             "Yêu cầu: không dấu ngoặc kép, không dấu chấm câu cuối, "
@@ -349,7 +348,7 @@ nêu bật những điểm quan trọng nhất:\n\n{notes_text}"""
             f"Trợ lý: {bot_reply[:300]}"
         )
         response = self._client.messages.create(
-            model=_HAIKU_MODEL,
+            model=HAIKU_MODEL,
             max_tokens=30,
             system="Bạn chỉ trả về tiêu đề ngắn, không có gì khác.",
             messages=[{"role": "user", "content": prompt}],

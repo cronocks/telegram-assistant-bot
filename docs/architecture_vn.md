@@ -95,7 +95,7 @@ Hệ thống dùng **Modular Monolith** với kiến trúc hexagonal. Business l
 | `task_store.py` | `SqliteTaskStore` — CRUD task, query by user/status/category, soft-delete (FR-7) |
 | `reminder_store.py` | `SqliteReminderStore` — CRUD reminder, ready-to-fire query, cancel by task (FR-7) |
 | `reminder_engine.py` | `ReminderEngine` — scan + emit + lazy recurring expansion + parent mirror + grace window (FR-7) |
-| `task_parser.py` | `TaskParser` — Haiku 4.5 tool-use; parse free-form Vietnamese → `{title, deadline, recurring_rule}` (FR-7) |
+| `task_parser.py` | `TaskParser` — Haiku 5.5 tool-use; parse free-form Vietnamese → `{title, deadline, recurring_rule}` (FR-7) |
 | `elevation_store.py` | `SqliteElevationStore` — phiên nâng quyền sudo + rate-limit thất bại (FR-3.5) |
 | `audit.py` | `SqliteAuditLog` — ghi sự kiện audit append-only; Protocol `AuditLog` (FR-4) |
 | `notification_store.py` | `SqliteNotificationStore` — CRUD hàng đợi thông báo persistent (FR-4) |

@@ -6,11 +6,12 @@ from config import (
     COST_FILE, BUDGET_LIMIT, ALERT_80, ALERT_90,
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     MODEL,
+    HAIKU_PRICE_INPUT_PER_M, HAIKU_PRICE_OUTPUT_PER_M,
 )
 
-# Giá per 1M tokens (USD) — claude-haiku-4-5
-PRICE_INPUT_PER_M  = 1.0
-PRICE_OUTPUT_PER_M = 5.0
+# Price per 1M tokens (USD) — sourced from config (Haiku pricing)
+PRICE_INPUT_PER_M  = HAIKU_PRICE_INPUT_PER_M
+PRICE_OUTPUT_PER_M = HAIKU_PRICE_OUTPUT_PER_M
 
 # Trạng thái alert trong session (reset khi restart)
 _alert_sent = {"80": False, "90": False, "last_month": None}
